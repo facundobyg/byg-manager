@@ -1,0 +1,6 @@
+{
+  "version": 3,
+  "sources": [],
+  "sections": [
+    {"offset": {"line": 7, "column": 0}, "map": {"version":3,"sources":["file:///C:/Users/Facundo%20Giovini/OneDrive/Desktop/IA/Antigravity/Proyecto%20BYG/src/app/%28dashboard%29/backup/layout.tsx"],"sourcesContent":["import { ReactNode } from \"react\";\nimport { requirePermission } from \"@/lib/auth/permissions\";\n\nexport default async function BackupLayout({ children }: { children: ReactNode }) {\n  await requirePermission(\"backups:leer\");\n  return <>{children}</>;\n}\n"],"names":[],"mappings":";;;;AACA;;;AAEe,eAAe,aAAa,EAAE,QAAQ,EAA2B;IAC9E,MAAM,CAAA,GAAA,iIAAA,CAAA,oBAAiB,AAAD,EAAE;IACxB,qBAAO;kBAAG;;AACZ","debugId":null}}]
+}

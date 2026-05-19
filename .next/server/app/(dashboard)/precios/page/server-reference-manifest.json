@@ -1,0 +1,49 @@
+{
+  "node": {
+    "0011ff4319847fa321c161740d2e30453828714a2e": {
+      "workers": {
+        "app/(dashboard)/precios/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/precios/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/configuracion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/precios/page": "rsc"
+      }
+    },
+    "6040a69765653c3bd7bb36106fb5fa70522bf9dba8": {
+      "workers": {
+        "app/(dashboard)/precios/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/precios/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/configuracion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/precios/page": "action-browser"
+      }
+    },
+    "60fcad7d983855874604fe04669abd7e516156b066": {
+      "workers": {
+        "app/(dashboard)/precios/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/precios/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/configuracion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/precios/page": "action-browser"
+      }
+    },
+    "60417396039d3e3831a430615c45fe1bcd77cd5fa5": {
+      "workers": {
+        "app/(dashboard)/precios/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/precios/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/configuracion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/precios/page": "action-browser"
+      }
+    }
+  },
+  "edge": {}
+}

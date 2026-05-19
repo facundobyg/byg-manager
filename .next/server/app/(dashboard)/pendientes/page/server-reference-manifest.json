@@ -1,0 +1,16 @@
+{
+  "node": {
+    "0011ff4319847fa321c161740d2e30453828714a2e": {
+      "workers": {
+        "app/(dashboard)/pendientes/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/pendientes/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        }
+      },
+      "layer": {
+        "app/(dashboard)/pendientes/page": "rsc"
+      }
+    }
+  },
+  "edge": {}
+}

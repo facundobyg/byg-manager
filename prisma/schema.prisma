@@ -1,0 +1,876 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Activo {
+  id                  String                @id
+  ticker              String                @unique
+  descripcion         String?
+  categoria           CategoriaActivo
+  precioActual        Decimal?              @db.Decimal(18, 6)
+  precioAnterior      Decimal?              @db.Decimal(18, 6)
+  monedaPrecio        Moneda                @default(USD)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime
+  CustodiaCliente     CustodiaCliente[]
+  PosicionCartera     PosicionCartera[]
+  PrecioHistorico     PrecioHistorico[]
+  TransferenciaActivo TransferenciaActivo[]
+
+  @@index([categoria])
+  @@index([ticker])
+}
+
+model AuditLog {
+  id           String   @id
+  userId       String?
+  accion       String
+  entidad      String
+  entidadId    String?
+  datosPrevios Json?
+  datosNuevos  Json?
+  ip           String?  @db.VarChar(45)
+  userAgent    String?
+  createdAt    DateTime @default(now())
+  User         User?    @relation(fields: [userId], references: [id])
+
+  @@index([accion])
+  @@index([createdAt])
+  @@index([entidad, entidadId])
+  @@index([userId])
+}
+
+model Backup {
+  id        String   @id
+  tipo      String
+  version   String?
+  tamano    Int?
+  datos     Json?
+  userId    String?
+  createdAt DateTime @default(now())
+  User      User?    @relation(fields: [userId], references: [id])
+
+  @@index([createdAt])
+  @@index([tipo])
+}
+
+model Caja {
+  id              String           @id
+  slug            String           @unique
+  label           String
+  tipo            TipoCaja         @default(SUCURSAL_OPERATIVA)
+  saldoInicialUSD Decimal          @default(0) @db.Decimal(18, 2)
+  saldoInicialARS Decimal          @default(0) @db.Decimal(18, 2)
+  orden           Int              @default(0)
+  activa          Boolean          @default(true)
+  esPrincipal     Boolean          @default(false)
+  MovimientoCaja  MovimientoCaja[]
+}
+
+enum TipoCaja {
+  CENTRAL_CONTABLE
+  SUCURSAL_OPERATIVA
+  CAJA_SEGURIDAD
+  BANCO
+}
+
+model Cartera {
+  id                  String                @id
+  nombre              String                @unique
+  slug                String                @unique
+  tipo                TipoCartera           @default(COMPLETA)
+  orden               Int                   @default(0)
+  activa              Boolean               @default(true)
+  saldoPesos          Decimal               @default(0) @db.Decimal(18, 2)
+  saldoUSDCable       Decimal               @default(0) @db.Decimal(18, 2)
+  saldoUSDMep                Decimal               @default(0) @db.Decimal(18, 2)
+  comitenteNumber            String?
+  investmentAccountType      String?
+  mirrorInInvestmentAccounts Boolean               @default(false)
+  createdAt                  DateTime              @default(now())
+  updatedAt                  DateTime
+  ComitenteInversion         ComitenteInversion[]
+  PosicionCartera            PosicionCartera[]
+  TransferenciaActivo        TransferenciaActivo[]
+  OperacionBolsa             OperacionBolsa[]
+}
+
+model Cliente {
+  id              String            @id
+  nombre          String
+  rol             ClienteRol        @default(CLIENTE)
+  email           String?
+  telefono        String?
+  banco           String?
+  tasaCC          Decimal           @default(0) @db.Decimal(8, 4)
+  notas           String?
+  activo          Boolean           @default(true)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime
+  CuentaCorriente CuentaCorriente[]
+  CustodiaCliente CustodiaCliente[]
+  OperacionCambio OperacionCambio[]
+  PlazoFijo       PlazoFijo[]
+  OperacionBolsa  OperacionBolsa[]
+
+  @@index([activo])
+  @@index([nombre])
+}
+
+model ComitenteInversion {
+  id                        String                      @id
+  cuentaInversionId         String
+  nombre                    String
+  razonSocial               String?
+  nroComitente              String
+  productor                 ProductorInversion          @default(BYG)
+  activo                    Boolean                     @default(true)
+  notas                     String?
+  createdAt                 DateTime                    @default(now())
+  updatedAt                 DateTime
+  esPropioBYG               Boolean                     @default(false)
+  carteraId                 String?
+  Cartera                   Cartera?                    @relation(fields: [carteraId], references: [id])
+  CuentaInversion           CuentaInversion             @relation(fields: [cuentaInversionId], references: [id], onDelete: Cascade)
+  HoldingComitenteInversion HoldingComitenteInversion[]
+  OperacionHoldingInversion OperacionHoldingInversion[]
+  SaldoComitenteInversion   SaldoComitenteInversion?
+  OperacionBolsa            OperacionBolsa[]
+
+  @@unique([cuentaInversionId, nroComitente])
+  @@index([carteraId])
+  @@index([cuentaInversionId])
+  @@index([productor])
+}
+
+model Config {
+  id        String   @id
+  clave     String   @unique
+  valor     String
+  updatedAt DateTime
+}
+
+model CuentaCorriente {
+  id           String         @id
+  clienteId    String
+  moneda       Moneda         @default(USD)
+  saldo        Decimal        @default(0) @db.Decimal(18, 2)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime
+  Cliente      Cliente        @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  MovimientoCC MovimientoCC[]
+
+  @@unique([clienteId, moneda])
+  @@index([clienteId])
+}
+
+model CuentaInversion {
+  id                 String               @id
+  nombre             String               @unique
+  activa             Boolean              @default(true)
+  notas              String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime
+  ComitenteInversion ComitenteInversion[]
+  ImportacionHolding ImportacionHolding[]
+  OperacionBolsa     OperacionBolsa[]
+
+  @@index([activa])
+}
+
+model CustodiaCliente {
+  id                  String                @id
+  clienteId           String
+  activoId            String
+  cantidadTotal       Decimal               @db.Decimal(18, 6)
+  precioPromedio      Decimal               @db.Decimal(18, 6)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime
+  Activo              Activo                @relation(fields: [activoId], references: [id])
+  Cliente             Cliente               @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  TransferenciaActivo TransferenciaActivo[]
+
+  @@unique([clienteId, activoId])
+  @@index([activoId])
+  @@index([clienteId])
+}
+
+model HistorialMes {
+  id        String   @id
+  mes       String   @unique
+  datos     Json
+  cerradoAt DateTime @default(now())
+}
+
+model HoldingComitenteInversion {
+  id                        String                      @id
+  comitenteId               String
+  ticker                    String
+  descripcion               String?
+  categoria                 CategoriaHoldingInversion
+  cantidad                  Decimal                     @db.Decimal(18, 6)
+  precioPromedio            Decimal                     @db.Decimal(18, 6)
+  precioActual              Decimal?                    @db.Decimal(18, 6)
+  createdAt                 DateTime                    @default(now())
+  updatedAt                 DateTime
+  fechaCompra               DateTime?
+  ComitenteInversion        ComitenteInversion          @relation(fields: [comitenteId], references: [id], onDelete: Cascade)
+  OperacionHoldingInversion OperacionHoldingInversion[]
+
+  @@unique([comitenteId, ticker])
+  @@index([categoria])
+  @@index([comitenteId])
+}
+
+model ImportacionHolding {
+  id              String          @id
+  cuentaId        String
+  nombreArchivo   String
+  filasTotal      Int
+  filasImportadas Int
+  importadoPor    String          @default("sistema")
+  createdAt       DateTime        @default(now())
+  CuentaInversion CuentaInversion @relation(fields: [cuentaId], references: [id], onDelete: Cascade)
+
+  @@index([cuentaId])
+}
+
+model InversionInmobiliaria {
+  id          String                    @id
+  propiedadId String
+  fecha       DateTime                  @db.Date
+  descripcion String
+  tipo        TipoInversionInmobiliaria
+  monto       Decimal                   @db.Decimal(18, 2)
+  moneda      Moneda                    @default(USD)
+  quien       String
+  createdAt   DateTime                  @default(now())
+  Propiedad   Propiedad                 @relation(fields: [propiedadId], references: [id], onDelete: Cascade)
+
+  @@index([fecha])
+  @@index([propiedadId])
+}
+
+model MesContable {
+  id        String    @id
+  mes       String    @unique
+  activo    Boolean   @default(true)
+  cerradoAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([activo])
+}
+
+model MovimientoCC {
+  id                String          @id
+  cuentaCorrienteId String
+  fecha             DateTime        @db.Date
+  tipo              TipoMovCC
+  monto             Decimal         @db.Decimal(18, 2)
+  descripcion       String?
+  operacionCambioId String?
+  userId            String?
+  createdAt         DateTime        @default(now())
+  CuentaCorriente   CuentaCorriente @relation(fields: [cuentaCorrienteId], references: [id], onDelete: Cascade)
+
+  @@index([cuentaCorrienteId, fecha])
+  @@index([operacionCambioId])
+}
+
+model MovimientoCaja {
+  id                String      @id
+  cajaId            String
+  fecha             DateTime    @db.Date
+  tipo              TipoMovCaja
+  moneda            Moneda
+  monto             Decimal     @db.Decimal(18, 2)
+  descripcion       String?
+  confirmado        Boolean     @default(false)
+  operacionCambioId String?
+  transferenciaRef  String?
+  userId            String?
+  createdAt         DateTime    @default(now())
+  Caja              Caja        @relation(fields: [cajaId], references: [id], onDelete: Cascade)
+
+  @@index([cajaId, fecha])
+  @@index([cajaId, moneda, confirmado])
+  @@index([operacionCambioId])
+}
+
+model Nota {
+  id        String   @id
+  titulo    String?
+  contenido String
+  color     String?
+  fijada    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+}
+
+model OperacionCambio {
+  id            String              @id
+  fecha         DateTime            @db.Date
+  tipo          TipoOperacionCambio
+  clienteNombre String?
+  clienteId     String?
+  moneda        Moneda              @default(USD)
+  cantidad      Decimal             @default(0) @db.Decimal(18, 2)
+  tipoCambio    Decimal             @default(0) @db.Decimal(12, 4)
+  totalARS      Decimal             @default(0) @db.Decimal(18, 2)
+  cobroUSD      Decimal             @default(0) @db.Decimal(18, 2)
+  cobroARS      Decimal             @default(0) @db.Decimal(18, 2)
+  descripcion   String?
+  pendiente     Boolean             @default(false)
+  mesContable   String?
+  userId        String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime
+  Cliente       Cliente?            @relation(fields: [clienteId], references: [id])
+
+  @@index([clienteId])
+  @@index([fecha])
+  @@index([mesContable])
+  @@index([tipo])
+}
+
+model OperacionDivInt {
+  id          String   @id
+  fecha       DateTime @db.Date
+  ticker      String?
+  descripcion String?
+  detalles    Json
+  mesContable String?
+  userId      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime
+
+  @@index([fecha])
+  @@index([mesContable])
+}
+
+model OperacionHoldingInversion {
+  id                        String                     @id
+  comitenteId               String
+  holdingId                 String?
+  tipo                      TipoOperacionHolding
+  ticker                    String
+  categoria                 CategoriaHoldingInversion
+  cantidad                  Decimal                    @db.Decimal(18, 6)
+  precio                    Decimal                    @db.Decimal(18, 6)
+  fecha                     DateTime                   @default(now())
+  notas                     String?
+  createdAt                 DateTime                   @default(now())
+  precioPromedio            Decimal?                   @db.Decimal(18, 6)
+  ComitenteInversion        ComitenteInversion         @relation(fields: [comitenteId], references: [id], onDelete: Cascade)
+  HoldingComitenteInversion HoldingComitenteInversion? @relation(fields: [holdingId], references: [id])
+
+  @@index([comitenteId])
+  @@index([fecha])
+  @@index([holdingId])
+}
+
+model OperacionLargoPlazo {
+  id          String          @id
+  fecha       DateTime        @db.Date
+  tipo        TipoOperacionLP
+  ticker      String?
+  descripcion String?
+  detalles    Json
+  mesContable String?
+  userId      String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime
+
+  @@index([fecha])
+  @@index([mesContable])
+  @@index([tipo])
+}
+
+model OperacionRulo {
+  id          String   @id
+  fecha       DateTime @db.Date
+  descripcion String?
+  notas       String?
+  detalles    Json
+  mesContable String?
+  userId      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime
+
+  @@index([fecha])
+  @@index([mesContable])
+}
+
+model Permiso {
+  id          String        @id
+  modulo      String
+  accion      String
+  RolPermiso  RolPermiso[]
+  UserPermiso UserPermiso[]
+
+  @@unique([modulo, accion])
+  @@index([modulo])
+}
+
+model PlazoFijo {
+  id                  String                @id
+  clienteId           String
+  capital             Decimal               @db.Decimal(18, 2)
+  tasaAnual           Decimal               @db.Decimal(8, 4)
+  moneda              Moneda                @default(USD)
+  fechaInicio         DateTime              @db.Date
+  fechaVencimiento    DateTime              @db.Date
+  estado              EstadoPF              @default(ACTIVO)
+  saldoActual         Decimal               @db.Decimal(18, 2)
+  notas               String?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime
+  Cliente             Cliente               @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  PlazoFijoMovimiento PlazoFijoMovimiento[]
+
+  @@index([clienteId])
+  @@index([estado])
+  @@index([fechaVencimiento])
+}
+
+model PlazoFijoMovimiento {
+  id              String    @id
+  plazoFijoId     String
+  fecha           DateTime  @db.Date
+  tipo            String
+  descripcion     String?
+  monto           Decimal   @db.Decimal(18, 2)
+  saldoAcumulado  Decimal   @db.Decimal(18, 2)
+  createdAt       DateTime  @default(now())
+  PlazoFijo       PlazoFijo @relation(fields: [plazoFijoId], references: [id], onDelete: Cascade)
+
+  @@index([plazoFijoId, fecha])
+}
+
+model PosicionCartera {
+  id             String   @id
+  carteraId      String
+  activoId       String
+  cantidad       Decimal  @db.Decimal(18, 6)
+  precioCompra   Decimal  @db.Decimal(18, 6)
+  precioObjetivo Decimal? @db.Decimal(18, 6)
+  fecha          DateTime @db.Date
+  notas          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime
+  Activo         Activo   @relation(fields: [activoId], references: [id])
+  Cartera        Cartera  @relation(fields: [carteraId], references: [id], onDelete: Cascade)
+
+  @@unique([carteraId, activoId])
+  @@index([activoId])
+  @@index([carteraId])
+}
+
+model PrecioHistorico {
+  id        String   @id
+  activoId  String
+  fecha     DateTime @db.Date
+  precio    Decimal  @db.Decimal(18, 6)
+  createdAt DateTime @default(now())
+  Activo    Activo   @relation(fields: [activoId], references: [id], onDelete: Cascade)
+
+  @@unique([activoId, fecha])
+  @@index([activoId, fecha])
+}
+
+model Propiedad {
+  id                    String                  @id
+  nombre                String                  @unique
+  activa                Boolean                 @default(true)
+  createdAt             DateTime                @default(now())
+  InversionInmobiliaria InversionInmobiliaria[]
+}
+
+model Recordatorio {
+  id          String                @id
+  descripcion String
+  diaMes      Int
+  anticipo    Int                   @default(3)
+  categoria   CategoriaRecordatorio
+  moneda      Moneda                @default(USD)
+  monto       Decimal               @default(0) @db.Decimal(18, 2)
+  notas       String?
+  activo      Boolean               @default(true)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime
+}
+
+model RolPermiso {
+  id        String   @id
+  role      UserRole
+  permisoId String
+  Permiso   Permiso  @relation(fields: [permisoId], references: [id], onDelete: Cascade)
+
+  @@unique([role, permisoId])
+  @@index([role])
+}
+
+model SaldoComitenteInversion {
+  id                 String             @id
+  comitenteId        String             @unique
+  saldoARS           Decimal            @default(0) @db.Decimal(18, 2)
+  saldoUSDCable      Decimal            @default(0) @db.Decimal(18, 2)
+  saldoUSDMep        Decimal            @default(0) @db.Decimal(18, 2)
+  updatedAt          DateTime
+  ComitenteInversion ComitenteInversion @relation(fields: [comitenteId], references: [id], onDelete: Cascade)
+}
+
+model Session {
+  id           String   @id
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  User         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model SnapshotPatrimonio {
+  id             String       @id
+  fecha          DateTime     @db.Date
+  activo         Decimal      @db.Decimal(18, 2)
+  pasivo         Decimal      @db.Decimal(18, 2)
+  patrimonioNeto Decimal      @db.Decimal(18, 2)
+  utilidad       Decimal?     @db.Decimal(18, 2)
+  tipoCambio     Decimal      @db.Decimal(12, 4)
+  detalle        Json?
+  tipo           TipoSnapshot @default(MANUAL)
+  createdAt      DateTime     @default(now())
+
+  @@index([fecha])
+  @@index([tipo])
+}
+
+model SocioPorcentaje {
+  id         String   @id
+  nombre     String   @unique
+  porcentaje Decimal  @db.Decimal(5, 2)
+  activo     Boolean  @default(true)
+  updatedAt  DateTime
+
+  @@index([activo])
+}
+
+model TipoCambio {
+  id            String   @id
+  monedaOrigen  Moneda
+  monedaDestino Moneda
+  valor         Decimal  @db.Decimal(12, 4)
+  fecha         DateTime @db.Date
+  createdAt     DateTime @default(now())
+
+  @@unique([monedaOrigen, monedaDestino, fecha])
+  @@index([monedaOrigen, monedaDestino, fecha])
+}
+
+model TransferenciaActivo {
+  id                    String            @id
+  fecha                 DateTime          @db.Date
+  carteraOrigenId       String
+  custodiaDestinoId     String?
+  clienteDestinoId      String
+  activoId              String
+  cantidad              Decimal           @db.Decimal(18, 6)
+  precioEnTransferencia Decimal           @db.Decimal(18, 6)
+  tipo                  TipoTransferencia
+  userId                String
+  notas                 String?
+  createdAt             DateTime          @default(now())
+  Activo                Activo            @relation(fields: [activoId], references: [id])
+  Cartera               Cartera           @relation(fields: [carteraOrigenId], references: [id])
+  CustodiaCliente       CustodiaCliente?  @relation(fields: [custodiaDestinoId], references: [id])
+  User                  User              @relation(fields: [userId], references: [id])
+
+  @@index([activoId])
+  @@index([carteraOrigenId])
+  @@index([clienteDestinoId])
+  @@index([fecha])
+  @@index([userId])
+}
+
+model User {
+  id                  String                @id
+  email               String                @unique
+  name                String
+  passwordHash        String
+  role                UserRole              @default(SOCIO)
+  activo              Boolean               @default(true)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime
+  AuditLog            AuditLog[]
+  Backup              Backup[]
+  Session             Session[]
+  TransferenciaActivo TransferenciaActivo[]
+  UserPermiso           UserPermiso[]
+  OpBolsaCarga          OperacionBolsa[]    @relation("OpBolsaCarga")
+  OpBolsaCierre         OperacionBolsa[]    @relation("OpBolsaCierre")
+  OperacionBolsaLog     OperacionBolsaLog[]
+
+  @@index([email])
+}
+
+model UserPermiso {
+  id              String    @id
+  userId          String
+  permisoId       String
+  concedido       Boolean   @default(true)
+  temporal        Boolean   @default(false)
+  fechaExpiracion DateTime?
+  notas           String?
+  createdAt       DateTime  @default(now())
+  Permiso         Permiso   @relation(fields: [permisoId], references: [id], onDelete: Cascade)
+  User            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permisoId])
+  @@index([userId])
+}
+
+enum CategoriaActivo {
+  BONO_ARS
+  BONO_USD
+  ON_USD
+  ACCION_USD
+  ACCION_USD_EXT
+  CEDEAR
+  CRIPTO
+  FCI
+}
+
+enum CategoriaHoldingInversion {
+  BONO
+  ON
+  ACCION
+  CEDEAR
+  FCI
+  CAUCION
+}
+
+enum CategoriaRecordatorio {
+  ALQUILER
+  EXPENSAS
+  SUELDO
+  IMPUESTO
+  SERVICIO
+  OTRO
+}
+
+enum ClienteRol {
+  CLIENTE
+  SOCIO
+}
+
+enum EstadoPF {
+  ACTIVO
+  VENCIDO
+  CANCELADO
+  RENOVADO
+}
+
+enum Moneda {
+  USD
+  ARS
+  EUR
+  BRL
+}
+
+enum ProductorInversion {
+  IPS
+  BYG
+  OTRO
+}
+
+enum TipoCartera {
+  COMPLETA
+  CRIPTO
+}
+
+enum TipoInversionInmobiliaria {
+  INGRESO
+  EGRESO
+  RENTA
+  MEJORA
+  IMPUESTO
+}
+
+enum TipoMovCC {
+  INGRESO
+  EGRESO
+  INTERES
+  AJUSTE
+}
+
+enum TipoMovCaja {
+  ENTRADA
+  SALIDA
+  TRANSFERENCIA_IN
+  TRANSFERENCIA_OUT
+}
+
+enum TipoOperacionCambio {
+  COMPRA_USD
+  VENTA_USD
+  COMPRA_EUR
+  VENTA_EUR
+  COMPRA_BRL
+  VENTA_BRL
+  HONORARIO_CLIENTE
+  HONORARIO_EXTERNO
+  GASTO_OPERATIVO
+  COMISION
+  AJUSTE
+  OTRO
+}
+
+enum TipoOperacionHolding {
+  COMPRA
+  VENTA
+  AJUSTE
+}
+
+enum TipoOperacionLP {
+  COMPRA
+  VENTA
+  CUPON
+  COMISION
+  RENTA
+  AMORTIZACION
+}
+
+enum TipoSnapshot {
+  CIERRE
+  MANUAL
+  AUTO
+}
+
+enum TipoTransferencia {
+  FIRMA_A_CLIENTE
+  CLIENTE_A_FIRMA
+}
+
+enum UserRole {
+  ADMIN
+  SOCIO
+  EMPLEADO
+  CLIENTE
+}
+
+model OperacionBolsa {
+  id                 String               @id
+  clienteId          String?
+  carteraId          String?
+  comitenteId        String?
+  tipoOperacion      TipoOpBolsa
+  ticker             String
+  cantidad           Decimal              @db.Decimal(18, 6)
+  precio             Decimal              @db.Decimal(18, 6)
+  moneda             Moneda
+  mercado            MercadoBolsa
+  cuentaInversionId  String?
+  estado             EstadoOpBolsa        @default(PENDIENTE_CONCERTACION)
+  operadorCargaId    String
+  operadorCierreId   String?
+  fechaOperativa     DateTime?            @db.Date
+  fechaCarga         DateTime             @default(now())
+  fechaConcertacion  DateTime?            @db.Date
+  fechaLiquidacion   DateTime?            @db.Date
+  observaciones      String?
+  nroBoleto          String?
+  alyc               String?
+  comisionPct        Decimal?             @db.Decimal(8, 4)
+  comisionFija       Decimal?             @db.Decimal(18, 2)
+  derechosMercado    Decimal?             @db.Decimal(18, 2)
+  gastos             Decimal?             @db.Decimal(18, 2)
+  impuestos          Decimal?             @db.Decimal(18, 2)
+  tcMepDia           Decimal?             @db.Decimal(12, 4)
+  comisionUSD        Decimal?             @db.Decimal(18, 2)
+  senebiBruto        Decimal?             @db.Decimal(18, 2)
+  esSenebi           Boolean              @default(false)
+  diasCaucion        Int?
+  tasaCaucion        Decimal?             @db.Decimal(8, 4)
+  costoReal          Decimal?             @db.Decimal(18, 2)
+  precioPromedioReal Decimal?             @db.Decimal(18, 6)
+  netoLiquidado      Decimal?             @db.Decimal(18, 2)
+  resultadoBruto     Decimal?             @db.Decimal(18, 2)
+  resultadoNeto      Decimal?             @db.Decimal(18, 2)
+  anulada            Boolean              @default(false)
+  motivoAnulacion    String?
+  notas              String?
+  grupoArbitrajeId   String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime
+  Cliente            Cliente?             @relation(fields: [clienteId],         references: [id])
+  Cartera            Cartera?             @relation(fields: [carteraId],         references: [id])
+  ComitenteInversion ComitenteInversion?  @relation(fields: [comitenteId],       references: [id])
+  CuentaInversion    CuentaInversion?     @relation(fields: [cuentaInversionId], references: [id])
+  OperadorCarga      User                 @relation("OpBolsaCarga",  fields: [operadorCargaId],  references: [id])
+  OperadorCierre     User?                @relation("OpBolsaCierre", fields: [operadorCierreId], references: [id])
+  OperacionBolsaLog  OperacionBolsaLog[]
+
+  @@index([clienteId])
+  @@index([carteraId])
+  @@index([cuentaInversionId])
+  @@index([estado])
+  @@index([fechaCarga])
+  @@index([fechaOperativa])
+  @@index([fechaConcertacion])
+  @@index([ticker])
+  @@index([tipoOperacion])
+  @@index([grupoArbitrajeId])
+}
+
+model OperacionBolsaLog {
+  id             String          @id
+  operacionId    String
+  userId         String?
+  accion         String
+  estadoAnterior EstadoOpBolsa?
+  estadoNuevo    EstadoOpBolsa
+  snapshot       Json?
+  createdAt      DateTime        @default(now())
+  Operacion      OperacionBolsa  @relation(fields: [operacionId], references: [id])
+  User           User?           @relation(fields: [userId],      references: [id])
+
+  @@index([operacionId])
+  @@index([createdAt])
+}
+
+enum TipoOpBolsa {
+  COMPRA_BONO
+  VENTA_BONO
+  COMPRA_ACCION
+  VENTA_ACCION
+  COMPRA_CEDEAR
+  VENTA_CEDEAR
+  CAUCION_COLOCADORA
+  CAUCION_TOMADORA
+  FUTURO
+  OPCION_CALL
+  OPCION_PUT
+  MEP
+  SENEBI
+}
+
+enum EstadoOpBolsa {
+  PENDIENTE_CONCERTACION
+  CONCERTADA
+  LIQUIDADA
+  ANULADA
+}
+
+enum MercadoBolsa {
+  BYMA
+  MAE
+  SENEBI_OTC
+  MATBA_ROFEX
+  OTC
+}

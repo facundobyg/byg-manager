@@ -1,0 +1,82 @@
+{
+  "node": {
+    "0011ff4319847fa321c161740d2e30453828714a2e": {
+      "workers": {
+        "app/(dashboard)/operativa/[slug]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/operativa/[slug]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/operativa/mov-diarios/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/operativa/[slug]/page": "rsc"
+      }
+    },
+    "60a722b68d590728b40a99841cf74ddab5a8da6bd8": {
+      "workers": {
+        "app/(dashboard)/operativa/[slug]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/operativa/[slug]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/operativa/mov-diarios/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/operativa/[slug]/page": "action-browser"
+      }
+    },
+    "6056ae46c86a4afa3a20b72b300a272330221b3a0e": {
+      "workers": {
+        "app/(dashboard)/operativa/[slug]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/operativa/[slug]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/operativa/mov-diarios/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/operativa/[slug]/page": "action-browser"
+      }
+    },
+    "603405245415f7e0e768454297390a51f8125a39a9": {
+      "workers": {
+        "app/(dashboard)/operativa/[slug]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/operativa/[slug]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/operativa/mov-diarios/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/operativa/[slug]/page": "action-browser"
+      }
+    },
+    "6099147828385782b133ccd0b52a0b9a813bdef4ec": {
+      "workers": {
+        "app/(dashboard)/operativa/[slug]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/operativa/[slug]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/operativa/mov-diarios/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/operativa/[slug]/page": "action-browser"
+      }
+    },
+    "60fcafe35ff1dcb55bcab4baa908f51363b1e3fa5b": {
+      "workers": {
+        "app/(dashboard)/operativa/[slug]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/operativa/[slug]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/operativa/mov-diarios/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/operativa/[slug]/page": "action-browser"
+      }
+    },
+    "600cba79616f461cd8dc6b66bbceddea6fdc568b41": {
+      "workers": {
+        "app/(dashboard)/operativa/[slug]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/operativa/[slug]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/operativa/mov-diarios/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/operativa/[slug]/page": "action-browser"
+      }
+    }
+  },
+  "edge": {}
+}

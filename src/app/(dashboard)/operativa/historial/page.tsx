@@ -1,0 +1,12 @@
+export default function HistorialPage() {
+  return (
+    <div className="flex flex-col gap-4">
+      <header>
+        <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.3em]">Operativa</p>
+        <h1 className="text-4xl font-black text-slate-900 tracking-tight">Historial</h1>
+        <p className="text-sm text-slate-400 font-medium mt-1">Meses archivados</p>
+      </header>
+      <p className="text-sm text-slate-400 italic">Próximamente</p>
+    </div>
+  );
+}

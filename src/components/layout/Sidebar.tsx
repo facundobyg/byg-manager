@@ -1,0 +1,344 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { useState, useEffect } from "react";
+import {
+  LayoutDashboard,
+  TrendingUp,
+  ArrowLeftRight,
+  RefreshCw,
+  Coins,
+  Timer,
+  History,
+  Users,
+  CalendarClock,
+  Building2,
+  Briefcase,
+  Settings,
+  Database,
+  ChevronDown,
+  Landmark,
+  BarChart3,
+  Clock,
+  ClipboardList,
+  KeyRound,
+  CandlestickChart,
+  Tag,
+} from "lucide-react";
+
+type NavItem = { label: string; href: string; icon: React.ElementType };
+type NavGroup = { group: string; items: NavItem[] };
+
+const NAV_STATIC: NavGroup[] = [
+  {
+    group: "General",
+    items: [
+      { label: "Posición", href: "/posicion", icon: LayoutDashboard },
+      { label: "Análisis", href: "/analisis", icon: TrendingUp },
+      { label: "Reportes", href: "/reportes", icon: BarChart3 },
+    ],
+  },
+  {
+    group: "Operativa",
+    items: [
+      { label: "Op. Bolsa",    href: "/bolsa",                  icon: CandlestickChart },
+      { label: "Caja Oficina", href: "/operativa/mov-diarios",  icon: ArrowLeftRight },
+      { label: "Caja Trenque", href: "/operativa/nanu_trenque",      icon: ArrowLeftRight },
+      { label: "Rulos Bolsa",  href: "/operativa/rulos-bolsa",  icon: RefreshCw },
+      { label: "Div. e Intereses", href: "/operativa/div-intereses", icon: Coins },
+      { label: "Largo Plazo",  href: "/operativa/largo-plazo",  icon: Timer },
+      { label: "Historial",    href: "/historial",               icon: History },
+    ],
+  },
+  {
+    group: "Clientes",
+    items: [
+      { label: "Clientes CC", href: "/clientes/cc", icon: Users },
+      { label: "Vencimientos PF", href: "/clientes/vencimientos-pf", icon: CalendarClock },
+    ],
+  },
+];
+
+const NAV_SISTEMA: NavGroup[] = [
+  {
+    group: "Sistema",
+    items: [
+      { label: "Pendientes",    href: "/pendientes",    icon: Clock         },
+      { label: "Precios",       href: "/precios",       icon: Tag           },
+      { label: "Auditoría",     href: "/auditoria",     icon: ClipboardList },
+      { label: "Permisos",      href: "/permisos",      icon: KeyRound      },
+      { label: "Backup",        href: "/backup",        icon: Database      },
+      { label: "Configuración", href: "/configuracion", icon: Settings      },
+    ],
+  },
+];
+
+type CarteraLink = { nombre: string; slug: string };
+type CuentaInversionLink = { id: string; nombre: string };
+
+// Maps each sidebar href to the permission key required to view it
+const NAV_ITEM_PERMISSIONS: Record<string, string> = {
+  "/posicion":                  "posicion:leer",
+  "/analisis":                  "analisis:leer",
+  "/reportes":                  "patrimonio:leer",
+  "/bolsa":                     "operaciones_rulo:leer",
+  "/operativa/mov-diarios":     "mov_diarios:leer",
+  "/operativa/nanu_trenque":    "mov_diarios:leer",
+  "/operativa/rulos-bolsa":     "rulos:leer",
+  "/operativa/div-intereses":   "div_intereses:leer",
+  "/operativa/largo-plazo":     "largo_plazo:leer",
+  "/historial":                 "historial:leer",
+  "/clientes/cc":               "clientes:leer",
+  "/clientes/vencimientos-pf":  "plazos_fijos:leer",
+  "/pendientes":                "recordatorios:leer",
+  "/precios":                   "activos:leer",
+  "/auditoria":                 "auditoria:leer",
+  "/permisos":                  "usuarios:leer",
+  "/backup":                    "backups:leer",
+  "/configuracion":             "configuracion:leer",
+};
+
+type SidebarProps = {
+  carteras: CarteraLink[];
+  cuentasInversion: CuentaInversionLink[];
+  allowedPermissions: string[] | null;
+};
+
+const ALL_SECTIONS = ["General", "Operativa", "Clientes", "Carteras", "Cuentas de Inversión", "Sistema"] as const;
+type SectionKey = typeof ALL_SECTIONS[number];
+
+function getActiveSection(pathname: string | null): SectionKey {
+  if (!pathname) return "General";
+  if (pathname.startsWith("/cuentas-inversion"))                              return "Cuentas de Inversión";
+  if (pathname.startsWith("/carteras"))                                       return "Carteras";
+  if (pathname.startsWith("/clientes"))                                       return "Clientes";
+  if (
+    pathname.startsWith("/operativa") ||
+    pathname.startsWith("/caja")      ||
+    pathname.startsWith("/operaciones") ||
+    pathname.startsWith("/bolsa")     ||
+    pathname === "/historial"
+  )                                                                           return "Operativa";
+  if (pathname.startsWith("/reportes"))                                       return "General";
+  if (
+    pathname.startsWith("/backup")        ||
+    pathname.startsWith("/auditoria")     ||
+    pathname.startsWith("/permisos")      ||
+    pathname.startsWith("/pendientes")    ||
+    pathname.startsWith("/precios")       ||
+    pathname.startsWith("/configuracion") ||
+    pathname.startsWith("/estado")        ||
+    pathname.startsWith("/deploy")
+  )                                                                           return "Sistema";
+  return "General";
+}
+
+function buildOpen(active: SectionKey): Record<SectionKey, boolean> {
+  return Object.fromEntries(ALL_SECTIONS.map((s) => [s, s === active])) as Record<SectionKey, boolean>;
+}
+
+export function Sidebar({ carteras, cuentasInversion, allowedPermissions }: SidebarProps) {
+  const permSet = allowedPermissions !== null ? new Set(allowedPermissions) : null;
+
+  function canSee(href: string): boolean {
+    if (permSet === null) return true;
+    const perm = NAV_ITEM_PERMISSIONS[href];
+    if (!perm) return true;
+    return permSet.has(perm);
+  }
+
+  const canSeeCarteras = permSet === null || permSet.has("carteras:leer");
+  const canSeeCuentas  = permSet === null || permSet.has("banco_industrial:leer");
+
+  const [mounted, setMounted] = useState(false);
+  const pathname = usePathname();
+  const [open, setOpen] = useState<Record<SectionKey, boolean>>(() => 
+    buildOpen(getActiveSection(mounted ? pathname : null))
+  );
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (mounted) {
+      setOpen(buildOpen(getActiveSection(pathname)));
+    }
+  }, [pathname, mounted]);
+
+  if (!mounted) {
+    return (
+      <aside className="fixed left-0 top-0 h-screen w-64 bg-byg-sidebar border-r border-byg-border" />
+    );
+  }
+
+  const toggle = (key: SectionKey) => {
+    setOpen((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  return (
+    <aside className="fixed left-0 top-0 flex h-screen w-64 flex-col bg-byg-sidebar border-r border-byg-border text-byg-text">
+      <Link
+        href="/posicion"
+        className="flex h-20 items-center justify-center border-b border-byg-border shrink-0 px-4 hover:bg-[var(--byg-nav-hover)] transition-colors"
+      >
+        <img src="/brand/bg-logo-light.png" alt="BG Advisors" className="w-[170px] max-w-[170px] h-auto object-contain dark:hidden" />
+        <img src="/brand/bg-logo-dark.png"  alt="BG Advisors" className="w-[185px] max-w-[185px] h-auto object-contain hidden dark:block" />
+      </Link>
+
+      <nav className="flex flex-1 flex-col overflow-y-auto px-3 py-4 gap-5">
+        {NAV_STATIC
+          .map((s) => ({ ...s, items: s.items.filter((item) => canSee(item.href)) }))
+          .filter((s) => s.items.length > 0)
+          .map((section) => (
+            <NavSection
+              key={section.group}
+              section={section}
+              pathname={pathname}
+              isOpen={open[section.group as SectionKey]}
+              onToggle={() => toggle(section.group as SectionKey)}
+            />
+          ))}
+
+        {/* Dynamic Carteras group */}
+        {canSeeCarteras && (
+          <div>
+            <SectionHeader label="Carteras" isOpen={open.Carteras} onToggle={() => toggle("Carteras")} />
+            {open.Carteras && (
+              <div className="flex flex-col gap-0.5">
+                {carteras.map((c) => {
+                  const href   = `/carteras/${c.slug}`;
+                  const active = pathname === href || pathname.startsWith(href + "/");
+                  return (
+                    <Link
+                      key={c.slug}
+                      href={href}
+                      className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
+                        active ? "bg-blue-600 text-white shadow-md shadow-blue-600/20" : "text-byg-muted hover:bg-[var(--byg-nav-hover)] hover:text-byg-text"
+                      }`}
+                    >
+                      <Briefcase size={16} />
+                      {c.nombre}
+                    </Link>
+                  );
+                })}
+                {(() => {
+                  const href   = "/carteras/inmobiliarias";
+                  const active = pathname === href || pathname.startsWith(href + "/");
+                  return (
+                    <Link
+                      href={href}
+                      className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
+                        active ? "bg-blue-600 text-white shadow-md shadow-blue-600/20" : "text-byg-muted hover:bg-[var(--byg-nav-hover)] hover:text-byg-text"
+                      }`}
+                    >
+                      <Building2 size={16} />
+                      Inmobiliarias
+                    </Link>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Cuentas de Inversión — dynamic from DB */}
+        {canSeeCuentas && (
+          <div>
+            <SectionHeader label="Cuentas de Inversión" isOpen={open["Cuentas de Inversión"]} onToggle={() => toggle("Cuentas de Inversión")} />
+            {open["Cuentas de Inversión"] && (
+              <div className="flex flex-col gap-0.5">
+                {cuentasInversion.map((c) => {
+                  const href   = `/cuentas-inversion/${c.id}`;
+                  const active = pathname === href || pathname.startsWith(href + "/");
+                  return (
+                    <Link
+                      key={c.id}
+                      href={href}
+                      className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
+                        active ? "bg-blue-600 text-white shadow-md shadow-blue-600/20" : "text-byg-muted hover:bg-[var(--byg-nav-hover)] hover:text-byg-text"
+                      }`}
+                    >
+                      <Landmark size={16} />
+                      {c.nombre}
+                    </Link>
+                  );
+                })}
+                {cuentasInversion.length === 0 && (
+                  <p className="px-3 py-2 text-xs text-byg-muted italic">Sin cuentas activas</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {NAV_SISTEMA
+          .map((s) => ({ ...s, items: s.items.filter((item) => canSee(item.href)) }))
+          .filter((s) => s.items.length > 0)
+          .map((section) => (
+            <NavSection
+              key={section.group}
+              section={section}
+              pathname={pathname}
+              isOpen={open[section.group as SectionKey]}
+              onToggle={() => toggle(section.group as SectionKey)}
+            />
+          ))}
+      </nav>
+
+      <div className="border-t border-byg-border p-4 text-center text-xs text-byg-muted shrink-0">
+        v2.0
+      </div>
+    </aside>
+  );
+}
+
+function SectionHeader({ label, isOpen, onToggle }: { label: string; isOpen: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      className="w-full flex items-center justify-between px-3 py-2 mb-0.5 rounded-lg hover:bg-[var(--byg-nav-hover)] cursor-pointer group transition-colors"
+    >
+      <span className="text-xs font-extrabold uppercase tracking-[0.12em] text-byg-muted group-hover:text-byg-text transition-colors">
+        {label}
+      </span>
+      <ChevronDown
+        size={14}
+        className={`text-byg-muted group-hover:text-byg-text transition-all ${isOpen ? "" : "-rotate-90"}`}
+      />
+    </button>
+  );
+}
+
+function NavSection({
+  section, pathname, isOpen, onToggle,
+}: {
+  section: NavGroup; pathname: string; isOpen: boolean; onToggle: () => void;
+}) {
+  return (
+    <div>
+      <SectionHeader label={section.group} isOpen={isOpen} onToggle={onToggle} />
+      {isOpen && (
+        <div className="flex flex-col gap-0.5">
+          {section.items.map((item) => {
+            const Icon   = item.icon;
+            const active = pathname === item.href || pathname.startsWith(item.href + "/");
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
+                  active ? "bg-blue-600 text-white shadow-md shadow-blue-600/20" : "text-byg-muted hover:bg-[var(--byg-nav-hover)] hover:text-byg-text"
+                }`}
+              >
+                <Icon size={16} />
+                {item.label}
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}

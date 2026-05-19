@@ -1,0 +1,27 @@
+{
+  "node": {
+    "0011ff4319847fa321c161740d2e30453828714a2e": {
+      "workers": {
+        "app/(dashboard)/bolsa/nueva/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/bolsa/nueva/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/bolsa/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        }
+      },
+      "layer": {
+        "app/(dashboard)/bolsa/nueva/page": "rsc"
+      }
+    },
+    "60af330acff09f27046538c72d5de4c2db61ff0417": {
+      "workers": {
+        "app/(dashboard)/bolsa/nueva/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/bolsa/nueva/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/bolsa/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        }
+      },
+      "layer": {
+        "app/(dashboard)/bolsa/nueva/page": "action-browser"
+      }
+    }
+  },
+  "edge": {}
+}

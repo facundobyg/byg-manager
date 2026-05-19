@@ -1,0 +1,3 @@
+{
+  "/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.js"
+}

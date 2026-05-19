@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+/* Enable class-based dark mode: .dark on <html> activates dark: utilities */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Map Tailwind color utilities to runtime CSS variables */
+@theme inline {
+  --color-byg-bg:        var(--byg-bg);
+  --color-byg-surface:   var(--byg-surface);
+  --color-byg-surface-2: var(--byg-surface-2);
+  --color-byg-border:    var(--byg-border);
+  --color-byg-border-2:  var(--byg-border-2);
+  --color-byg-text:      var(--byg-text);
+  --color-byg-muted:     var(--byg-muted);
+  --color-byg-accent:    #3B82F6;
+  --color-byg-sidebar:   var(--byg-sidebar);
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+}
+
+/* Light mode (default) */
+:root {
+  --byg-bg:        #eef2f6;
+  --byg-surface:   #ffffff;
+  --byg-surface-2: #f0f5f8;
+  --byg-border:    #c8d8e4;
+  --byg-border-2:  #a8c2d0;
+  --byg-text:      #06131a;
+  --byg-muted:     #64748b;
+  --byg-sidebar:   #d4e3ee;
+  --byg-nav-hover: rgba(0, 0, 0, 0.06);
+}
+
+/* Dark mode */
+.dark {
+  --byg-bg:        #051d24;
+  --byg-surface:   #0a2d37;
+  --byg-surface-2: #082832;
+  --byg-border:    #133d48;
+  --byg-border-2:  #1a4f5e;
+  --byg-text:      #f8fbfc;
+  --byg-muted:     #7fa6b4;
+  --byg-sidebar:   #0a2d37;
+  --byg-nav-hover: #082832;
+}
+
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--byg-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--byg-border-2); }

@@ -1,0 +1,232 @@
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+import { Decimal } from "@prisma/client/runtime/library";
+import { CategoriaHoldingInversion } from "@prisma/client";
+
+type ActionResult = { error?: string; success?: boolean };
+
+const CATEGORIAS: CategoriaHoldingInversion[] = ["BONO", "ON", "ACCION", "CEDEAR", "FCI", "CAUCION"];
+
+function dec(raw: FormDataEntryValue | null, fallback = "0"): Decimal {
+  try { return new Decimal(raw?.toString().trim() || fallback); } catch { return new Decimal(fallback); }
+}
+
+function revalidate(cuentaId: string, comitenteId: string) {
+  revalidatePath("/cuentas-inversion");
+  revalidatePath(`/cuentas-inversion/${cuentaId}`);
+  revalidatePath(`/cuentas-inversion/${cuentaId}/comitentes/${comitenteId}`);
+}
+
+// ── Comprar ───────────────────────────────────────────────────────────────────
+
+export async function comprarHolding(
+  _: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const comitenteId  = formData.get("comitenteId")?.toString().trim();
+  const cuentaId     = formData.get("cuentaInversionId")?.toString().trim();
+  const ticker       = formData.get("ticker")?.toString().trim().toUpperCase();
+  const descripcion  = formData.get("descripcion")?.toString().trim() || null;
+  const categoriaRaw = formData.get("categoria")?.toString() as CategoriaHoldingInversion;
+  const notas        = formData.get("notas")?.toString().trim() || null;
+
+  if (!comitenteId || !cuentaId || !ticker) return { error: "Ticker requerido" };
+  if (!CATEGORIAS.includes(categoriaRaw)) return { error: "Categoría inválida" };
+
+  const cantidad    = dec(formData.get("cantidad"));
+  const precio      = dec(formData.get("precio"));
+  const fechaRaw    = formData.get("fechaCompra")?.toString().trim();
+  const fechaCompra = fechaRaw ? new Date(fechaRaw) : null;
+
+  if (cantidad.lte(0)) return { error: "La cantidad debe ser mayor a cero" };
+  if (precio.lte(0))   return { error: "El precio debe ser mayor a cero" };
+
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.holdingComitenteInversion.findUnique({
+      where: { comitenteId_ticker: { comitenteId, ticker } },
+    });
+
+    const efectiveCategoria = existing?.categoria ?? categoriaRaw;
+    let holdingId: string;
+
+    if (existing) {
+      const totalQty = existing.cantidad.add(cantidad);
+      const newPP    = existing.cantidad.mul(existing.precioPromedio).add(cantidad.mul(precio)).div(totalQty);
+      const updated  = await tx.holdingComitenteInversion.update({
+        where: { id: existing.id },
+        data: {
+          cantidad:       totalQty,
+          precioPromedio: newPP,
+          ...(descripcion ? { descripcion } : {}),
+          ...(fechaCompra ? { fechaCompra } : {}),
+        },
+      });
+      holdingId = updated.id;
+    } else {
+      const created = await tx.holdingComitenteInversion.create({
+        data: { id: crypto.randomUUID(), comitenteId, ticker, descripcion, categoria: categoriaRaw, cantidad, precioPromedio: precio, fechaCompra, updatedAt: new Date() },
+      });
+      holdingId = created.id;
+    }
+
+    await tx.operacionHoldingInversion.create({
+      data: {
+        id: crypto.randomUUID(),
+        comitenteId, holdingId, tipo: "COMPRA",
+        ticker, categoria: efectiveCategoria,
+        cantidad, precio, fecha: fechaCompra ?? new Date(), notas,
+      },
+    });
+  });
+
+  revalidate(cuentaId, comitenteId);
+  return { success: true };
+}
+
+// ── Vender ────────────────────────────────────────────────────────────────────
+
+export async function venderHolding(
+  _: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const holdingId   = formData.get("holdingId")?.toString().trim();
+  const comitenteId = formData.get("comitenteId")?.toString().trim();
+  const cuentaId    = formData.get("cuentaInversionId")?.toString().trim();
+
+  if (!holdingId || !comitenteId || !cuentaId) return { error: "Datos requeridos incompletos" };
+
+  const cantidad = dec(formData.get("cantidad"));
+  const precio   = dec(formData.get("precio"));
+  const notas    = formData.get("notas")?.toString().trim() || null;
+  const fechaRaw = formData.get("fecha")?.toString().trim();
+  const fecha    = fechaRaw ? new Date(fechaRaw) : new Date();
+
+  if (cantidad.lte(0)) return { error: "La cantidad debe ser mayor a cero" };
+  if (precio.lte(0))   return { error: "El precio debe ser mayor a cero" };
+
+  const holding = await prisma.holdingComitenteInversion.findUnique({ where: { id: holdingId } });
+  if (!holding) return { error: "Holding no encontrado" };
+  if (cantidad.gt(holding.cantidad))
+    return { error: `Cantidad insuficiente. Disponible: ${holding.cantidad.toFixed(6)}` };
+
+  await prisma.$transaction(async (tx) => {
+    await tx.operacionHoldingInversion.create({
+      data: {
+        id: crypto.randomUUID(),
+        comitenteId, holdingId, tipo: "VENTA",
+        ticker: holding.ticker, categoria: holding.categoria,
+        cantidad, precio,
+        precioPromedio: holding.precioPromedio,
+        fecha, notas,
+      },
+    });
+
+    const newQty = holding.cantidad.sub(cantidad);
+    if (newQty.eq(0)) {
+      await tx.holdingComitenteInversion.delete({ where: { id: holdingId } });
+    } else {
+      await tx.holdingComitenteInversion.update({ where: { id: holdingId }, data: { cantidad: newQty } });
+    }
+  });
+
+  revalidate(cuentaId, comitenteId);
+  return { success: true };
+}
+
+// ── Editar ────────────────────────────────────────────────────────────────────
+
+export async function editHolding(
+  _: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const holdingId   = formData.get("holdingId")?.toString().trim();
+  const comitenteId = formData.get("comitenteId")?.toString().trim();
+  const cuentaId    = formData.get("cuentaInversionId")?.toString().trim();
+
+  if (!holdingId || !comitenteId || !cuentaId) return { error: "Datos requeridos incompletos" };
+
+  const ticker       = formData.get("ticker")?.toString().trim().toUpperCase();
+  const descripcion  = formData.get("descripcion")?.toString().trim() || null;
+  const categoriaRaw = formData.get("categoria")?.toString() as CategoriaHoldingInversion;
+
+  if (!ticker) return { error: "Ticker requerido" };
+  if (!CATEGORIAS.includes(categoriaRaw)) return { error: "Categoría inválida" };
+
+  const cantidad       = dec(formData.get("cantidad"));
+  const precioPromedio = dec(formData.get("precioPromedio"));
+  const paRaw          = formData.get("precioActual")?.toString().trim();
+  const precioActual   = paRaw ? new Decimal(paRaw) : null;
+  const fechaRaw       = formData.get("fechaCompra")?.toString().trim();
+  const fechaCompra    = fechaRaw ? new Date(fechaRaw) : null;
+
+  if (cantidad.lte(0)) return { error: "La cantidad debe ser mayor a cero" };
+
+  const dup = await prisma.holdingComitenteInversion.findFirst({
+    where: { comitenteId, ticker, id: { not: holdingId } },
+  });
+  if (dup) return { error: `Ya existe un holding con ticker ${ticker} para este comitente` };
+
+  await prisma.holdingComitenteInversion.update({
+    where: { id: holdingId },
+    data: { ticker, descripcion, categoria: categoriaRaw, cantidad, precioPromedio, precioActual, fechaCompra },
+  });
+
+  revalidate(cuentaId, comitenteId);
+  return { success: true };
+}
+
+// ── Actualizar precio por ticker (toda la cuenta) ────────────────────────────
+
+export async function updatePreciosByTicker(
+  _: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const cuentaId = formData.get("cuentaId")?.toString().trim();
+  const ticker   = formData.get("ticker")?.toString().trim().toUpperCase();
+  const paRaw    = formData.get("precioActual")?.toString().trim();
+
+  if (!cuentaId || !ticker) return { error: "Datos requeridos" };
+  if (!paRaw) return { error: "Precio requerido" };
+
+  let precioActual: Decimal;
+  try {
+    precioActual = new Decimal(paRaw);
+    if (precioActual.lt(0)) return { error: "El precio no puede ser negativo" };
+  } catch {
+    return { error: "Precio inválido" };
+  }
+
+  const comitentes = await prisma.comitenteInversion.findMany({
+    where: { cuentaInversionId: cuentaId },
+    select: { id: true },
+  });
+  const ids = comitentes.map((c) => c.id);
+
+  await prisma.holdingComitenteInversion.updateMany({
+    where: { comitenteId: { in: ids }, ticker },
+    data: { precioActual },
+  });
+
+  revalidatePath("/cuentas-inversion", "layout");
+  return { success: true };
+}
+
+// ── Eliminar ──────────────────────────────────────────────────────────────────
+
+export async function deleteHolding(
+  _: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  const holdingId   = formData.get("holdingId")?.toString().trim();
+  const comitenteId = formData.get("comitenteId")?.toString().trim();
+  const cuentaId    = formData.get("cuentaInversionId")?.toString().trim();
+
+  if (!holdingId || !comitenteId || !cuentaId) return { error: "ID requerido" };
+
+  await prisma.holdingComitenteInversion.delete({ where: { id: holdingId } });
+
+  revalidate(cuentaId, comitenteId);
+  return { success: true };
+}
