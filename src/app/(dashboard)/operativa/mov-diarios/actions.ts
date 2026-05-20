@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { Moneda, TipoMovCaja, TipoOperacionCambio } from "@prisma/client";
 import { readOnlyPreview } from "@/lib/config";
-import { requireActionPermission, hasTemporaryPermission } from "@/lib/auth/permissions";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function crearMovimientoDiario(
   _prev: { error?: string; ok?: boolean },
@@ -42,6 +42,8 @@ export async function crearMovimientoDiario(
 
   try {
     if (clasificacion === "TRANSFERENCIA") {
+      const transferenciaPermDenied = await requireActionPermission("caja:transferir");
+      if (transferenciaPermDenied) return transferenciaPermDenied;
       if (!cajaId || !cajaDestinoId) return { error: "Faltan cajas de origen o destino" };
       if (cajaId === cajaDestinoId) return { error: "La caja de origen y destino deben ser diferentes" };
 
@@ -120,10 +122,8 @@ export async function crearOperacionCambio(
   const estado = formData.get("estado")?.toString(); // PENDIENTE | COBRADA
   const impactoCC = formData.get("impactoCC") === "on";
 
-  const opCambioDenied = await requireActionPermission("caja:operar_oficina");
-  if (opCambioDenied) {
-    if (!(await hasTemporaryPermission("caja:operar_oficina"))) return opCambioDenied;
-  }
+  const opCambioDenied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  if (opCambioDenied) return opCambioDenied;
 
   if (!fechaStr || !tipoOp || !moneda || !rawCantidad || !rawTipoCambio || !estado) {
     return { error: "Todos los campos obligatorios deben completarse" };
@@ -300,10 +300,8 @@ export async function editarFechaMovimientoCaja(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const editFechaDenied = await requireActionPermission("caja:editar_movimiento");
-  if (editFechaDenied) {
-    if (!(await hasTemporaryPermission("caja:editar_movimiento"))) return editFechaDenied;
-  }
+  const editFechaDenied = await requireActionPermission("caja:editar_movimiento", { allowTemporary: true });
+  if (editFechaDenied) return editFechaDenied;
 
   const id = formData.get("id")?.toString();
   const fechaStr = formData.get("fecha")?.toString();
@@ -335,10 +333,8 @@ export async function editarMovimientoCajaCompleto(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const editMovDenied = await requireActionPermission("caja:editar_movimiento");
-  if (editMovDenied) {
-    if (!(await hasTemporaryPermission("caja:editar_movimiento"))) return editMovDenied;
-  }
+  const editMovDenied = await requireActionPermission("caja:editar_movimiento", { allowTemporary: true });
+  if (editMovDenied) return editMovDenied;
 
   const id = formData.get("id")?.toString();
   const fechaStr = formData.get("fecha")?.toString();
@@ -446,10 +442,8 @@ export async function cobrarOperacionCambio(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const cobrarDenied = await requireActionPermission("caja:operar_oficina");
-  if (cobrarDenied) {
-    if (!(await hasTemporaryPermission("caja:operar_oficina"))) return cobrarDenied;
-  }
+  const cobrarDenied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  if (cobrarDenied) return cobrarDenied;
 
   const ids = formData.getAll("operacionId").map((v) => v.toString().trim()).filter(Boolean);
   if (ids.length === 0) return { error: "Debe indicar al menos una operación" };

@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { TipoOperacionCambio } from "@prisma/client";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 // ─── Etapa 1: Config + Cajas + PN Historial ───────────────────────────────────
 
@@ -19,6 +20,9 @@ export async function importarEtapa1Legacy(payload: {
   cajas:  unknown;
   pnHist: unknown;
 }): Promise<ImportEtapa1Result> {
+  const authDenied = await requireActionPermission("configuracion:editar");
+  if (authDenied) return { success: false, imported: { config: 0, cajas: 0, pnHist: 0 }, skipped: { config: 0, cajas: 0, pnHist: 0 }, errors: [authDenied.error], log: [] };
+
   const imported = { config: 0, cajas: 0, pnHist: 0 };
   const skipped  = { config: 0, cajas: 0, pnHist: 0 };
   const errors:   string[] = [];
@@ -252,6 +256,9 @@ export interface ImportEtapa2Result {
 export async function importarEtapa2Legacy(payload: {
   clientes: unknown;
 }): Promise<ImportEtapa2Result> {
+  const authDenied = await requireActionPermission("configuracion:editar");
+  if (authDenied) return { success: false, imported: { clientes: 0, cuentas: 0, movsCC: 0, plazosFijos: 0 }, skipped: { clientes: 0, cuentas: 0, movsCC: 0, plazosFijos: 0 }, errors: [authDenied.error], log: [] };
+
   const imported = { clientes: 0, cuentas: 0, movsCC: 0, plazosFijos: 0 };
   const skipped  = { clientes: 0, cuentas: 0, movsCC: 0, plazosFijos: 0 };
   const errors:  string[] = [];
@@ -561,6 +568,9 @@ export async function importarEtapa3Legacy(payload: {
   ops_divint:    unknown;
   ops_largoplazo: unknown;
 }): Promise<ImportEtapa3Result> {
+  const authDenied = await requireActionPermission("configuracion:editar");
+  if (authDenied) return { success: false, imported: { opsCambio: 0, movsCaja: 0, rulos: 0, divint: 0, largoplazo: 0 }, skipped: { opsCambio: 0, movsCaja: 0, rulos: 0, divint: 0, largoplazo: 0 }, errors: [authDenied.error], log: [] };
+
   const imported = { opsCambio: 0, movsCaja: 0, rulos: 0, divint: 0, largoplazo: 0 };
   const skipped  = { opsCambio: 0, movsCaja: 0, rulos: 0, divint: 0, largoplazo: 0 };
   const errors:  string[] = [];
@@ -806,6 +816,9 @@ export async function importarEtapa3Legacy(payload: {
 // ─── Exportar / Analizar ───────────────────────────────────────────────────────
 
 export async function exportarBackup() {
+  const authDenied = await requireActionPermission("configuracion:editar");
+  if (authDenied) return { ok: false as const, error: authDenied.error };
+
   try {
     const [
       config,
@@ -874,6 +887,9 @@ export async function exportarBackup() {
 }
 
 export async function analizarViabilidadBackup(formData: FormData) {
+  const authDenied = await requireActionPermission("configuracion:editar");
+  if (authDenied) return { error: authDenied.error };
+
   const file = formData.get("backup") as File;
   if (!file) return { error: "No se subió ningún archivo." };
 

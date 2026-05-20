@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 23, "column": 0}, "map": {"version":3,"sources":["turbopack:///[project]/src/auth.config.ts"],"sourcesContent":["import type { NextAuthConfig } from 'next-auth';\n \nexport const authConfig = {\n  pages: {\n    signIn: '/login', \n  },\n  callbacks: {\n    authorized({ auth, request: { nextUrl } }) {\n      const isLoggedIn = !!auth?.user;\n      const isOnLogin = nextUrl.pathname.startsWith('/login');\n      \n      if (isOnLogin) {\n        if (isLoggedIn) return Response.redirect(new URL('/', nextUrl));\n        return true;\n      }\n      \n      return isLoggedIn; \n    },\n  },\n  providers: [], \n} satisfies NextAuthConfig;\n"],"names":[],"mappings":";;;AAEO,MAAM,aAAa;IACxB,OAAO;QACL,QAAQ;IACV;IACA,WAAW;QACT,YAAW,EAAE,IAAI,EAAE,SAAS,EAAE,OAAO,EAAE,EAAE;YACvC,MAAM,aAAa,CAAC,CAAC,MAAM;YAC3B,MAAM,YAAY,QAAQ,QAAQ,CAAC,UAAU,CAAC;YAE9C,IAAI,WAAW;gBACb,IAAI,YAAY,OAAO,SAAS,QAAQ,CAAC,IAAI,IAAI,KAAK;gBACtD,OAAO;YACT;YAEA,OAAO;QACT;IACF;IACA,WAAW,EAAE;AACf"}},
-    {"offset": {"line": 49, "column": 0}, "map": {"version":3,"sources":["turbopack:///[project]/src/middleware.ts"],"sourcesContent":["import NextAuth from 'next-auth';\nimport { authConfig } from '@/auth.config';\n \nexport default NextAuth(authConfig).auth;\n \nexport const config = {\n  matcher: ['/((?!api|_next/static|_next/image|.*\\\\.png$).*)'],\n};\n"],"names":[],"mappings":";;;;AAAA;AAAA;AACA;;;uCAEe,CAAA,GAAA,6JAAA,CAAA,UAAQ,AAAD,EAAE,6HAAA,CAAA,aAAU,EAAE,IAAI;AAEjC,MAAM,SAAS;IACpB,SAAS;QAAC;KAAkD;AAC9D"}}]
-}

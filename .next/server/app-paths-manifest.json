@@ -1,9 +1,0 @@
-{
-  "/(dashboard)/bolsa/[id]/page": "app/(dashboard)/bolsa/[id]/page.js",
-  "/(dashboard)/bolsa/page": "app/(dashboard)/bolsa/page.js",
-  "/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.js",
-  "/(dashboard)/cuentas-inversion/[id]/page": "app/(dashboard)/cuentas-inversion/[id]/page.js",
-  "/(dashboard)/page": "app/(dashboard)/page.js",
-  "/(dashboard)/posicion/page": "app/(dashboard)/posicion/page.js",
-  "/_not-found/page": "app/_not-found/page.js"
-}

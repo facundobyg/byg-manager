@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { calcularSaldoCaja } from "@/lib/services/caja.service";
 import { readOnlyPreview } from "@/lib/config";
-import { requireActionPermission, hasTemporaryPermission } from "@/lib/auth/permissions";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -15,14 +15,14 @@ export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   const montoRaw = formData.get("monto") as string;
   const moneda = formData.get("moneda") as string;
   const descripcion = formData.get("descripcion") as string;
-  const slug = formData.get("slug") as string;
+  const slug = formData.get("slug") as string; // kept for revalidatePath only — not used for auth
 
-  const isTrenqueCreate = slug?.includes("trenque") ?? false;
-  const createCajaPermKey = isTrenqueCreate ? "caja:operar_trenque" : "caja:operar_oficina";
-  const createMovCajaDenied = await requireActionPermission(createCajaPermKey);
-  if (createMovCajaDenied) {
-    if (isTrenqueCreate || !(await hasTemporaryPermission("caja:operar_oficina"))) return createMovCajaDenied;
-  }
+  // Determine permission from DB, not from client-supplied slug
+  const cajaReal = cajaId ? await prisma.caja.findUnique({ where: { id: cajaId }, select: { slug: true } }) : null;
+  const isTrenque = cajaReal?.slug?.includes("trenque") ?? false;
+  const permKey = isTrenque ? "caja:operar_trenque" : "caja:operar_oficina";
+  const denied = await requireActionPermission(permKey, { allowTemporary: !isTrenque });
+  if (denied) return denied;
 
   if (!cajaId || !tipo || !montoRaw || !moneda) {
     return { error: "Faltan datos obligatorios" };
@@ -63,14 +63,14 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
   const cajaId = (formData.get("cajaId") as string)?.trim();
   const montoCubiertoRaw = (formData.get("montoCubierto") as string)?.trim();
   const descripcionExtra = (formData.get("descripcionExtra") as string)?.trim() ?? "";
-  const slug = (formData.get("slug") as string)?.trim();
+  const slug = (formData.get("slug") as string)?.trim(); // kept for revalidatePath only — not used for auth
 
-  const isTrenqueCubrir = slug?.includes("trenque") ?? false;
-  const cubrirPermKey = isTrenqueCubrir ? "caja:operar_trenque" : "caja:operar_oficina";
-  const cubrirDenied = await requireActionPermission(cubrirPermKey);
-  if (cubrirDenied) {
-    if (isTrenqueCubrir || !(await hasTemporaryPermission("caja:operar_oficina"))) return cubrirDenied;
-  }
+  // Determine permission from DB, not from client-supplied slug
+  const cajaReal = cajaId ? await prisma.caja.findUnique({ where: { id: cajaId }, select: { slug: true } }) : null;
+  const isTrenque = cajaReal?.slug?.includes("trenque") ?? false;
+  const cubrirPermKey = isTrenque ? "caja:operar_trenque" : "caja:operar_oficina";
+  const cubrirDenied = await requireActionPermission(cubrirPermKey, { allowTemporary: !isTrenque });
+  if (cubrirDenied) return cubrirDenied;
 
   if (!movimientoId || !cajaId || !montoCubiertoRaw) return { error: "Faltan datos obligatorios" };
 
@@ -198,10 +198,8 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
 export async function registrarOperacionCambioEnCajas(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const regCambioDenied = await requireActionPermission("caja:operar_oficina");
-  if (regCambioDenied) {
-    if (!(await hasTemporaryPermission("caja:operar_oficina"))) return regCambioDenied;
-  }
+  const regCambioDenied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  if (regCambioDenied) return regCambioDenied;
 
   const cajaDivisaId = (formData.get("cajaDivisaId") as string)?.trim();
   const cajaArsId = (formData.get("cajaArsId") as string)?.trim();
@@ -348,10 +346,8 @@ export async function confirmarMovimientoCajaPendiente(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const confirmarDenied = await requireActionPermission("caja:operar_oficina");
-  if (confirmarDenied) {
-    if (!(await hasTemporaryPermission("caja:operar_oficina"))) return confirmarDenied;
-  }
+  const confirmarDenied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  if (confirmarDenied) return confirmarDenied;
 
   const movimientoId = formData.get("movimientoId")?.toString().trim();
   if (!movimientoId) return { error: "ID requerido" };

@@ -1,3 +1,0 @@
-{
-  "/(dashboard)/carteras/[slug]/page": "app/(dashboard)/carteras/[slug]/page.js"
-}

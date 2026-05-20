@@ -38,9 +38,14 @@ function checkActionRole(role: UserRole, key: string): boolean {
  * For server actions — returns { error } on denial instead of redirecting.
  * Usage: const denied = await requireActionPermission("bolsa:concertar");
  *        if (denied) return denied;
+ *
+ * Pass { allowTemporary: true } for actions that can be unlocked via DB temp grants.
+ * The temp check runs BEFORE the denial audit log to avoid false-positive ACCESO_DENEGADO
+ * entries for users whose access was legitimately extended (e.g. Augusto + caja:operar_oficina).
  */
 export async function requireActionPermission(
   permissionKey: string,
+  opts?: { allowTemporary?: boolean },
 ): Promise<{ error: string } | null> {
   const session = await auth();
   if (!session?.user?.id) return { error: "Sin sesión activa" };
@@ -49,7 +54,8 @@ export async function requireActionPermission(
 
   if (checkActionRole(role, permissionKey)) return null;
 
-  // Log the denial
+  if (opts?.allowTemporary && await hasTemporaryPermission(permissionKey)) return null;
+
   await writeAuditLog({
     userId:      session.user.id,
     accion:      "ACCESO_DENEGADO",

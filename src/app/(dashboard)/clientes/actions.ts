@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { readOnlyPreview } from "@/lib/config";
-import { requireActionPermission, hasTemporaryPermission } from "@/lib/auth/permissions";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function crearMovimientoCC(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -76,10 +76,8 @@ export async function crearMovimientoCC(prevState: any, formData: FormData) {
 
 export async function liquidarInteresCCAction(prevState: unknown, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
-  const liquidarDenied = await requireActionPermission("cc:intereses");
-  if (liquidarDenied) {
-    if (!(await hasTemporaryPermission("cc:intereses"))) return liquidarDenied;
-  }
+  const liquidarDenied = await requireActionPermission("cc:intereses", { allowTemporary: true });
+  if (liquidarDenied) return liquidarDenied;
   const cuentaId = (formData.get("cuentaId") as string)?.trim();
   const clienteId = (formData.get("clienteId") as string)?.trim();
   const fechaInicioRaw = (formData.get("fechaInicio") as string)?.trim();
@@ -153,10 +151,8 @@ export async function liquidarInteresCCAction(prevState: unknown, formData: Form
 
 export async function aplicarInteresCC(formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
-  const aplicarDenied = await requireActionPermission("cc:intereses");
-  if (aplicarDenied) {
-    if (!(await hasTemporaryPermission("cc:intereses"))) return aplicarDenied;
-  }
+  const aplicarDenied = await requireActionPermission("cc:intereses", { allowTemporary: true });
+  if (aplicarDenied) return aplicarDenied;
   const cuentaId = formData.get("cuentaId") as string;
   const montoAplicado = new Decimal(formData.get("montoAplicado") as string);
   const descripcion = formData.get("descripcion") as string;
@@ -210,10 +206,8 @@ export async function aplicarInteresCC(formData: FormData) {
 
 export async function aplicarTodosInteresesCC(formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
-  const todosInteresesDenied = await requireActionPermission("cc:intereses");
-  if (todosInteresesDenied) {
-    if (!(await hasTemporaryPermission("cc:intereses"))) return todosInteresesDenied;
-  }
+  const todosInteresesDenied = await requireActionPermission("cc:intereses", { allowTemporary: true });
+  if (todosInteresesDenied) return todosInteresesDenied;
   const raw = formData.get("payload") as string;
 
   let items: { cuentaId: string; montoAplicado: string; descripcion: string }[];
@@ -798,10 +792,8 @@ export async function actualizarTasaCC(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const tasaCCDenied = await requireActionPermission("cc:intereses");
-  if (tasaCCDenied) {
-    if (!(await hasTemporaryPermission("cc:intereses"))) return tasaCCDenied;
-  }
+  const tasaCCDenied = await requireActionPermission("cc:intereses", { allowTemporary: true });
+  if (tasaCCDenied) return tasaCCDenied;
 
   const clienteId = formData.get("clienteId")?.toString();
   const cuentaId  = formData.get("cuentaId")?.toString();
@@ -828,10 +820,8 @@ export async function editarPlazoFijo(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const editarPFDenied = await requireActionPermission("pf:editar");
-  if (editarPFDenied) {
-    if (!(await hasTemporaryPermission("pf:editar"))) return editarPFDenied;
-  }
+  const editarPFDenied = await requireActionPermission("pf:editar", { allowTemporary: true });
+  if (editarPFDenied) return editarPFDenied;
 
   const pfId      = formData.get("pfId")?.toString();
   const clienteId = formData.get("clienteId")?.toString();
