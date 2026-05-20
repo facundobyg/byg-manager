@@ -31,6 +31,26 @@ const VENTA_TIPOS = new Set([
     "VENTA_CEDEAR",
     "CAUCION_COLOCADORA"
 ]);
+const COMPRA_ACTIVO = new Set([
+    "COMPRA_BONO",
+    "COMPRA_ACCION",
+    "COMPRA_CEDEAR"
+]);
+const VENTA_ACTIVO = new Set([
+    "VENTA_BONO",
+    "VENTA_ACCION",
+    "VENTA_CEDEAR"
+]);
+const TIPO_TO_HOLDING = {
+    COMPRA_BONO: "BONO",
+    VENTA_BONO: "BONO",
+    COMPRA_ACCION: "ACCION",
+    VENTA_ACCION: "ACCION",
+    COMPRA_CEDEAR: "CEDEAR",
+    VENTA_CEDEAR: "CEDEAR",
+    CAUCION_COLOCADORA: "CAUCION",
+    CAUCION_TOMADORA: "CAUCION"
+};
 function toN(v) {
     if (!v) return null;
     const n = parseFloat(v);
@@ -117,8 +137,9 @@ async function crearOperacionBolsa(prevState, formData) {
             id
         };
     } catch (e) {
+        console.error("[crearOperacionBolsa]", e);
         return {
-            error: e.message || "Error al crear operación"
+            error: "Error al guardar la operación. Verificar datos ingresados."
         };
     }
 }
@@ -160,6 +181,7 @@ async function concertarOperacion(prevState, formData) {
     const impuestos = toN(formData.get("impuestos"));
     const tcMepDia = toN(formData.get("tcMepDia"));
     const comisionUSD = toN(formData.get("comisionUSD"));
+    const netoLiquidadoManual = toN(formData.get("netoLiquidadoManual"));
     const esSenebi = formData.get("esSenebi") === "true";
     const senebiBruto = esSenebi ? toN(formData.get("senebiBruto")) : null;
     const diasCaucionRaw = formData.get("diasCaucion");
@@ -171,8 +193,10 @@ async function concertarOperacion(prevState, formData) {
     const valorBruto = cantidad * precio;
     const costoReal = (comisionFija ?? 0) + valorBruto * ((comisionPct ?? 0) / 100) + (derechosMercado ?? 0) + (gastos ?? 0) + (impuestos ?? 0);
     const esVenta = VENTA_TIPOS.has(op.tipoOperacion);
-    const netoLiquidado = esVenta ? valorBruto - costoReal : valorBruto + costoReal;
+    const netoCalculado = esVenta ? valorBruto - costoReal : valorBruto + costoReal;
+    const netoLiquidado = netoLiquidadoManual ?? netoCalculado;
     const precioPromedioReal = !esVenta && cantidad > 0 ? netoLiquidado / cantidad : null;
+    const isNewConcertation = op.estado === "PENDIENTE_CONCERTACION";
     try {
         const now = new Date();
         await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].$transaction(async (tx)=>{
@@ -221,6 +245,131 @@ async function concertarOperacion(prevState, formData) {
                     }
                 }
             });
+            // ── Impacto en comitente (solo primera concertación, solo compra/venta activos) ──
+            if (isNewConcertation && op.comitenteId) {
+                const holdingCat = TIPO_TO_HOLDING[op.tipoOperacion];
+                const isCompra = COMPRA_ACTIVO.has(op.tipoOperacion);
+                const isVenta = VENTA_ACTIVO.has(op.tipoOperacion);
+                if ((isCompra || isVenta) && holdingCat) {
+                    // 1. Actualizar saldo disponible
+                    const saldoActual = await tx.saldoComitenteInversion.findUnique({
+                        where: {
+                            comitenteId: op.comitenteId
+                        }
+                    });
+                    const delta = Math.abs(netoLiquidado);
+                    const saldoData = op.moneda === "ARS" ? {
+                        saldoARS: Number(saldoActual?.saldoARS ?? 0) + (isVenta ? delta : -delta)
+                    } : {
+                        saldoUSDCable: Number(saldoActual?.saldoUSDCable ?? 0) + (isVenta ? delta : -delta)
+                    };
+                    await tx.saldoComitenteInversion.upsert({
+                        where: {
+                            comitenteId: op.comitenteId
+                        },
+                        update: {
+                            ...saldoData,
+                            updatedAt: new Date()
+                        },
+                        create: {
+                            id: crypto.randomUUID(),
+                            comitenteId: op.comitenteId,
+                            saldoARS: 0,
+                            saldoUSDCable: 0,
+                            saldoUSDMep: 0,
+                            ...saldoData,
+                            updatedAt: new Date()
+                        }
+                    });
+                    // 2. Actualizar holding
+                    const existing = await tx.holdingComitenteInversion.findUnique({
+                        where: {
+                            comitenteId_ticker: {
+                                comitenteId: op.comitenteId,
+                                ticker: op.ticker
+                            }
+                        }
+                    });
+                    if (isCompra) {
+                        const precioReal = precioPromedioReal ?? precio;
+                        if (existing) {
+                            const existQty = Number(existing.cantidad);
+                            const newQty = existQty + cantidad;
+                            const newPrecioP = (existQty * Number(existing.precioPromedio) + cantidad * precioReal) / newQty;
+                            await tx.holdingComitenteInversion.update({
+                                where: {
+                                    id: existing.id
+                                },
+                                data: {
+                                    cantidad: newQty,
+                                    precioPromedio: newPrecioP,
+                                    updatedAt: new Date()
+                                }
+                            });
+                        } else {
+                            await tx.holdingComitenteInversion.create({
+                                data: {
+                                    id: crypto.randomUUID(),
+                                    comitenteId: op.comitenteId,
+                                    ticker: op.ticker,
+                                    categoria: holdingCat,
+                                    cantidad,
+                                    precioPromedio: precioReal,
+                                    updatedAt: new Date()
+                                }
+                            });
+                        }
+                        await tx.operacionHoldingInversion.create({
+                            data: {
+                                id: crypto.randomUUID(),
+                                comitenteId: op.comitenteId,
+                                holdingId: existing?.id ?? null,
+                                tipo: "COMPRA",
+                                ticker: op.ticker,
+                                categoria: holdingCat,
+                                cantidad,
+                                precio,
+                                precioPromedio: precioPromedioReal ?? precio,
+                                notas: `Bolsa #${operacionId.slice(0, 8)}`
+                            }
+                        });
+                    } else if (isVenta && existing) {
+                        const existQty = Number(existing.cantidad);
+                        const newQty = Math.max(0, existQty - cantidad);
+                        if (newQty === 0) {
+                            await tx.holdingComitenteInversion.delete({
+                                where: {
+                                    id: existing.id
+                                }
+                            });
+                        } else {
+                            await tx.holdingComitenteInversion.update({
+                                where: {
+                                    id: existing.id
+                                },
+                                data: {
+                                    cantidad: newQty,
+                                    updatedAt: new Date()
+                                }
+                            });
+                        }
+                        await tx.operacionHoldingInversion.create({
+                            data: {
+                                id: crypto.randomUUID(),
+                                comitenteId: op.comitenteId,
+                                holdingId: existing.id,
+                                tipo: "VENTA",
+                                ticker: op.ticker,
+                                categoria: holdingCat,
+                                cantidad,
+                                precio,
+                                precioPromedio: Number(existing.precioPromedio),
+                                notas: `Bolsa #${operacionId.slice(0, 8)}`
+                            }
+                        });
+                    }
+                }
+            }
         });
         (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["revalidatePath"])("/bolsa");
         (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["revalidatePath"])(`/bolsa/${operacionId}`);
@@ -229,8 +378,9 @@ async function concertarOperacion(prevState, formData) {
             ok: true
         };
     } catch (e) {
+        console.error("[concertarOperacion]", e);
         return {
-            error: e.message || "Error al concertar operación"
+            error: "Error al concertar la operación. Verificar datos y volver a intentar."
         };
     }
 }
@@ -340,8 +490,9 @@ async function crearOpMesaDiaria(_prevState, formData) {
             id
         };
     } catch (e) {
+        console.error("[crearOpMesaDiaria]", e);
         return {
-            error: e.message || "Error al crear operación"
+            error: "Error al guardar la operación. Verificar datos ingresados."
         };
     }
 }
@@ -637,9 +788,13 @@ async function getOperacionesMesaDiaria(fecha) {
             }
             const g = propiaMap.get(r.carteraId);
             g.ops.push(row);
-            const resultado = row.resultadoNeto ?? row.resultadoBruto ?? 0;
-            if (r.moneda === "ARS") g.totalResultadoARS += resultado;
-            else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+            // Solo sumar resultado si fue ingresado manualmente (resultadoBruto != null)
+            // Las compras/ventas normales sin resultado explícito NO suman a la mesa
+            if (row.resultadoBruto !== null) {
+                const resultado = row.resultadoNeto ?? row.resultadoBruto;
+                if (r.moneda === "ARS") g.totalResultadoARS += resultado;
+                else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+            }
         } else if (r.comitenteId) {
             if (!clienteMap.has(r.comitenteId)) {
                 clienteMap.set(r.comitenteId, {
@@ -653,9 +808,11 @@ async function getOperacionesMesaDiaria(fecha) {
             }
             const g = clienteMap.get(r.comitenteId);
             g.ops.push(row);
-            const resultado = row.resultadoNeto ?? row.resultadoBruto ?? 0;
-            if (r.moneda === "ARS") g.totalResultadoARS += resultado;
-            else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+            if (row.resultadoBruto !== null) {
+                const resultado = row.resultadoNeto ?? row.resultadoBruto;
+                if (r.moneda === "ARS") g.totalResultadoARS += resultado;
+                else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+            }
         }
     }
     const propias = Array.from(propiaMap.values());
@@ -1446,7 +1603,7 @@ async function BolsaDetailPage({ params }) {
                         className: "px-6 py-4 border-b border-byg-border",
                         children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("h2", {
                             className: "text-[12px] font-bold uppercase tracking-widest text-byg-text",
-                            children: "Resultados reales"
+                            children: "Concertación"
                         }, void 0, false, {
                             fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
                             lineNumber: 241,
@@ -1458,54 +1615,84 @@ async function BolsaDetailPage({ params }) {
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
-                        className: "px-6 py-5 grid grid-cols-2 sm:grid-cols-3 gap-6",
+                        className: "px-6 py-5 flex flex-col gap-5",
                         children: [
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
-                                label: "Valor Bruto",
-                                value: `${op.moneda} ${fmt(valorBruto)}`
-                            }, void 0, false, {
-                                fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 244,
-                                columnNumber: 13
-                            }, this),
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
-                                label: "Costo Real",
-                                value: `${op.moneda} ${fmt(costoReal)}`
-                            }, void 0, false, {
-                                fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 245,
-                                columnNumber: 13
-                            }, this),
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
-                                label: "Neto Liquidado",
-                                value: netoLiquidado != null ? `${op.moneda} ${fmt(netoLiquidado)}` : "—"
-                            }, void 0, false, {
+                            netoLiquidado != null && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                                className: "rounded-xl border border-byg-accent/30 bg-byg-accent/5 px-5 py-4 flex items-baseline gap-3",
+                                children: [
+                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
+                                        className: "text-[10px] font-black uppercase tracking-widest text-byg-accent",
+                                        children: "Neto liquidado final"
+                                    }, void 0, false, {
+                                        fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
+                                        lineNumber: 247,
+                                        columnNumber: 17
+                                    }, this),
+                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
+                                        className: "text-2xl font-black tabular-nums font-mono text-byg-text",
+                                        children: [
+                                            op.moneda,
+                                            " ",
+                                            fmt(netoLiquidado)
+                                        ]
+                                    }, void 0, true, {
+                                        fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
+                                        lineNumber: 248,
+                                        columnNumber: 17
+                                    }, this)
+                                ]
+                            }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
                                 lineNumber: 246,
-                                columnNumber: 13
+                                columnNumber: 15
                             }, this),
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
-                                label: "Precio Prom. Real",
-                                value: precioPromedioReal != null ? fmt(precioPromedioReal, 4) : "—"
-                            }, void 0, false, {
+                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                                className: "grid grid-cols-2 sm:grid-cols-3 gap-6",
+                                children: [
+                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
+                                        label: "Valor Bruto",
+                                        value: `${op.moneda} ${fmt(valorBruto)}`
+                                    }, void 0, false, {
+                                        fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
+                                        lineNumber: 254,
+                                        columnNumber: 15
+                                    }, this),
+                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
+                                        label: "Costo / Comisión",
+                                        value: `${op.moneda} ${fmt(costoReal)}`
+                                    }, void 0, false, {
+                                        fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
+                                        lineNumber: 255,
+                                        columnNumber: 15
+                                    }, this),
+                                    precioPromedioReal != null && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
+                                        label: "Precio Prom. Real",
+                                        value: fmt(precioPromedioReal, 4)
+                                    }, void 0, false, {
+                                        fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
+                                        lineNumber: 257,
+                                        columnNumber: 17
+                                    }, this),
+                                    resultadoBruto != null && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
+                                        label: "Resultado operador",
+                                        value: `${op.moneda} ${fmt(resultadoBruto)}`
+                                    }, void 0, false, {
+                                        fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
+                                        lineNumber: 261,
+                                        columnNumber: 17
+                                    }, this),
+                                    resultadoNeto != null && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
+                                        label: "Resultado neto",
+                                        value: `${op.moneda} ${fmt(resultadoNeto)}`
+                                    }, void 0, false, {
+                                        fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
+                                        lineNumber: 264,
+                                        columnNumber: 17
+                                    }, this)
+                                ]
+                            }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 247,
-                                columnNumber: 13
-                            }, this),
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
-                                label: "Resultado Bruto",
-                                value: resultadoBruto != null ? `${op.moneda} ${fmt(resultadoBruto)}` : "—"
-                            }, void 0, false, {
-                                fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 248,
-                                columnNumber: 13
-                            }, this),
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(InfoCell, {
-                                label: "Resultado Neto",
-                                value: resultadoNeto != null ? `${op.moneda} ${fmt(resultadoNeto)}` : "—"
-                            }, void 0, false, {
-                                fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 249,
+                                lineNumber: 253,
                                 columnNumber: 13
                             }, this)
                         ]
@@ -1525,13 +1712,13 @@ async function BolsaDetailPage({ params }) {
                                         children: op.nroBoleto
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                        lineNumber: 253,
+                                        lineNumber: 270,
                                         columnNumber: 29
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 253,
+                                lineNumber: 270,
                                 columnNumber: 15
                             }, this),
                             op.alyc && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1542,54 +1729,54 @@ async function BolsaDetailPage({ params }) {
                                         children: op.alyc
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                        lineNumber: 254,
+                                        lineNumber: 271,
                                         columnNumber: 39
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 254,
+                                lineNumber: 271,
                                 columnNumber: 27
                             }, this),
                             formDefaults.fechaLiquidacion && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
                                 children: [
-                                    "Liquidación: ",
+                                    "Liq.: ",
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("strong", {
                                         className: "text-byg-text",
                                         children: fmtDate(formDefaults.fechaLiquidacion)
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                        lineNumber: 255,
-                                        columnNumber: 68
+                                        lineNumber: 272,
+                                        columnNumber: 61
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 255,
+                                lineNumber: 272,
                                 columnNumber: 49
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                        lineNumber: 252,
+                        lineNumber: 269,
                         columnNumber: 13
                     }, this),
                     op.motivoAnulacion && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
                         className: "px-6 pb-4",
                         children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
-                            className: "text-[11px] text-rose-400 font-semibold",
+                            className: "text-[11px] text-rose-500 font-semibold",
                             children: [
                                 "Anulada: ",
                                 op.motivoAnulacion
                             ]
                         }, void 0, true, {
                             fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                            lineNumber: 260,
+                            lineNumber: 277,
                             columnNumber: 15
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                        lineNumber: 259,
+                        lineNumber: 276,
                         columnNumber: 13
                     }, this)
                 ]
@@ -1603,17 +1790,18 @@ async function BolsaDetailPage({ params }) {
                 children: "Revisión · datos reales"
             }, void 0, false, {
                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                lineNumber: 268,
+                lineNumber: 285,
                 columnNumber: 9
             }, this),
             canEditBoleto && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$bolsa$2f$ConcertarForm$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["ConcertarForm"], {
                 operacionId: op.id,
                 estado: op.estado,
                 tipoOperacion: op.tipoOperacion,
+                fechaOperativa: op.fechaOperativa ? new Date(op.fechaOperativa).toISOString().slice(0, 10) : null,
                 ...formDefaults
             }, void 0, false, {
                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                lineNumber: 273,
+                lineNumber: 290,
                 columnNumber: 9
             }, this),
             op.anulada && op.motivoAnulacion && costoReal == null && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1624,7 +1812,7 @@ async function BolsaDetailPage({ params }) {
                         children: "Motivo de anulación"
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                        lineNumber: 284,
+                        lineNumber: 302,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -1632,13 +1820,13 @@ async function BolsaDetailPage({ params }) {
                         children: op.motivoAnulacion
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                        lineNumber: 285,
+                        lineNumber: 303,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                lineNumber: 283,
+                lineNumber: 301,
                 columnNumber: 9
             }, this),
             canAnular && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1647,12 +1835,12 @@ async function BolsaDetailPage({ params }) {
                     operacionId: op.id
                 }, void 0, false, {
                     fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                    lineNumber: 292,
+                    lineNumber: 310,
                     columnNumber: 11
                 }, this)
             }, void 0, false, {
                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                lineNumber: 291,
+                lineNumber: 309,
                 columnNumber: 9
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("section", {
@@ -1669,12 +1857,12 @@ async function BolsaDetailPage({ params }) {
                             ]
                         }, void 0, true, {
                             fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                            lineNumber: 299,
+                            lineNumber: 317,
                             columnNumber: 11
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                        lineNumber: 298,
+                        lineNumber: 316,
                         columnNumber: 9
                     }, this),
                     op.OperacionBolsaLog.length === 0 ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -1682,7 +1870,7 @@ async function BolsaDetailPage({ params }) {
                         children: "Sin eventos."
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                        lineNumber: 304,
+                        lineNumber: 322,
                         columnNumber: 11
                     }, this) : /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
                         className: "divide-y divide-byg-border/40",
@@ -1694,7 +1882,7 @@ async function BolsaDetailPage({ params }) {
                                         children: log.accion
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                        lineNumber: 309,
+                                        lineNumber: 327,
                                         columnNumber: 17
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1702,7 +1890,7 @@ async function BolsaDetailPage({ params }) {
                                         children: fmtDateTime(log.createdAt.toISOString())
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                        lineNumber: 312,
+                                        lineNumber: 330,
                                         columnNumber: 17
                                     }, this),
                                     log.User && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1710,7 +1898,7 @@ async function BolsaDetailPage({ params }) {
                                         children: log.User.name
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                        lineNumber: 316,
+                                        lineNumber: 334,
                                         columnNumber: 19
                                     }, this),
                                     log.estadoAnterior && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1722,24 +1910,24 @@ async function BolsaDetailPage({ params }) {
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                        lineNumber: 319,
+                                        lineNumber: 337,
                                         columnNumber: 19
                                     }, this)
                                 ]
                             }, log.id, true, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                                lineNumber: 308,
+                                lineNumber: 326,
                                 columnNumber: 15
                             }, this))
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                        lineNumber: 306,
+                        lineNumber: 324,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/bolsa/[id]/page.tsx",
-                lineNumber: 297,
+                lineNumber: 315,
                 columnNumber: 7
             }, this)
         ]

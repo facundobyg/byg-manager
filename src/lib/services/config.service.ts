@@ -137,6 +137,35 @@ export async function getClienteDeMap(): Promise<Record<string, string>> {
   }
 }
 
+export type AlycOption = {
+  nombre: string;
+  activa: boolean;
+};
+
+const ALYCS_DEFAULT: AlycOption[] = [
+  { nombre: "Banco Industrial", activa: true },
+];
+
+export async function getAlycConfig(): Promise<AlycOption[]> {
+  try {
+    const row = await prisma.config.findUnique({ where: { clave: "alycs_config" } });
+    if (!row) return ALYCS_DEFAULT;
+    const parsed = JSON.parse(row.valor);
+    if (!Array.isArray(parsed) || parsed.length === 0) return ALYCS_DEFAULT;
+    return parsed as AlycOption[];
+  } catch {
+    return ALYCS_DEFAULT;
+  }
+}
+
+export async function updateAlycConfig(alycs: AlycOption[]): Promise<void> {
+  await prisma.config.upsert({
+    where:  { clave: "alycs_config" },
+    update: { valor: JSON.stringify(alycs), updatedAt: new Date() },
+    create: { id: crypto.randomUUID(), clave: "alycs_config", valor: JSON.stringify(alycs), updatedAt: new Date() },
+  });
+}
+
 export async function updatePreciosActivosBatch(items: { id: string; precio: number }[]) {
   const now = new Date();
   const fecha = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));

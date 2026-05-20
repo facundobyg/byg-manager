@@ -330,6 +330,7 @@ var { g: global, __dirname, a: __turbopack_async_module__ } = __turbopack_contex
 __turbopack_async_module__(async (__turbopack_handle_async_dependencies__, __turbopack_async_result__) => { try {
 __turbopack_context__.s({
     "getActivosPrecios": (()=>getActivosPrecios),
+    "getAlycConfig": (()=>getAlycConfig),
     "getClienteDeMap": (()=>getClienteDeMap),
     "getMesActivo": (()=>getMesActivo),
     "getMesOperativo": (()=>getMesOperativo),
@@ -341,6 +342,7 @@ __turbopack_context__.s({
     "setMesActivo": (()=>setMesActivo),
     "setTCBlue": (()=>setTCBlue),
     "setTCMep": (()=>setTCMep),
+    "updateAlycConfig": (()=>updateAlycConfig),
     "updatePrecioActivo": (()=>updatePrecioActivo),
     "updatePreciosActivosBatch": (()=>updatePreciosActivosBatch)
 });
@@ -562,6 +564,44 @@ async function getClienteDeMap() {
     } catch  {
         return {};
     }
+}
+const ALYCS_DEFAULT = [
+    {
+        nombre: "Banco Industrial",
+        activa: true
+    }
+];
+async function getAlycConfig() {
+    try {
+        const row = await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].config.findUnique({
+            where: {
+                clave: "alycs_config"
+            }
+        });
+        if (!row) return ALYCS_DEFAULT;
+        const parsed = JSON.parse(row.valor);
+        if (!Array.isArray(parsed) || parsed.length === 0) return ALYCS_DEFAULT;
+        return parsed;
+    } catch  {
+        return ALYCS_DEFAULT;
+    }
+}
+async function updateAlycConfig(alycs) {
+    await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].config.upsert({
+        where: {
+            clave: "alycs_config"
+        },
+        update: {
+            valor: JSON.stringify(alycs),
+            updatedAt: new Date()
+        },
+        create: {
+            id: crypto.randomUUID(),
+            clave: "alycs_config",
+            valor: JSON.stringify(alycs),
+            updatedAt: new Date()
+        }
+    });
 }
 async function updatePreciosActivosBatch(items) {
     const now = new Date();

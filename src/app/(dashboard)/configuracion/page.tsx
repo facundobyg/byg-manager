@@ -1,5 +1,5 @@
 import { requirePermission } from "@/lib/auth/permissions";
-import { getTCBlue, getTCMep, getMesActivo, getSocios, getTCHistorial, getProductoresConfig } from "@/lib/services/config.service";
+import { getTCBlue, getTCMep, getMesActivo, getSocios, getTCHistorial, getProductoresConfig, getAlycConfig } from "@/lib/services/config.service";
 import { TcBlueForm } from "@/components/modules/configuracion/TcBlueForm";
 import { TcMepForm } from "@/components/modules/configuracion/TcMepForm";
 import { MesActivoForm } from "@/components/modules/configuracion/MesActivoForm";
@@ -7,6 +7,7 @@ import { SociosForm } from "@/components/modules/configuracion/SociosForm";
 import { EditCarteraForm } from "@/components/modules/configuracion/EditCarteraForm";
 import { CreateCarteraForm } from "@/components/modules/configuracion/CreateCarteraForm";
 import { ProductoresForm } from "@/components/modules/configuracion/ProductoresForm";
+import { AlycForm } from "@/components/modules/configuracion/AlycForm";
 import { Decimal } from "@prisma/client/runtime/library";
 import { prisma } from "@/lib/prisma";
 
@@ -26,7 +27,7 @@ function fmtMes(mes: string) {
 
 export default async function ConfiguracionPage() {
   await requirePermission("configuracion:leer");
-  const [tcBlueConfig, tcMepConfig, mesActivo, socios, tcHistorial, carteras, productores, cajas] = await Promise.all([
+  const [tcBlueConfig, tcMepConfig, mesActivo, socios, tcHistorial, carteras, productores, cajas, alycs] = await Promise.all([
     getTCBlue(),
     getTCMep(),
     getMesActivo(),
@@ -35,6 +36,7 @@ export default async function ConfiguracionPage() {
     prisma.cartera.findMany({ orderBy: { orden: "asc" } }),
     getProductoresConfig(),
     prisma.caja.findMany({ orderBy: { orden: "asc" } }),
+    getAlycConfig(),
   ]);
 
   return (
@@ -176,6 +178,19 @@ export default async function ConfiguracionPage() {
         </div>
         <div className="px-6 py-4">
           <ProductoresForm productores={productores} />
+        </div>
+      </section>
+
+      {/* ALYCs */}
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-slate-50/30">
+          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">ALYCs</h2>
+          <span className="text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md tabular-nums">
+            {alycs.length}
+          </span>
+        </div>
+        <div className="px-6 py-4">
+          <AlycForm alycs={alycs} />
         </div>
       </section>
 

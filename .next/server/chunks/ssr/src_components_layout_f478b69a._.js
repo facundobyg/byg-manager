@@ -13,7 +13,6 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$navigation$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/navigation.js [app-ssr] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/dist/server/route-modules/app-page/vendored/ssr/react.js [app-ssr] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$layout$2d$dashboard$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__$3c$export__default__as__LayoutDashboard$3e$__ = __turbopack_context__.i("[project]/node_modules/lucide-react/dist/esm/icons/layout-dashboard.js [app-ssr] (ecmascript) <export default as LayoutDashboard>");
-var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$trending$2d$up$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__$3c$export__default__as__TrendingUp$3e$__ = __turbopack_context__.i("[project]/node_modules/lucide-react/dist/esm/icons/trending-up.js [app-ssr] (ecmascript) <export default as TrendingUp>");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$arrow$2d$left$2d$right$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__$3c$export__default__as__ArrowLeftRight$3e$__ = __turbopack_context__.i("[project]/node_modules/lucide-react/dist/esm/icons/arrow-left-right.js [app-ssr] (ecmascript) <export default as ArrowLeftRight>");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$refresh$2d$cw$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__$3c$export__default__as__RefreshCw$3e$__ = __turbopack_context__.i("[project]/node_modules/lucide-react/dist/esm/icons/refresh-cw.js [app-ssr] (ecmascript) <export default as RefreshCw>");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$coins$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__$3c$export__default__as__Coins$3e$__ = __turbopack_context__.i("[project]/node_modules/lucide-react/dist/esm/icons/coins.js [app-ssr] (ecmascript) <export default as Coins>");
@@ -47,11 +46,6 @@ const NAV_STATIC = [
                 label: "Posición",
                 href: "/posicion",
                 icon: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$layout$2d$dashboard$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__$3c$export__default__as__LayoutDashboard$3e$__["LayoutDashboard"]
-            },
-            {
-                label: "Análisis",
-                href: "/analisis",
-                icon: __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$trending$2d$up$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__$3c$export__default__as__TrendingUp$3e$__["TrendingUp"]
             },
             {
                 label: "Reportes",
@@ -156,7 +150,6 @@ const NAV_SISTEMA = [
 // Maps each sidebar href to the permission key required to view it
 const NAV_ITEM_PERMISSIONS = {
     "/posicion": "posicion:leer",
-    "/analisis": "analisis:leer",
     "/reportes": "patrimonio:leer",
     "/bolsa": "operaciones_rulo:leer",
     "/operativa/mov-diarios": "mov_diarios:leer",
@@ -227,7 +220,7 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
             className: "fixed left-0 top-0 h-screen w-64 bg-byg-sidebar border-r border-byg-border"
         }, void 0, false, {
             fileName: "[project]/src/components/layout/Sidebar.tsx",
-            lineNumber: 172,
+            lineNumber: 169,
             columnNumber: 7
         }, this);
     }
@@ -250,7 +243,7 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                         className: "w-[170px] max-w-[170px] h-auto object-contain dark:hidden"
                     }, void 0, false, {
                         fileName: "[project]/src/components/layout/Sidebar.tsx",
-                        lineNumber: 186,
+                        lineNumber: 183,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("img", {
@@ -259,13 +252,13 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                         className: "w-[185px] max-w-[185px] h-auto object-contain hidden dark:block"
                     }, void 0, false, {
                         fileName: "[project]/src/components/layout/Sidebar.tsx",
-                        lineNumber: 187,
+                        lineNumber: 184,
                         columnNumber: 9
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                lineNumber: 182,
+                lineNumber: 179,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("nav", {
@@ -281,7 +274,7 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                             onToggle: ()=>toggle(section.group)
                         }, section.group, false, {
                             fileName: "[project]/src/components/layout/Sidebar.tsx",
-                            lineNumber: 195,
+                            lineNumber: 192,
                             columnNumber: 13
                         }, this)),
                     canSeeCarteras && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -292,7 +285,7 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                                 onToggle: ()=>toggle("Carteras")
                             }, void 0, false, {
                                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                lineNumber: 207,
+                                lineNumber: 204,
                                 columnNumber: 13
                             }, this),
                             open.Carteras && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -309,14 +302,14 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                                                     size: 16
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                                    lineNumber: 221,
+                                                    lineNumber: 218,
                                                     columnNumber: 23
                                                 }, this),
                                                 c.nombre
                                             ]
                                         }, c.slug, true, {
                                             fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                            lineNumber: 214,
+                                            lineNumber: 211,
                                             columnNumber: 21
                                         }, this);
                                     }),
@@ -331,27 +324,27 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                                                     size: 16
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                                    lineNumber: 236,
+                                                    lineNumber: 233,
                                                     columnNumber: 23
                                                 }, this),
                                                 "Inmobiliarias"
                                             ]
                                         }, void 0, true, {
                                             fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                            lineNumber: 230,
+                                            lineNumber: 227,
                                             columnNumber: 21
                                         }, this);
                                     })()
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                lineNumber: 209,
+                                lineNumber: 206,
                                 columnNumber: 15
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/components/layout/Sidebar.tsx",
-                        lineNumber: 206,
+                        lineNumber: 203,
                         columnNumber: 11
                     }, this),
                     canSeeCuentas && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -362,7 +355,7 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                                 onToggle: ()=>toggle("Cuentas de Inversión")
                             }, void 0, false, {
                                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                lineNumber: 249,
+                                lineNumber: 246,
                                 columnNumber: 13
                             }, this),
                             open["Cuentas de Inversión"] && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -379,14 +372,14 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                                                     size: 16
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                                    lineNumber: 263,
+                                                    lineNumber: 260,
                                                     columnNumber: 23
                                                 }, this),
                                                 c.nombre
                                             ]
                                         }, c.id, true, {
                                             fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                            lineNumber: 256,
+                                            lineNumber: 253,
                                             columnNumber: 21
                                         }, this);
                                     }),
@@ -395,19 +388,19 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                                         children: "Sin cuentas activas"
                                     }, void 0, false, {
                                         fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                        lineNumber: 269,
+                                        lineNumber: 266,
                                         columnNumber: 19
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                lineNumber: 251,
+                                lineNumber: 248,
                                 columnNumber: 15
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/components/layout/Sidebar.tsx",
-                        lineNumber: 248,
+                        lineNumber: 245,
                         columnNumber: 11
                     }, this),
                     NAV_SISTEMA.map((s)=>({
@@ -420,13 +413,13 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                             onToggle: ()=>toggle(section.group)
                         }, section.group, false, {
                             fileName: "[project]/src/components/layout/Sidebar.tsx",
-                            lineNumber: 280,
+                            lineNumber: 277,
                             columnNumber: 13
                         }, this))
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                lineNumber: 190,
+                lineNumber: 187,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -434,13 +427,13 @@ function Sidebar({ carteras, cuentasInversion, allowedPermissions }) {
                 children: "v2.0"
             }, void 0, false, {
                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                lineNumber: 290,
+                lineNumber: 287,
                 columnNumber: 7
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/src/components/layout/Sidebar.tsx",
-        lineNumber: 181,
+        lineNumber: 178,
         columnNumber: 5
     }, this);
 }
@@ -454,7 +447,7 @@ function SectionHeader({ label, isOpen, onToggle }) {
                 children: label
             }, void 0, false, {
                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                lineNumber: 303,
+                lineNumber: 300,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$lucide$2d$react$2f$dist$2f$esm$2f$icons$2f$chevron$2d$down$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__$3c$export__default__as__ChevronDown$3e$__["ChevronDown"], {
@@ -462,13 +455,13 @@ function SectionHeader({ label, isOpen, onToggle }) {
                 className: `text-byg-muted group-hover:text-byg-text transition-all ${isOpen ? "" : "-rotate-90"}`
             }, void 0, false, {
                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                lineNumber: 306,
+                lineNumber: 303,
                 columnNumber: 7
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/src/components/layout/Sidebar.tsx",
-        lineNumber: 299,
+        lineNumber: 296,
         columnNumber: 5
     }, this);
 }
@@ -481,7 +474,7 @@ function NavSection({ section, pathname, isOpen, onToggle }) {
                 onToggle: onToggle
             }, void 0, false, {
                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                lineNumber: 321,
+                lineNumber: 318,
                 columnNumber: 7
             }, this),
             isOpen && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -497,26 +490,26 @@ function NavSection({ section, pathname, isOpen, onToggle }) {
                                 size: 16
                             }, void 0, false, {
                                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                                lineNumber: 335,
+                                lineNumber: 332,
                                 columnNumber: 17
                             }, this),
                             item.label
                         ]
                     }, item.href, true, {
                         fileName: "[project]/src/components/layout/Sidebar.tsx",
-                        lineNumber: 328,
+                        lineNumber: 325,
                         columnNumber: 15
                     }, this);
                 })
             }, void 0, false, {
                 fileName: "[project]/src/components/layout/Sidebar.tsx",
-                lineNumber: 323,
+                lineNumber: 320,
                 columnNumber: 9
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/src/components/layout/Sidebar.tsx",
-        lineNumber: 320,
+        lineNumber: 317,
         columnNumber: 5
     }, this);
 }

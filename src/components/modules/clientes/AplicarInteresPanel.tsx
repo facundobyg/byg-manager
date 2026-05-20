@@ -39,7 +39,7 @@ export function AplicarInteresPanel({ cuentaId, clienteId, tasaCC, vigenteDesde,
         </div>
       </div>
 
-      {state?.success ? (
+      {state && 'success' in state && state.success ? (
         <div className="px-6 py-5 flex flex-col gap-3">
           <div className="flex items-center gap-2 text-emerald-400">
             <CheckCircle2 size={16} />
@@ -76,7 +76,7 @@ export function AplicarInteresPanel({ cuentaId, clienteId, tasaCC, vigenteDesde,
             Se calculará y aplicará automáticamente el interés generado desde el inicio del mes o el último corte hasta hoy.
           </p>
 
-          {state?.error && (
+          {state && 'error' in state && state.error && (
             <p className="text-xs text-rose-400 font-semibold">{state.error}</p>
           )}
 

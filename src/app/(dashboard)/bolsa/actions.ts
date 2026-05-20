@@ -4,9 +4,24 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { readOnlyPreview } from "@/lib/config";
-import type { TipoOpBolsa, MercadoBolsa, Moneda } from "@prisma/client";
+import { writeAuditLog } from "@/lib/services/audit.service";
+import { requireActionPermission } from "@/lib/auth/permissions";
+import type { TipoOpBolsa, MercadoBolsa, Moneda, CategoriaHoldingInversion } from "@prisma/client";
 
 const VENTA_TIPOS = new Set<string>(["VENTA_BONO", "VENTA_ACCION", "VENTA_CEDEAR", "CAUCION_COLOCADORA"]);
+const COMPRA_ACTIVO = new Set<string>(["COMPRA_BONO", "COMPRA_ACCION", "COMPRA_CEDEAR"]);
+const VENTA_ACTIVO  = new Set<string>(["VENTA_BONO",  "VENTA_ACCION",  "VENTA_CEDEAR"]);
+
+const TIPO_TO_HOLDING: Record<string, CategoriaHoldingInversion> = {
+  COMPRA_BONO:        "BONO",
+  VENTA_BONO:         "BONO",
+  COMPRA_ACCION:      "ACCION",
+  VENTA_ACCION:       "ACCION",
+  COMPRA_CEDEAR:      "CEDEAR",
+  VENTA_CEDEAR:       "CEDEAR",
+  CAUCION_COLOCADORA: "CAUCION",
+  CAUCION_TOMADORA:   "CAUCION",
+};
 
 function toN(v: FormDataEntryValue | null): number | null {
   if (!v) return null;
@@ -18,6 +33,8 @@ function toN(v: FormDataEntryValue | null): number | null {
 
 export async function crearOperacionBolsa(prevState: unknown, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+  const denied = await requireActionPermission("bolsa:crear");
+  if (denied) return denied;
 
   const session = await auth();
   const userId = session?.user?.id as string | undefined;
@@ -83,7 +100,8 @@ export async function crearOperacionBolsa(prevState: unknown, formData: FormData
     revalidatePath("/bolsa");
     return { ok: true as const, id };
   } catch (e: unknown) {
-    return { error: (e as Error).message || "Error al crear operación" };
+    console.error("[crearOperacionBolsa]", e);
+    return { error: "Error al guardar la operación. Verificar datos ingresados." };
   }
 }
 
@@ -91,6 +109,8 @@ export async function crearOperacionBolsa(prevState: unknown, formData: FormData
 
 export async function concertarOperacion(prevState: unknown, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+  const denied = await requireActionPermission("bolsa:concertar");
+  if (denied) return denied;
 
   const session = await auth();
   const userId  = session?.user?.id as string | undefined;
@@ -108,13 +128,14 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
   const alyc              = (formData.get("alyc")         as string)?.trim() || null;
   const fechaConcertRaw   = formData.get("fechaConcertacion")  as string | null;
   const fechaLiquidRaw    = formData.get("fechaLiquidacion")   as string | null;
-  const comisionPct       = toN(formData.get("comisionPct"));
-  const comisionFija      = toN(formData.get("comisionFija"));
-  const derechosMercado   = toN(formData.get("derechosMercado"));
-  const gastos            = toN(formData.get("gastos"));
-  const impuestos         = toN(formData.get("impuestos"));
-  const tcMepDia          = toN(formData.get("tcMepDia"));
-  const comisionUSD       = toN(formData.get("comisionUSD"));
+  const comisionPct          = toN(formData.get("comisionPct"));
+  const comisionFija         = toN(formData.get("comisionFija"));
+  const derechosMercado      = toN(formData.get("derechosMercado"));
+  const gastos               = toN(formData.get("gastos"));
+  const impuestos            = toN(formData.get("impuestos"));
+  const tcMepDia             = toN(formData.get("tcMepDia"));
+  const comisionUSD          = toN(formData.get("comisionUSD"));
+  const netoLiquidadoManual  = toN(formData.get("netoLiquidadoManual"));
   const esSenebi          = formData.get("esSenebi") === "true";
   const senebiBruto       = esSenebi ? toN(formData.get("senebiBruto")) : null;
   const diasCaucionRaw    = formData.get("diasCaucion") as string | null;
@@ -131,8 +152,11 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
     + (gastos ?? 0)
     + (impuestos ?? 0);
   const esVenta         = VENTA_TIPOS.has(op.tipoOperacion as string);
-  const netoLiquidado   = esVenta ? valorBruto - costoReal : valorBruto + costoReal;
+  const netoCalculado   = esVenta ? valorBruto - costoReal : valorBruto + costoReal;
+  const netoLiquidado   = netoLiquidadoManual ?? netoCalculado;
   const precioPromedioReal = !esVenta && cantidad > 0 ? netoLiquidado / cantidad : null;
+
+  const isNewConcertation = op.estado === "PENDIENTE_CONCERTACION";
 
   try {
     const now = new Date();
@@ -168,12 +192,124 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
           id:            crypto.randomUUID(),
           operacionId,
           userId,
-          accion:        "CONCERTACION",
+          accion:        isNewConcertation ? "CONCERTACION" : "EDICION",
           estadoAnterior: op.estado,
           estadoNuevo:   "CONCERTADA",
           snapshot:      { nroBoleto, alyc, costoReal, netoLiquidado, precioPromedioReal },
         },
       });
+
+      // ── Impacto en comitente (solo primera concertación, solo compra/venta activos) ──
+      if (isNewConcertation && op.comitenteId) {
+        const holdingCat = TIPO_TO_HOLDING[op.tipoOperacion as string];
+        const isCompra   = COMPRA_ACTIVO.has(op.tipoOperacion as string);
+        const isVenta    = VENTA_ACTIVO.has(op.tipoOperacion as string);
+
+        if ((isCompra || isVenta) && holdingCat) {
+          // 1. Actualizar saldo disponible
+          const saldoActual = await tx.saldoComitenteInversion.findUnique({
+            where: { comitenteId: op.comitenteId },
+          });
+          const delta = Math.abs(netoLiquidado);
+          const saldoData = op.moneda === "ARS"
+            ? { saldoARS: (Number(saldoActual?.saldoARS ?? 0) + (isVenta ? delta : -delta)) }
+            : { saldoUSDCable: (Number(saldoActual?.saldoUSDCable ?? 0) + (isVenta ? delta : -delta)) };
+
+          await tx.saldoComitenteInversion.upsert({
+            where:  { comitenteId: op.comitenteId },
+            update: { ...saldoData, updatedAt: new Date() },
+            create: {
+              id: crypto.randomUUID(),
+              comitenteId: op.comitenteId,
+              saldoARS: 0, saldoUSDCable: 0, saldoUSDMep: 0,
+              ...saldoData,
+              updatedAt: new Date(),
+            },
+          });
+
+          // 2. Actualizar holding
+          const existing = await tx.holdingComitenteInversion.findUnique({
+            where: { comitenteId_ticker: { comitenteId: op.comitenteId, ticker: op.ticker } },
+          });
+
+          if (isCompra) {
+            const precioReal = precioPromedioReal ?? precio;
+            if (existing) {
+              const existQty    = Number(existing.cantidad);
+              const newQty      = existQty + cantidad;
+              const newPrecioP  = (existQty * Number(existing.precioPromedio) + cantidad * precioReal) / newQty;
+              await tx.holdingComitenteInversion.update({
+                where: { id: existing.id },
+                data:  { cantidad: newQty, precioPromedio: newPrecioP, updatedAt: new Date() },
+              });
+            } else {
+              await tx.holdingComitenteInversion.create({
+                data: {
+                  id: crypto.randomUUID(),
+                  comitenteId: op.comitenteId,
+                  ticker:      op.ticker,
+                  categoria:   holdingCat,
+                  cantidad,
+                  precioPromedio: precioReal,
+                  updatedAt: new Date(),
+                },
+              });
+            }
+            await tx.operacionHoldingInversion.create({
+              data: {
+                id:          crypto.randomUUID(),
+                comitenteId: op.comitenteId,
+                holdingId:   existing?.id ?? null,
+                tipo:        "COMPRA",
+                ticker:      op.ticker,
+                categoria:   holdingCat,
+                cantidad,
+                precio,
+                precioPromedio: precioPromedioReal ?? precio,
+                notas:       `Bolsa #${operacionId.slice(0, 8)}`,
+              },
+            });
+          } else if (isVenta && existing) {
+            const existQty = Number(existing.cantidad);
+            const newQty   = Math.max(0, existQty - cantidad);
+            if (newQty === 0) {
+              await tx.holdingComitenteInversion.delete({ where: { id: existing.id } });
+            } else {
+              await tx.holdingComitenteInversion.update({
+                where: { id: existing.id },
+                data:  { cantidad: newQty, updatedAt: new Date() },
+              });
+            }
+            await tx.operacionHoldingInversion.create({
+              data: {
+                id:          crypto.randomUUID(),
+                comitenteId: op.comitenteId,
+                holdingId:   existing.id,
+                tipo:        "VENTA",
+                ticker:      op.ticker,
+                categoria:   holdingCat,
+                cantidad,
+                precio,
+                precioPromedio: Number(existing.precioPromedio),
+                notas:       `Bolsa #${operacionId.slice(0, 8)}`,
+              },
+            });
+          }
+        }
+      }
+    });
+
+    const session = await auth();
+    const userName = (session?.user as { name?: string } | undefined)?.name ?? "Usuario";
+    const sujetoLabel = op.comitenteId ? `comitente ${op.comitenteId.slice(0, 8)}` : (op.carteraId ? "cartera propia" : "—");
+    await writeAuditLog({
+      userId,
+      accion: isNewConcertation ? "CONCERTACION" : "EDICION_CONCERTACION",
+      entidad: "OperacionBolsa",
+      entidadId: operacionId,
+      description: isNewConcertation
+        ? `${userName} concertó ${op.tipoOperacion} ${op.ticker} (${sujetoLabel})`
+        : `${userName} editó concertación ${op.tipoOperacion} ${op.ticker} (${sujetoLabel})`,
     });
 
     revalidatePath("/bolsa");
@@ -181,7 +317,8 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
     revalidatePath("/cuentas-inversion", "layout");
     return { ok: true as const };
   } catch (e: unknown) {
-    return { error: (e as Error).message || "Error al concertar operación" };
+    console.error("[concertarOperacion]", e);
+    return { error: "Error al concertar la operación. Verificar datos y volver a intentar." };
   }
 }
 
@@ -191,6 +328,8 @@ const CAUCION_TIPOS = new Set<string>(["CAUCION_COLOCADORA", "CAUCION_TOMADORA"]
 
 export async function crearOpMesaDiaria(_prevState: unknown, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+  const denied = await requireActionPermission("bolsa:crear");
+  if (denied) return denied;
 
   const session = await auth();
   const userId  = session?.user?.id as string | undefined;
@@ -275,7 +414,8 @@ export async function crearOpMesaDiaria(_prevState: unknown, formData: FormData)
     revalidatePath("/bolsa");
     return { ok: true as const, id };
   } catch (e: unknown) {
-    return { error: (e as Error).message || "Error al crear operación" };
+    console.error("[crearOpMesaDiaria]", e);
+    return { error: "Error al guardar la operación. Verificar datos ingresados." };
   }
 }
 
@@ -283,6 +423,8 @@ export async function crearOpMesaDiaria(_prevState: unknown, formData: FormData)
 
 export async function agruparOperacionesArbitraje(_prevState: unknown, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+  const denied = await requireActionPermission("bolsa:crear");
+  if (denied) return denied;
 
   const session = await auth();
   const userId  = session?.user?.id as string | undefined;
@@ -317,6 +459,8 @@ export async function agruparOperacionesArbitraje(_prevState: unknown, formData:
 
 export async function anularOperacion(prevState: unknown, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+  const denied = await requireActionPermission("bolsa:anular");
+  if (denied) return denied;
 
   const session = await auth();
   const userId  = session?.user?.id as string | undefined;

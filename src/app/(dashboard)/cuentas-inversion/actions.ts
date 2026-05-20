@@ -1,9 +1,12 @@
 "use server";
 
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { ProductorInversion } from "@prisma/client";
+import { writeAuditLog } from "@/lib/services/audit.service";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 type ActionResult = { error?: string; success?: boolean };
 
@@ -96,6 +99,9 @@ export async function updateSaldos(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("saldos:editar");
+  if (denied) return denied;
+
   const comitenteId = formData.get("comitenteId")?.toString().trim();
   const cuentaId    = formData.get("cuentaInversionId")?.toString().trim();
 
@@ -112,6 +118,17 @@ export async function updateSaldos(
     where: { comitenteId },
     update: { saldoARS, saldoUSDCable, saldoUSDMep },
     create: { id: crypto.randomUUID(), comitenteId, saldoARS, saldoUSDCable, saldoUSDMep, updatedAt: new Date() },
+  });
+
+  const session = await auth();
+  const userId   = session?.user?.id as string | undefined;
+  const userName = (session?.user as { name?: string } | undefined)?.name ?? "Usuario";
+  await writeAuditLog({
+    userId,
+    accion:     "EDICION_SALDO",
+    entidad:    "ComitenteInversion",
+    entidadId:  comitenteId,
+    description: `${userName} modificó saldos — ARS ${saldoARS}, USD Cable ${saldoUSDCable}, USD MEP ${saldoUSDMep}`,
   });
 
   revalidate(cuentaId);

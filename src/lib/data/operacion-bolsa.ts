@@ -111,9 +111,13 @@ export async function getOperacionesMesaDiaria(fecha: string): Promise<MesaDiari
       }
       const g = propiaMap.get(r.carteraId)!;
       g.ops.push(row);
-      const resultado = row.resultadoNeto ?? row.resultadoBruto ?? 0;
-      if (r.moneda === "ARS") g.totalResultadoARS += resultado;
-      else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+      // Solo sumar resultado si fue ingresado manualmente (resultadoBruto != null)
+      // Las compras/ventas normales sin resultado explícito NO suman a la mesa
+      if (row.resultadoBruto !== null) {
+        const resultado = row.resultadoNeto ?? row.resultadoBruto;
+        if (r.moneda === "ARS") g.totalResultadoARS += resultado;
+        else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+      }
     } else if (r.comitenteId) {
       if (!clienteMap.has(r.comitenteId)) {
         clienteMap.set(r.comitenteId, {
@@ -127,9 +131,11 @@ export async function getOperacionesMesaDiaria(fecha: string): Promise<MesaDiari
       }
       const g = clienteMap.get(r.comitenteId)!;
       g.ops.push(row);
-      const resultado = row.resultadoNeto ?? row.resultadoBruto ?? 0;
-      if (r.moneda === "ARS") g.totalResultadoARS += resultado;
-      else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+      if (row.resultadoBruto !== null) {
+        const resultado = row.resultadoNeto ?? row.resultadoBruto;
+        if (r.moneda === "ARS") g.totalResultadoARS += resultado;
+        else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+      }
     }
   }
 

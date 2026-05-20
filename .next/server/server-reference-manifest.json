@@ -1,5 +1,207 @@
 {
-  "node": {},
+  "node": {
+    "0011ff4319847fa321c161740d2e30453828714a2e": {
+      "workers": {
+        "app/(dashboard)/bolsa/[id]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/bolsa/[id]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/bolsa/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        },
+        "app/(dashboard)/bolsa/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/bolsa/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/bolsa/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        },
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE2 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)\", ACTIONS_MODULE3 => \"[project]/src/app/(dashboard)/cuentas-inversion/holdings-actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        },
+        "app/(dashboard)/cuentas-inversion/[id]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        },
+        "app/(dashboard)/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        },
+        "app/(dashboard)/posicion/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/posicion/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        }
+      },
+      "layer": {
+        "app/(dashboard)/bolsa/[id]/page": "rsc",
+        "app/(dashboard)/bolsa/page": "rsc",
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "rsc",
+        "app/(dashboard)/cuentas-inversion/[id]/page": "rsc",
+        "app/(dashboard)/page": "rsc",
+        "app/(dashboard)/posicion/page": "rsc"
+      }
+    },
+    "6035d53977bf5bc76d2c85bdca3e747632711bac75": {
+      "workers": {
+        "app/(dashboard)/bolsa/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/bolsa/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/bolsa/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        }
+      },
+      "layer": {
+        "app/(dashboard)/bolsa/page": "action-browser"
+      }
+    },
+    "606cfa9090426e36c2b3b1981fe0f1dea0988a1482": {
+      "workers": {
+        "app/(dashboard)/bolsa/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/bolsa/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/bolsa/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        }
+      },
+      "layer": {
+        "app/(dashboard)/bolsa/page": "action-browser"
+      }
+    },
+    "604d803f139ab5aa6ec97524e2ce14b730def75378": {
+      "workers": {
+        "app/(dashboard)/bolsa/[id]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/bolsa/[id]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/bolsa/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        }
+      },
+      "layer": {
+        "app/(dashboard)/bolsa/[id]/page": "action-browser"
+      }
+    },
+    "60ccca7881a3263e68458c7cf624546246d209d57f": {
+      "workers": {
+        "app/(dashboard)/bolsa/[id]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/bolsa/[id]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/bolsa/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": false
+        }
+      },
+      "layer": {
+        "app/(dashboard)/bolsa/[id]/page": "action-browser"
+      }
+    },
+    "60e12128710bd8b2db31fa497a12a16323be8db45d": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/page": "action-browser"
+      }
+    },
+    "60582695dbbb046ce2cc072ee4a82a0ff1a754cce2": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/page": "action-browser"
+      }
+    },
+    "60865beb05caebbc767d1ae2fa01f13b5991ea2d00": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/page": "action-browser"
+      }
+    },
+    "60501021f2a99b12807a2047a717d7a5f8d3c8d05d": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/page": "action-browser"
+      }
+    },
+    "40ca21ec38d122bbd38a9778f94d25cfb8739dce19": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE2 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)\", ACTIONS_MODULE3 => \"[project]/src/app/(dashboard)/cuentas-inversion/holdings-actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "rsc"
+      }
+    },
+    "6059df7232fd3642f1e1304686505cab34c72345d5": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE2 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)\", ACTIONS_MODULE3 => \"[project]/src/app/(dashboard)/cuentas-inversion/holdings-actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "rsc"
+      }
+    },
+    "705283972dca136f11d95606410a52dbb0b0e00db8": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE2 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)\", ACTIONS_MODULE3 => \"[project]/src/app/(dashboard)/cuentas-inversion/holdings-actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "rsc"
+      }
+    },
+    "6086e6c6667f911ad64e8e5ae5d217c536282d46de": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE2 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)\", ACTIONS_MODULE3 => \"[project]/src/app/(dashboard)/cuentas-inversion/holdings-actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "action-browser"
+      }
+    },
+    "6064bc8e14c357e9c85bb1a27e3e1df453d335b392": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE2 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)\", ACTIONS_MODULE3 => \"[project]/src/app/(dashboard)/cuentas-inversion/holdings-actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "action-browser"
+      }
+    },
+    "60e6efc9718e3f9ddd9693636d37ec0fa9d1a51cb5": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE2 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)\", ACTIONS_MODULE3 => \"[project]/src/app/(dashboard)/cuentas-inversion/holdings-actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "action-browser"
+      }
+    },
+    "6020c23dbb1a19871dae603b16ff56009fef9376c9": {
+      "workers": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": {
+          "moduleId": "[project]/.next-internal/server/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE1 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx [app-rsc] (ecmascript)\", ACTIONS_MODULE2 => \"[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)\", ACTIONS_MODULE3 => \"[project]/src/app/(dashboard)/cuentas-inversion/holdings-actions.ts [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)",
+          "async": true
+        }
+      },
+      "layer": {
+        "app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page": "action-browser"
+      }
+    }
+  },
   "edge": {},
   "encryptionKey": "mzSMKl1yCeOyNIf+lKfc9u2a9Tr40AwbY6JytSL4N00="
 }

@@ -15,6 +15,11 @@
   --color-byg-accent:    #3B82F6;
   --color-byg-sidebar:   var(--byg-sidebar);
   --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+  /* BLOQUE 5: mayor contraste en positivos/negativos */
+  --color-emerald-400:   #10b981;
+  --color-emerald-500:   #059669;
+  --color-rose-400:      #f43f5e;
+  --color-rose-500:      #e11d48;
 }
 
 /* Light mode (default) */

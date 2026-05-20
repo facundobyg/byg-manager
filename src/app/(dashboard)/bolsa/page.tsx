@@ -43,7 +43,7 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
     .toLocaleDateString("es-AR", { month: "long", year: "numeric", timeZone: "UTC" });
 
   // Mesa Diaria data
-  const [mesaData, carteras, comitentes] = tab !== "historial"
+  const [mesaData, carteras, comitentes, lastTcMepRow] = tab !== "historial"
     ? await Promise.all([
         getOperacionesMesaDiaria(fecha),
         prisma.cartera.findMany({
@@ -56,8 +56,15 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
           select: { id: true, nombre: true, nroComitente: true },
           orderBy: { nombre: "asc" },
         }),
+        prisma.operacionBolsa.findFirst({
+          where: { tcMepDia: { not: null } },
+          orderBy: { createdAt: "desc" },
+          select: { tcMepDia: true },
+        }),
       ])
-    : [null, [], []];
+    : [null, [], [], null];
+
+  const tcMepDefault = lastTcMepRow?.tcMepDia != null ? Number(lastTcMepRow.tcMepDia) : null;
 
   // Historial data (filtered by active month)
   const historialOps = tab === "historial" ? await getOperacionesBolsa(historialMes) : null;
@@ -107,6 +114,7 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
             comitentes={comitentes}
             carteras={carteras}
             defaultFecha={fecha}
+            tcMepDefault={tcMepDefault}
           />
           <MesaDiariaTable data={mesaData} />
         </>

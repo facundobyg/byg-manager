@@ -4,11 +4,15 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { CUENTAS_OPERATIVAS_ACTUALES } from "@/lib/constants/cuentas-operativas";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function crearDivInteres(
   _prev: { error?: string; ok?: boolean },
   formData: FormData
 ): Promise<{ error?: string; ok?: boolean }> {
+  const crearDivDenied = await requireActionPermission("operativa:crear");
+  if (crearDivDenied) return crearDivDenied;
+
   const fechaStr = formData.get("fecha")?.toString();
   const ticker = formData.get("ticker")?.toString();
   const descripcion = formData.get("descripcion")?.toString();

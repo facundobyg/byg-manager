@@ -15,7 +15,7 @@ export function OperacionCambioCajasForm({ cajas }: { cajas: { id: string; label
   const [state, action, isPending] = useActionState(registrarOperacionCambioEnCajas, null);
 
   useEffect(() => {
-    if (state?.success) formRef.current?.reset();
+    if (state && 'success' in state && state.success) formRef.current?.reset();
   }, [state]);
 
   return (
@@ -126,13 +126,13 @@ export function OperacionCambioCajasForm({ cajas }: { cajas: { id: string; label
           )}
         </button>
 
-        {state?.error && (
+        {state && 'error' in state && state.error && (
           <div className="p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center gap-3">
             <div className="h-2 w-2 rounded-full bg-rose-400 animate-pulse" />
             <p className="text-rose-400 text-xs font-bold">{state.error}</p>
           </div>
         )}
-        {state?.success && (
+        {state && 'success' in state && state.success && (
           <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-3">
             <div className="h-2 w-2 rounded-full bg-emerald-400" />
             <p className="text-emerald-400 text-xs font-bold uppercase tracking-tight">Operación registrada con éxito</p>

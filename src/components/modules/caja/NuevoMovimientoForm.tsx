@@ -8,7 +8,7 @@ export function NuevoMovimientoForm({ cajaId, slug }: { cajaId: string, slug: st
   const [state, action, isPending] = useActionState(crearMovimientoCaja, null);
 
   useEffect(() => {
-    if (state?.success) {
+    if (state && 'success' in state && state.success) {
       formRef.current?.reset();
     }
   }, [state]);
@@ -69,12 +69,12 @@ export function NuevoMovimientoForm({ cajaId, slug }: { cajaId: string, slug: st
         {isPending ? "Procesando..." : "Registrar en Libro"}
       </button>
 
-      {state?.error && (
+      {state && 'error' in state && state.error && (
         <p className="text-center text-rose-400 text-xs font-bold bg-rose-500/10 border border-rose-500/20 p-2 rounded-lg">
           {state.error}
         </p>
       )}
-      {state?.success && (
+      {state && 'success' in state && state.success && (
         <p className="text-center text-emerald-400 text-xs font-bold bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg">
           {state.message}
         </p>

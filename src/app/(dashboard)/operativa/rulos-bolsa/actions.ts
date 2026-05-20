@@ -5,11 +5,15 @@ import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { CUENTAS_OPERATIVAS_ACTUALES } from "@/lib/constants/cuentas-operativas";
 import { readOnlyPreview } from "@/lib/config";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function crearRuloBolsa(
   _prev: { error?: string; ok?: boolean },
   formData: FormData
 ): Promise<{ error?: string; ok?: boolean }> {
+  const crearRuloDenied = await requireActionPermission("operativa:crear");
+  if (crearRuloDenied) return crearRuloDenied;
+
   const fechaStr = formData.get("fecha")?.toString();
   const descripcion = formData.get("descripcion")?.toString();
   const notas = formData.get("notas")?.toString();
@@ -74,6 +78,9 @@ export async function eliminarOperacionRulo(
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const elimRuloDenied = await requireActionPermission("operativa:eliminar");
+  if (elimRuloDenied) return elimRuloDenied;
 
   const id = formData.get("id")?.toString().trim();
   if (!id) return { error: "ID requerido" };

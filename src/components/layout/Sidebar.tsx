@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   LayoutDashboard,
-  TrendingUp,
   ArrowLeftRight,
   RefreshCw,
   Coins,
@@ -35,7 +34,6 @@ const NAV_STATIC: NavGroup[] = [
     group: "General",
     items: [
       { label: "Posición", href: "/posicion", icon: LayoutDashboard },
-      { label: "Análisis", href: "/analisis", icon: TrendingUp },
       { label: "Reportes", href: "/reportes", icon: BarChart3 },
     ],
   },
@@ -80,7 +78,6 @@ type CuentaInversionLink = { id: string; nombre: string };
 // Maps each sidebar href to the permission key required to view it
 const NAV_ITEM_PERMISSIONS: Record<string, string> = {
   "/posicion":                  "posicion:leer",
-  "/analisis":                  "analisis:leer",
   "/reportes":                  "patrimonio:leer",
   "/bolsa":                     "operaciones_rulo:leer",
   "/operativa/mov-diarios":     "mov_diarios:leer",

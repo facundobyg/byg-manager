@@ -2,6 +2,8 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ChevronLeft, CandlestickChart } from "lucide-react";
 import { getOperacionBolsaById } from "@/lib/data/operacion-bolsa";
+import { getAlycConfig } from "@/lib/services/config.service";
+import { canDoAction } from "@/lib/auth/permissions";
 import { ConcertarForm } from "@/components/modules/bolsa/ConcertarForm";
 import { AnularForm } from "@/components/modules/bolsa/AnularForm";
 
@@ -87,8 +89,13 @@ function InfoCell({ label, value }: { label: string; value: React.ReactNode }) {
 
 export default async function BolsaDetailPage({ params }: PageProps) {
   const { id } = await params;
-  const op = await getOperacionBolsaById(id);
+  const [op, alycConfigList, canAnularOp] = await Promise.all([
+    getOperacionBolsaById(id),
+    getAlycConfig(),
+    canDoAction("bolsa:anular"),
+  ]);
   if (!op) notFound();
+  const alycList = alycConfigList.filter((a) => a.activa).map((a) => a.nombre);
 
   const sujeto    = op.ComitenteInversion?.nombre ?? op.Cliente?.nombre ?? op.Cartera?.nombre ?? "Cartera Propia";
   const tipoLabel = TIPO_LABEL[op.tipoOperacion] ?? op.tipoOperacion;
@@ -234,30 +241,47 @@ export default async function BolsaDetailPage({ params }: PageProps) {
         </div>
       )}
 
-      {/* Resultados reales — solo si concertada/liquidada */}
+      {/* Concertación — datos reales */}
       {costoReal != null && (
         <section className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden">
           <div className="px-6 py-4 border-b border-byg-border">
-            <h2 className="text-[12px] font-bold uppercase tracking-widest text-byg-text">Resultados reales</h2>
+            <h2 className="text-[12px] font-bold uppercase tracking-widest text-byg-text">Concertación</h2>
           </div>
-          <div className="px-6 py-5 grid grid-cols-2 sm:grid-cols-3 gap-6">
-            <InfoCell label="Valor Bruto"       value={`${op.moneda} ${fmt(valorBruto)}`} />
-            <InfoCell label="Costo Real"         value={`${op.moneda} ${fmt(costoReal)}`} />
-            <InfoCell label="Neto Liquidado"     value={netoLiquidado      != null ? `${op.moneda} ${fmt(netoLiquidado)}`            : "—"} />
-            <InfoCell label="Precio Prom. Real"  value={precioPromedioReal != null ? fmt(precioPromedioReal, 4)                      : "—"} />
-            <InfoCell label="Resultado Bruto"    value={resultadoBruto     != null ? `${op.moneda} ${fmt(resultadoBruto)}`           : "—"} />
-            <InfoCell label="Resultado Neto"     value={resultadoNeto      != null ? `${op.moneda} ${fmt(resultadoNeto)}`            : "—"} />
+          <div className="px-6 py-5 flex flex-col gap-5">
+            {/* Neto liquidado final — campo más importante */}
+            {netoLiquidado != null && (
+              <div className="rounded-xl border border-byg-accent/30 bg-byg-accent/5 px-5 py-4 flex items-baseline gap-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-byg-accent">Neto liquidado final</p>
+                <p className="text-2xl font-black tabular-nums font-mono text-byg-text">
+                  {op.moneda} {fmt(netoLiquidado)}
+                </p>
+              </div>
+            )}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
+              <InfoCell label="Valor Bruto"      value={`${op.moneda} ${fmt(valorBruto)}`} />
+              <InfoCell label="Costo / Comisión" value={`${op.moneda} ${fmt(costoReal)}`} />
+              {precioPromedioReal != null && (
+                <InfoCell label="Precio Prom. Real" value={fmt(precioPromedioReal, 4)} />
+              )}
+              {/* Resultado operativo: solo si fue cargado manualmente (rulo/arbitraje) */}
+              {resultadoBruto != null && (
+                <InfoCell label="Resultado operador" value={`${op.moneda} ${fmt(resultadoBruto)}`} />
+              )}
+              {resultadoNeto != null && (
+                <InfoCell label="Resultado neto" value={`${op.moneda} ${fmt(resultadoNeto)}`} />
+              )}
+            </div>
           </div>
           {op.nroBoleto && (
             <div className="px-6 pb-4 flex items-center gap-4 text-[11px] text-byg-muted">
               <span>Boleto: <strong className="text-byg-text">{op.nroBoleto}</strong></span>
               {op.alyc && <span>ALYC: <strong className="text-byg-text">{op.alyc}</strong></span>}
-              {formDefaults.fechaLiquidacion && <span>Liquidación: <strong className="text-byg-text">{fmtDate(formDefaults.fechaLiquidacion)}</strong></span>}
+              {formDefaults.fechaLiquidacion && <span>Liq.: <strong className="text-byg-text">{fmtDate(formDefaults.fechaLiquidacion)}</strong></span>}
             </div>
           )}
           {op.motivoAnulacion && (
             <div className="px-6 pb-4">
-              <p className="text-[11px] text-rose-400 font-semibold">Anulada: {op.motivoAnulacion}</p>
+              <p className="text-[11px] text-rose-500 font-semibold">Anulada: {op.motivoAnulacion}</p>
             </div>
           )}
         </section>
@@ -274,6 +298,8 @@ export default async function BolsaDetailPage({ params }: PageProps) {
           operacionId={op.id}
           estado={op.estado}
           tipoOperacion={op.tipoOperacion}
+          fechaOperativa={op.fechaOperativa ? new Date(op.fechaOperativa).toISOString().slice(0, 10) : null}
+          alycList={alycList}
           {...formDefaults}
         />
       )}
@@ -287,7 +313,7 @@ export default async function BolsaDetailPage({ params }: PageProps) {
       )}
 
       {/* Anular */}
-      {canAnular && (
+      {canAnular && canAnularOp && (
         <div className="flex justify-end">
           <AnularForm operacionId={op.id} />
         </div>

@@ -212,6 +212,8 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules
 var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$cuentas$2d$inversion$2f$VenderHoldingForm$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/components/modules/cuentas-inversion/VenderHoldingForm.tsx [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$cuentas$2d$inversion$2f$DeleteHoldingButton$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/components/modules/cuentas-inversion/DeleteHoldingButton.tsx [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$app$2f28$dashboard$292f$cuentas$2d$inversion$2f5b$id$5d2f$comitentes$2f5b$comitenteId$5d2f$actions$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/actions.ts [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2f$permissions$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/lib/auth/permissions.ts [app-rsc] (ecmascript)");
+;
 ;
 ;
 ;
@@ -305,59 +307,81 @@ const $$RSC_SERVER_ACTION_1 = async function action($$ACTION_CLOSURE_BOUND) {
 async function ComitenteDetailPage({ params, searchParams }) {
     const { id, comitenteId } = await params;
     const { editId, venderId, comprar } = await searchParams;
-    const comitente = await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].comitenteInversion.findUnique({
-        where: {
-            id: comitenteId
-        },
-        include: {
-            CuentaInversion: {
-                select: {
-                    id: true,
-                    nombre: true
-                }
+    const [comitente, auditLogs, canDeleteHolding] = await Promise.all([
+        __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].comitenteInversion.findUnique({
+            where: {
+                id: comitenteId
             },
-            SaldoComitenteInversion: true,
-            HoldingComitenteInversion: {
-                orderBy: [
-                    {
-                        categoria: "asc"
-                    },
-                    {
-                        ticker: "asc"
+            include: {
+                CuentaInversion: {
+                    select: {
+                        id: true,
+                        nombre: true
                     }
-                ]
-            },
-            OperacionHoldingInversion: {
-                orderBy: {
-                    fecha: "desc"
                 },
-                take: 50
-            },
-            Cartera: {
-                include: {
-                    PosicionCartera: {
-                        include: {
-                            Activo: true
+                SaldoComitenteInversion: true,
+                HoldingComitenteInversion: {
+                    orderBy: [
+                        {
+                            categoria: "asc"
                         },
-                        orderBy: [
-                            {
-                                Activo: {
-                                    categoria: "asc"
-                                }
+                        {
+                            ticker: "asc"
+                        }
+                    ]
+                },
+                OperacionHoldingInversion: {
+                    orderBy: {
+                        fecha: "desc"
+                    },
+                    take: 50
+                },
+                Cartera: {
+                    include: {
+                        PosicionCartera: {
+                            include: {
+                                Activo: true
                             },
-                            {
-                                Activo: {
-                                    ticker: "asc"
+                            orderBy: [
+                                {
+                                    Activo: {
+                                        categoria: "asc"
+                                    }
+                                },
+                                {
+                                    Activo: {
+                                        ticker: "asc"
+                                    }
                                 }
-                            }
-                        ]
+                            ]
+                        }
                     }
                 }
             }
-        }
-    });
+        }),
+        __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].auditLog.findMany({
+            where: {
+                entidad: "ComitenteInversion",
+                entidadId: comitenteId
+            },
+            orderBy: {
+                createdAt: "desc"
+            },
+            take: 10,
+            include: {
+                User: {
+                    select: {
+                        name: true
+                    }
+                }
+            }
+        }),
+        (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2f$permissions$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["canDoAction"])("holdings:eliminar")
+    ]);
     if (!comitente || comitente.cuentaInversionId !== id) (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$client$2f$components$2f$navigation$2e$react$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["notFound"])();
     const isMirror = comitente.esPropioBYG && !!comitente.Cartera;
+    // Ocultar "+ Comprar" en la cuenta Banco Industrial (operaciones propias de la firma)
+    const hideComprar = comitente.CuentaInversion.nombre === "Banco Industrial" || comitente.esPropioBYG;
     // Load carteras for selector when esPropioBYG but not yet linked
     const carteras = comitente.esPropioBYG ? await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].cartera.findMany({
         where: {
@@ -464,7 +488,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "Cuentas de Inversión"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 199,
+                                lineNumber: 211,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -472,7 +496,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "/"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 202,
+                                lineNumber: 214,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$client$2f$app$2d$dir$2f$link$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["default"], {
@@ -481,13 +505,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: comitente.CuentaInversion.nombre
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 203,
+                                lineNumber: 215,
                                 columnNumber: 11
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 198,
+                        lineNumber: 210,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -501,7 +525,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                         children: comitente.razonSocial ?? comitente.nombre
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 210,
+                                        lineNumber: 222,
                                         columnNumber: 13
                                     }, this),
                                     comitente.razonSocial && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -509,7 +533,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                         children: comitente.nombre
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 214,
+                                        lineNumber: 226,
                                         columnNumber: 15
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -523,7 +547,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 217,
+                                                lineNumber: 229,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -531,7 +555,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: PROD_LABEL[comitente.productor]
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 220,
+                                                lineNumber: 232,
                                                 columnNumber: 15
                                             }, this),
                                             comitente.esPropioBYG && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -539,7 +563,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "Propio BYG"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 224,
+                                                lineNumber: 236,
                                                 columnNumber: 17
                                             }, this),
                                             isMirror && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -547,7 +571,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "Espejo Cartera"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 229,
+                                                lineNumber: 241,
                                                 columnNumber: 17
                                             }, this),
                                             !comitente.activo && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -555,13 +579,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "Inactivo"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 234,
+                                                lineNumber: 246,
                                                 columnNumber: 17
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 216,
+                                        lineNumber: 228,
                                         columnNumber: 13
                                     }, this),
                                     isMirror && comitente.Cartera && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$client$2f$app$2d$dir$2f$link$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["default"], {
@@ -573,13 +597,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 240,
+                                        lineNumber: 252,
                                         columnNumber: 15
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 209,
+                                lineNumber: 221,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$client$2f$app$2d$dir$2f$link$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["default"], {
@@ -590,19 +614,19 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "PDF posición"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 248,
+                                lineNumber: 260,
                                 columnNumber: 11
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 208,
+                        lineNumber: 220,
                         columnNumber: 9
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                lineNumber: 197,
+                lineNumber: 209,
                 columnNumber: 7
             }, this),
             comitente.esPropioBYG && !isMirror && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -613,7 +637,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                         children: "Este comitente es propio BYG pero no está vinculado a ninguna cartera espejo."
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 262,
+                        lineNumber: 274,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("form", {
@@ -630,7 +654,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                         children: "— Sin vincular —"
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 278,
+                                        lineNumber: 290,
                                         columnNumber: 15
                                     }, this),
                                     carteras.map((c)=>/*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("option", {
@@ -638,13 +662,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                             children: c.nombre
                                         }, c.id, false, {
                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                            lineNumber: 280,
+                                            lineNumber: 292,
                                             columnNumber: 17
                                         }, this))
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 273,
+                                lineNumber: 285,
                                 columnNumber: 13
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -653,19 +677,19 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "Vincular cartera"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 283,
+                                lineNumber: 295,
                                 columnNumber: 13
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 265,
+                        lineNumber: 277,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                lineNumber: 261,
+                lineNumber: 273,
                 columnNumber: 9
             }, this),
             isMirror && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -680,7 +704,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: comitente.Cartera.nombre
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 297,
+                                lineNumber: 309,
                                 columnNumber: 32
                             }, this),
                             ". Lectura de ",
@@ -689,14 +713,14 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "PosicionCartera"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 297,
+                                lineNumber: 309,
                                 columnNumber: 108
                             }, this),
                             "."
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 296,
+                        lineNumber: 308,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("form", {
@@ -707,18 +731,18 @@ async function ComitenteDetailPage({ params, searchParams }) {
                             children: "Desvincular"
                         }, void 0, false, {
                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                            lineNumber: 305,
+                            lineNumber: 317,
                             columnNumber: 13
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 299,
+                        lineNumber: 311,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                lineNumber: 295,
+                lineNumber: 307,
                 columnNumber: 9
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -732,7 +756,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "Cartera total estimada"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 318,
+                                lineNumber: 330,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -743,7 +767,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 319,
+                                lineNumber: 331,
                                 columnNumber: 11
                             }, this),
                             saldoARS > 0 && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -755,13 +779,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 323,
+                                lineNumber: 335,
                                 columnNumber: 13
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 317,
+                        lineNumber: 329,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -772,7 +796,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "Saldos disponibles"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 328,
+                                lineNumber: 340,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -786,7 +810,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "ARS"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 331,
+                                                lineNumber: 343,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -797,13 +821,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 332,
+                                                lineNumber: 344,
                                                 columnNumber: 15
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 330,
+                                        lineNumber: 342,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -814,7 +838,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "Cable"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 335,
+                                                lineNumber: 347,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -825,13 +849,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 336,
+                                                lineNumber: 348,
                                                 columnNumber: 15
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 334,
+                                        lineNumber: 346,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -842,7 +866,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "MEP"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 339,
+                                                lineNumber: 351,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -853,25 +877,25 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 340,
+                                                lineNumber: 352,
                                                 columnNumber: 15
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 338,
+                                        lineNumber: 350,
                                         columnNumber: 13
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 329,
+                                lineNumber: 341,
                                 columnNumber: 11
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 327,
+                        lineNumber: 339,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -882,7 +906,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: isMirror ? "Posiciones" : "Holdings activos"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 346,
+                                lineNumber: 358,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -890,7 +914,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: isMirror ? mirrorRows.length : comitente.HoldingComitenteInversion.length
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 349,
+                                lineNumber: 361,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -902,13 +926,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 352,
+                                lineNumber: 364,
                                 columnNumber: 11
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 345,
+                        lineNumber: 357,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -919,7 +943,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "Última actualización"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 359,
+                                lineNumber: 371,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -931,7 +955,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 })
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 360,
+                                lineNumber: 372,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -942,19 +966,19 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 })
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 363,
+                                lineNumber: 375,
                                 columnNumber: 11
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 358,
+                        lineNumber: 370,
                         columnNumber: 9
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                lineNumber: 316,
+                lineNumber: 328,
                 columnNumber: 7
             }, this),
             allocRows.length > 0 && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("section", {
@@ -965,7 +989,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                         children: "Asignación por categoría"
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 372,
+                        lineNumber: 384,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -982,7 +1006,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "Categoría"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 377,
+                                                lineNumber: 389,
                                                 columnNumber: 19
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("th", {
@@ -990,7 +1014,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "Valor USD"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 378,
+                                                lineNumber: 390,
                                                 columnNumber: 19
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("th", {
@@ -998,7 +1022,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "%"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 379,
+                                                lineNumber: 391,
                                                 columnNumber: 19
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("th", {
@@ -1006,18 +1030,18 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: "Participación"
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 380,
+                                                lineNumber: 392,
                                                 columnNumber: 19
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 376,
+                                        lineNumber: 388,
                                         columnNumber: 17
                                     }, this)
                                 }, void 0, false, {
                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                    lineNumber: 375,
+                                    lineNumber: 387,
                                     columnNumber: 15
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("tbody", {
@@ -1032,12 +1056,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                             children: row.label
                                                         }, void 0, false, {
                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                            lineNumber: 387,
+                                                            lineNumber: 399,
                                                             columnNumber: 23
                                                         }, this)
                                                     }, void 0, false, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 386,
+                                                        lineNumber: 398,
                                                         columnNumber: 21
                                                     }, this),
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1045,7 +1069,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         children: fmt(row.valor)
                                                     }, void 0, false, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 391,
+                                                        lineNumber: 403,
                                                         columnNumber: 21
                                                     }, this),
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1056,7 +1080,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 392,
+                                                        lineNumber: 404,
                                                         columnNumber: 21
                                                     }, this),
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1070,23 +1094,23 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                 }
                                                             }, void 0, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 395,
+                                                                lineNumber: 407,
                                                                 columnNumber: 25
                                                             }, this)
                                                         }, void 0, false, {
                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                            lineNumber: 394,
+                                                            lineNumber: 406,
                                                             columnNumber: 23
                                                         }, this)
                                                     }, void 0, false, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 393,
+                                                        lineNumber: 405,
                                                         columnNumber: 21
                                                     }, this)
                                                 ]
                                             }, row.label, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 385,
+                                                lineNumber: 397,
                                                 columnNumber: 19
                                             }, this)),
                                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("tr", {
@@ -1097,7 +1121,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                     children: "Total"
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 404,
+                                                    lineNumber: 416,
                                                     columnNumber: 19
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1105,7 +1129,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                     children: fmt(totalCarteraUSD)
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 405,
+                                                    lineNumber: 417,
                                                     columnNumber: 19
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1113,41 +1137,41 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                     children: "100%"
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 406,
+                                                    lineNumber: 418,
                                                     columnNumber: 19
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {}, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 407,
+                                                    lineNumber: 419,
                                                     columnNumber: 19
                                                 }, this)
                                             ]
                                         }, void 0, true, {
                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                            lineNumber: 403,
+                                            lineNumber: 415,
                                             columnNumber: 17
                                         }, this)
                                     ]
                                 }, void 0, true, {
                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                    lineNumber: 383,
+                                    lineNumber: 395,
                                     columnNumber: 15
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                            lineNumber: 374,
+                            lineNumber: 386,
                             columnNumber: 13
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 373,
+                        lineNumber: 385,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                lineNumber: 371,
+                lineNumber: 383,
                 columnNumber: 9
             }, this),
             isMirror && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("section", {
@@ -1161,7 +1185,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "Posiciones espejo"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 419,
+                                lineNumber: 431,
                                 columnNumber: 13
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1169,13 +1193,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "Solo lectura"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 422,
+                                lineNumber: 434,
                                 columnNumber: 13
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 418,
+                        lineNumber: 430,
                         columnNumber: 11
                     }, this),
                     mirrorRows.length === 0 ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1189,19 +1213,19 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                     children: comitente.Cartera.nombre
                                 }, void 0, false, {
                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                    lineNumber: 430,
+                                    lineNumber: 442,
                                     columnNumber: 28
                                 }, this),
                                 " no tiene posiciones cargadas."
                             ]
                         }, void 0, true, {
                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                            lineNumber: 429,
+                            lineNumber: 441,
                             columnNumber: 15
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 428,
+                        lineNumber: 440,
                         columnNumber: 13
                     }, this) : /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
                         className: "flex flex-col gap-4",
@@ -1222,7 +1246,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         children: CAT_LABEL[cat]
                                                     }, void 0, false, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 442,
+                                                        lineNumber: 454,
                                                         columnNumber: 25
                                                     }, this),
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1233,13 +1257,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 445,
+                                                        lineNumber: 457,
                                                         columnNumber: 25
                                                     }, this)
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 441,
+                                                lineNumber: 453,
                                                 columnNumber: 23
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1256,19 +1280,19 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 450,
+                                                        lineNumber: 462,
                                                         columnNumber: 27
                                                     }, this)
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 447,
+                                                lineNumber: 459,
                                                 columnNumber: 23
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 440,
+                                        lineNumber: 452,
                                         columnNumber: 21
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("table", {
@@ -1289,17 +1313,17 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                             children: h
                                                         }, i, false, {
                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                            lineNumber: 460,
+                                                            lineNumber: 472,
                                                             columnNumber: 29
                                                         }, this))
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 458,
+                                                    lineNumber: 470,
                                                     columnNumber: 25
                                                 }, this)
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 457,
+                                                lineNumber: 469,
                                                 columnNumber: 23
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("tbody", {
@@ -1311,7 +1335,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                 children: r.ticker
                                                             }, void 0, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 472,
+                                                                lineNumber: 484,
                                                                 columnNumber: 29
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1321,12 +1345,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                     children: "—"
                                                                 }, void 0, false, {
                                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                    lineNumber: 474,
+                                                                    lineNumber: 486,
                                                                     columnNumber: 49
                                                                 }, this)
                                                             }, void 0, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 473,
+                                                                lineNumber: 485,
                                                                 columnNumber: 29
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1334,7 +1358,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                 children: fmt(r.cantidad, 4)
                                                             }, void 0, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 476,
+                                                                lineNumber: 488,
                                                                 columnNumber: 29
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1342,7 +1366,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                 children: fmt(r.precioCompra, 4)
                                                             }, void 0, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 477,
+                                                                lineNumber: 489,
                                                                 columnNumber: 29
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1352,12 +1376,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                     children: "—"
                                                                 }, void 0, false, {
                                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                    lineNumber: 479,
+                                                                    lineNumber: 491,
                                                                     columnNumber: 83
                                                                 }, this)
                                                             }, void 0, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 478,
+                                                                lineNumber: 490,
                                                                 columnNumber: 29
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1365,42 +1389,42 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                 children: fmt(r.valor)
                                                             }, void 0, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 481,
+                                                                lineNumber: 493,
                                                                 columnNumber: 29
                                                             }, this)
                                                         ]
                                                     }, r.ticker, true, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 471,
+                                                        lineNumber: 483,
                                                         columnNumber: 27
                                                     }, this))
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 469,
+                                                lineNumber: 481,
                                                 columnNumber: 23
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 456,
+                                        lineNumber: 468,
                                         columnNumber: 21
                                     }, this)
                                 ]
                             }, cat, true, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 439,
+                                lineNumber: 451,
                                 columnNumber: 19
                             }, this);
                         })
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 434,
+                        lineNumber: 446,
                         columnNumber: 13
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                lineNumber: 417,
+                lineNumber: 429,
                 columnNumber: 9
             }, this),
             !isMirror && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("section", {
@@ -1414,22 +1438,22 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                 children: "Holdings"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 498,
+                                lineNumber: 510,
                                 columnNumber: 13
                             }, this),
-                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$client$2f$app$2d$dir$2f$link$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["default"], {
+                            !hideComprar && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$client$2f$app$2d$dir$2f$link$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["default"], {
                                 href: comprar ? baseUrl : `${baseUrl}?comprar=1`,
                                 className: `px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${comprar ? "bg-blue-100 text-blue-700" : "bg-blue-600 text-white hover:bg-blue-700"}`,
                                 children: comprar ? "Cerrar" : "+ Comprar"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 499,
-                                columnNumber: 13
+                                lineNumber: 512,
+                                columnNumber: 15
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 497,
+                        lineNumber: 509,
                         columnNumber: 11
                     }, this),
                     comprar && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$cuentas$2d$inversion$2f$ComprarHoldingForm$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["ComprarHoldingForm"], {
@@ -1438,7 +1462,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                         cancelHref: baseUrl
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 510,
+                        lineNumber: 524,
                         columnNumber: 13
                     }, this),
                     comitente.HoldingComitenteInversion.length === 0 ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1448,12 +1472,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                             children: 'Sin holdings. Usar "+ Comprar" para agregar.'
                         }, void 0, false, {
                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                            lineNumber: 515,
+                            lineNumber: 529,
                             columnNumber: 15
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 514,
+                        lineNumber: 528,
                         columnNumber: 13
                     }, this) : /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
                         className: "flex flex-col gap-4",
@@ -1474,7 +1498,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         children: CAT_LABEL[cat]
                                                     }, void 0, false, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 526,
+                                                        lineNumber: 540,
                                                         columnNumber: 25
                                                     }, this),
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1485,13 +1509,13 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 529,
+                                                        lineNumber: 543,
                                                         columnNumber: 25
                                                     }, this)
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 525,
+                                                lineNumber: 539,
                                                 columnNumber: 23
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1508,19 +1532,19 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 534,
+                                                        lineNumber: 548,
                                                         columnNumber: 27
                                                     }, this)
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 531,
+                                                lineNumber: 545,
                                                 columnNumber: 23
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 524,
+                                        lineNumber: 538,
                                         columnNumber: 21
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("table", {
@@ -1544,17 +1568,17 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                             children: h
                                                         }, i, false, {
                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                            lineNumber: 544,
+                                                            lineNumber: 558,
                                                             columnNumber: 29
                                                         }, this))
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 542,
+                                                    lineNumber: 556,
                                                     columnNumber: 25
                                                 }, this)
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 541,
+                                                lineNumber: 555,
                                                 columnNumber: 23
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("tbody", {
@@ -1577,7 +1601,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                         children: h.ticker
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 573,
+                                                                        lineNumber: 587,
                                                                         columnNumber: 33
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1587,12 +1611,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                             children: "—"
                                                                         }, void 0, false, {
                                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                            lineNumber: 575,
+                                                                            lineNumber: 589,
                                                                             columnNumber: 53
                                                                         }, this)
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 574,
+                                                                        lineNumber: 588,
                                                                         columnNumber: 33
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1600,7 +1624,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                         children: fmt(qty, 4)
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 577,
+                                                                        lineNumber: 591,
                                                                         columnNumber: 33
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1608,7 +1632,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                         children: fmt(pp, 4)
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 578,
+                                                                        lineNumber: 592,
                                                                         columnNumber: 33
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1618,12 +1642,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                             children: "—"
                                                                         }, void 0, false, {
                                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                            lineNumber: 580,
+                                                                            lineNumber: 594,
                                                                             columnNumber: 66
                                                                         }, this)
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 579,
+                                                                        lineNumber: 593,
                                                                         columnNumber: 33
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1631,7 +1655,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                         children: fmt(valor)
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 582,
+                                                                        lineNumber: 596,
                                                                         columnNumber: 33
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1641,12 +1665,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                             children: "—"
                                                                         }, void 0, false, {
                                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                            lineNumber: 586,
+                                                                            lineNumber: 600,
                                                                             columnNumber: 39
                                                                         }, this)
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 583,
+                                                                        lineNumber: 597,
                                                                         columnNumber: 33
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1660,12 +1684,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                             children: "—"
                                                                         }, void 0, false, {
                                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                            lineNumber: 591,
+                                                                            lineNumber: 605,
                                                                             columnNumber: 39
                                                                         }, this)
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 588,
+                                                                        lineNumber: 602,
                                                                         columnNumber: 33
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1679,7 +1703,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                                     children: "Vender"
                                                                                 }, void 0, false, {
                                                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                                    lineNumber: 595,
+                                                                                    lineNumber: 609,
                                                                                     columnNumber: 37
                                                                                 }, this),
                                                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$client$2f$app$2d$dir$2f$link$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["default"], {
@@ -1688,33 +1712,33 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                                     children: "Editar"
                                                                                 }, void 0, false, {
                                                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                                    lineNumber: 603,
+                                                                                    lineNumber: 617,
                                                                                     columnNumber: 37
                                                                                 }, this),
-                                                                                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$cuentas$2d$inversion$2f$DeleteHoldingButton$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["DeleteHoldingButton"], {
+                                                                                canDeleteHolding && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$cuentas$2d$inversion$2f$DeleteHoldingButton$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["DeleteHoldingButton"], {
                                                                                     holdingId: h.id,
                                                                                     comitenteId: comitenteId,
                                                                                     cuentaInversionId: id
                                                                                 }, void 0, false, {
                                                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                                    lineNumber: 611,
-                                                                                    columnNumber: 37
+                                                                                    lineNumber: 626,
+                                                                                    columnNumber: 39
                                                                                 }, this)
                                                                             ]
                                                                         }, void 0, true, {
                                                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                            lineNumber: 594,
+                                                                            lineNumber: 608,
                                                                             columnNumber: 35
                                                                         }, this)
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 593,
+                                                                        lineNumber: 607,
                                                                         columnNumber: 33
                                                                     }, this)
                                                                 ]
                                                             }, void 0, true, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 568,
+                                                                lineNumber: 582,
                                                                 columnNumber: 31
                                                             }, this),
                                                             isVend && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("tr", {
@@ -1731,17 +1755,17 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                         cancelHref: baseUrl
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 623,
+                                                                        lineNumber: 639,
                                                                         columnNumber: 37
                                                                     }, this)
                                                                 }, void 0, false, {
                                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                    lineNumber: 622,
+                                                                    lineNumber: 638,
                                                                     columnNumber: 35
                                                                 }, this)
                                                             }, `vend-${h.id}`, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 621,
+                                                                lineNumber: 637,
                                                                 columnNumber: 33
                                                             }, this),
                                                             isEdit && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("tr", {
@@ -1763,53 +1787,53 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                                         cancelHref: baseUrl
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                        lineNumber: 638,
+                                                                        lineNumber: 654,
                                                                         columnNumber: 37
                                                                     }, this)
                                                                 }, void 0, false, {
                                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                    lineNumber: 637,
+                                                                    lineNumber: 653,
                                                                     columnNumber: 35
                                                                 }, this)
                                                             }, `edit-${h.id}`, false, {
                                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                                lineNumber: 636,
+                                                                lineNumber: 652,
                                                                 columnNumber: 33
                                                             }, this)
                                                         ]
                                                     }, h.id, true, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 567,
+                                                        lineNumber: 581,
                                                         columnNumber: 29
                                                     }, this);
                                                 })
                                             }, void 0, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 555,
+                                                lineNumber: 569,
                                                 columnNumber: 23
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 540,
+                                        lineNumber: 554,
                                         columnNumber: 21
                                     }, this)
                                 ]
                             }, cat, true, {
                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                lineNumber: 523,
+                                lineNumber: 537,
                                 columnNumber: 19
                             }, this);
                         })
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 518,
+                        lineNumber: 532,
                         columnNumber: 13
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                lineNumber: 496,
+                lineNumber: 508,
                 columnNumber: 9
             }, this),
             !isMirror && comitente.OperacionHoldingInversion.length > 0 && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("section", {
@@ -1820,7 +1844,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                         children: "Historial de operaciones"
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 670,
+                        lineNumber: 686,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1845,17 +1869,17 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                 children: h
                                             }, i, false, {
                                                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                lineNumber: 678,
+                                                lineNumber: 694,
                                                 columnNumber: 21
                                             }, this))
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                        lineNumber: 676,
+                                        lineNumber: 692,
                                         columnNumber: 17
                                     }, this)
                                 }, void 0, false, {
                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                    lineNumber: 675,
+                                    lineNumber: 691,
                                     columnNumber: 15
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("tbody", {
@@ -1871,7 +1895,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                     })
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 692,
+                                                    lineNumber: 708,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1881,12 +1905,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         children: TIPO_LABEL[op.tipo]
                                                     }, void 0, false, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 696,
+                                                        lineNumber: 712,
                                                         columnNumber: 23
                                                     }, this)
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 695,
+                                                    lineNumber: 711,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1894,7 +1918,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                     children: op.ticker
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 700,
+                                                    lineNumber: 716,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1904,12 +1928,12 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         children: CAT_LABEL[op.categoria]
                                                     }, void 0, false, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 702,
+                                                        lineNumber: 718,
                                                         columnNumber: 23
                                                     }, this)
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 701,
+                                                    lineNumber: 717,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1917,7 +1941,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                     children: fmt(Number(op.cantidad), 4)
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 706,
+                                                    lineNumber: 722,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1925,7 +1949,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                     children: fmt(Number(op.precio), 4)
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 707,
+                                                    lineNumber: 723,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1933,7 +1957,7 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                     children: fmt(Number(op.cantidad) * Number(op.precio))
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 708,
+                                                    lineNumber: 724,
                                                     columnNumber: 21
                                                 }, this),
                                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("td", {
@@ -1943,46 +1967,119 @@ async function ComitenteDetailPage({ params, searchParams }) {
                                                         children: "—"
                                                     }, void 0, false, {
                                                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                        lineNumber: 711,
+                                                        lineNumber: 727,
                                                         columnNumber: 75
                                                     }, this)
                                                 }, void 0, false, {
                                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                                    lineNumber: 711,
+                                                    lineNumber: 727,
                                                     columnNumber: 21
                                                 }, this)
                                             ]
                                         }, op.id, true, {
                                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                            lineNumber: 691,
+                                            lineNumber: 707,
                                             columnNumber: 19
                                         }, this))
                                 }, void 0, false, {
                                     fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                                    lineNumber: 689,
+                                    lineNumber: 705,
                                     columnNumber: 15
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                            lineNumber: 674,
+                            lineNumber: 690,
                             columnNumber: 13
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                        lineNumber: 673,
+                        lineNumber: 689,
                         columnNumber: 11
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-                lineNumber: 669,
+                lineNumber: 685,
+                columnNumber: 9
+            }, this),
+            auditLogs.length > 0 && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("section", {
+                className: "flex flex-col gap-3",
+                children: [
+                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("h2", {
+                        className: "text-[10px] font-black uppercase tracking-[0.3em] text-slate-400",
+                        children: "Últimos movimientos"
+                    }, void 0, false, {
+                        fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
+                        lineNumber: 739,
+                        columnNumber: 11
+                    }, this),
+                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                        className: "bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden",
+                        children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                            className: "divide-y divide-slate-50",
+                            children: auditLogs.map((log)=>{
+                                const desc = log.datosNuevos?.description;
+                                return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                                    className: "px-4 py-2.5 flex items-center gap-3 text-xs",
+                                    children: [
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                            className: "text-slate-400 tabular-nums whitespace-nowrap font-mono text-[10px]",
+                                            children: new Date(log.createdAt).toLocaleString("es-AR", {
+                                                day: "2-digit",
+                                                month: "2-digit",
+                                                year: "2-digit",
+                                                hour: "2-digit",
+                                                minute: "2-digit"
+                                            })
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
+                                            lineNumber: 746,
+                                            columnNumber: 21
+                                        }, this),
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                            className: "text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 uppercase tracking-widest shrink-0",
+                                            children: log.accion.replace(/_/g, " ")
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
+                                            lineNumber: 752,
+                                            columnNumber: 21
+                                        }, this),
+                                        /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                            className: "text-slate-600 truncate",
+                                            children: desc ?? "—"
+                                        }, void 0, false, {
+                                            fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
+                                            lineNumber: 755,
+                                            columnNumber: 21
+                                        }, this)
+                                    ]
+                                }, log.id, true, {
+                                    fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
+                                    lineNumber: 745,
+                                    columnNumber: 19
+                                }, this);
+                            })
+                        }, void 0, false, {
+                            fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
+                            lineNumber: 741,
+                            columnNumber: 13
+                        }, this)
+                    }, void 0, false, {
+                        fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
+                        lineNumber: 740,
+                        columnNumber: 11
+                    }, this)
+                ]
+            }, void 0, true, {
+                fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
+                lineNumber: 738,
                 columnNumber: 9
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/src/app/(dashboard)/cuentas-inversion/[id]/comitentes/[comitenteId]/page.tsx",
-        lineNumber: 194,
+        lineNumber: 206,
         columnNumber: 5
     }, this);
 }
@@ -2011,14 +2108,20 @@ __turbopack_async_module__(async (__turbopack_handle_async_dependencies__, __tur
 });
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$build$2f$webpack$2f$loaders$2f$next$2d$flight$2d$loader$2f$server$2d$reference$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/dist/build/webpack/loaders/next-flight-loader/server-reference.js [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$app$2d$render$2f$encryption$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/dist/server/app-render/encryption.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$auth$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/auth.ts [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/lib/prisma.ts [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/cache.js [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$externals$5d2f40$prisma$2f$client$2f$runtime$2f$library__$5b$external$5d$__$2840$prisma$2f$client$2f$runtime$2f$library$2c$__esm_import$29$__ = __turbopack_context__.i("[externals]/@prisma/client/runtime/library [external] (@prisma/client/runtime/library, esm_import)");
+var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$services$2f$audit$2e$service$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/lib/services/audit.service.ts [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2f$permissions$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/src/lib/auth/permissions.ts [app-rsc] (ecmascript)");
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$build$2f$webpack$2f$loaders$2f$next$2d$flight$2d$loader$2f$action$2d$validate$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/dist/build/webpack/loaders/next-flight-loader/action-validate.js [app-rsc] (ecmascript)");
 var __turbopack_async_dependencies__ = __turbopack_handle_async_dependencies__([
     __TURBOPACK__imported__module__$5b$externals$5d2f40$prisma$2f$client$2f$runtime$2f$library__$5b$external$5d$__$2840$prisma$2f$client$2f$runtime$2f$library$2c$__esm_import$29$__
 ]);
 ([__TURBOPACK__imported__module__$5b$externals$5d2f40$prisma$2f$client$2f$runtime$2f$library__$5b$external$5d$__$2840$prisma$2f$client$2f$runtime$2f$library$2c$__esm_import$29$__] = __turbopack_async_dependencies__.then ? (await __turbopack_async_dependencies__)() : __turbopack_async_dependencies__);
+;
+;
+;
 ;
 ;
 ;
@@ -2045,6 +2148,8 @@ function revalidate(cuentaId, comitenteId) {
     (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["revalidatePath"])(`/cuentas-inversion/${cuentaId}/comitentes/${comitenteId}`);
 }
 async function comprarHolding(_, formData) {
+    const denied = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2f$permissions$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["requireActionPermission"])("holdings:comprar");
+    if (denied) return denied;
     const comitenteId = formData.get("comitenteId")?.toString().trim();
     const cuentaId = formData.get("cuentaInversionId")?.toString().trim();
     const ticker = formData.get("ticker")?.toString().trim().toUpperCase();
@@ -2128,12 +2233,24 @@ async function comprarHolding(_, formData) {
             }
         });
     });
+    const session = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$auth$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["auth"])();
+    const userId = session?.user?.id;
+    const userName = session?.user?.name ?? "Usuario";
+    await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$services$2f$audit$2e$service$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["writeAuditLog"])({
+        userId,
+        accion: "ALTA_HOLDING",
+        entidad: "ComitenteInversion",
+        entidadId: comitenteId,
+        description: `${userName} cargó holding ${ticker} ${cantidad.toFixed(4)} @ ${precio.toFixed(4)}`
+    });
     revalidate(cuentaId, comitenteId);
     return {
         success: true
     };
 }
 async function venderHolding(_, formData) {
+    const denied = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2f$permissions$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["requireActionPermission"])("holdings:vender");
+    if (denied) return denied;
     const holdingId = formData.get("holdingId")?.toString().trim();
     const comitenteId = formData.get("comitenteId")?.toString().trim();
     const cuentaId = formData.get("cuentaInversionId")?.toString().trim();
@@ -2196,12 +2313,24 @@ async function venderHolding(_, formData) {
             });
         }
     });
+    const session = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$auth$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["auth"])();
+    const userId = session?.user?.id;
+    const userName = session?.user?.name ?? "Usuario";
+    await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$services$2f$audit$2e$service$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["writeAuditLog"])({
+        userId,
+        accion: "VENTA_HOLDING",
+        entidad: "ComitenteInversion",
+        entidadId: comitenteId,
+        description: `${userName} registró venta ${holding.ticker} ${cantidad.toFixed(4)} @ ${precio.toFixed(4)}`
+    });
     revalidate(cuentaId, comitenteId);
     return {
         success: true
     };
 }
 async function editHolding(_, formData) {
+    const denied = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2f$permissions$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["requireActionPermission"])("holdings:editar");
+    if (denied) return denied;
     const holdingId = formData.get("holdingId")?.toString().trim();
     const comitenteId = formData.get("comitenteId")?.toString().trim();
     const cuentaId = formData.get("cuentaInversionId")?.toString().trim();
@@ -2304,16 +2433,37 @@ async function updatePreciosByTicker(_, formData) {
     };
 }
 async function deleteHolding(_, formData) {
+    const denied = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$auth$2f$permissions$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["requireActionPermission"])("holdings:eliminar");
+    if (denied) return denied;
     const holdingId = formData.get("holdingId")?.toString().trim();
     const comitenteId = formData.get("comitenteId")?.toString().trim();
     const cuentaId = formData.get("cuentaInversionId")?.toString().trim();
     if (!holdingId || !comitenteId || !cuentaId) return {
         error: "ID requerido"
     };
+    const holding = await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].holdingComitenteInversion.findUnique({
+        where: {
+            id: holdingId
+        },
+        select: {
+            ticker: true,
+            cantidad: true
+        }
+    });
     await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].holdingComitenteInversion.delete({
         where: {
             id: holdingId
         }
+    });
+    const session = await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$auth$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["auth"])();
+    const userId = session?.user?.id;
+    const userName = session?.user?.name ?? "Usuario";
+    await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$services$2f$audit$2e$service$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["writeAuditLog"])({
+        userId,
+        accion: "BAJA_HOLDING",
+        entidad: "ComitenteInversion",
+        entidadId: comitenteId,
+        description: `${userName} eliminó holding ${holding?.ticker ?? holdingId.slice(0, 8)} (${holding ? Number(holding.cantidad).toFixed(4) : "—"} u.)`
     });
     revalidate(cuentaId, comitenteId);
     return {

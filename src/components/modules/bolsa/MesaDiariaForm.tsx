@@ -11,43 +11,93 @@ type Props = {
   comitentes:   Comitente[];
   carteras:     Cartera[];
   defaultFecha: string;
+  tcMepDefault?: number | null;
 };
 
-const TIPO_OPTS = [
-  { v: "COMPRA_BONO",        l: "Compra Bono" },
-  { v: "VENTA_BONO",         l: "Venta Bono" },
-  { v: "COMPRA_ACCION",      l: "Compra Acción" },
-  { v: "VENTA_ACCION",       l: "Venta Acción" },
-  { v: "COMPRA_CEDEAR",      l: "Compra CEDEAR" },
-  { v: "VENTA_CEDEAR",       l: "Venta CEDEAR" },
-  { v: "CAUCION_COLOCADORA", l: "Caución Coloc." },
-  { v: "CAUCION_TOMADORA",   l: "Caución Tomad." },
-  { v: "FUTURO",             l: "Futuro" },
-  { v: "OPCION_CALL",        l: "Opción Call" },
-  { v: "OPCION_PUT",         l: "Opción Put" },
+// ── Mapeo instrumento + dirección → TipoOpBolsa ──────────────────────────────
+const INSTRUMENTO_OPTS = [
+  { v: "BONO",     l: "Bono" },
+  { v: "ACCION",   l: "Acción" },
+  { v: "CEDEAR",   l: "CEDEAR" },
+  { v: "CAUCION",  l: "Caución" },
+  { v: "FUTURO",   l: "Futuro" },
+  { v: "OPCIONES", l: "Opciones" },
+  { v: "MEP",      l: "MEP" },
+  { v: "SENEBI",   l: "SENEBI" },
 ] as const;
+
+type Instrumento = typeof INSTRUMENTO_OPTS[number]["v"];
+
+const DIRECCION_OPTS: Record<Instrumento, { v: string; l: string }[]> = {
+  BONO:     [{ v: "COMPRA", l: "Compra" }, { v: "VENTA", l: "Venta" }],
+  ACCION:   [{ v: "COMPRA", l: "Compra" }, { v: "VENTA", l: "Venta" }],
+  CEDEAR:   [{ v: "COMPRA", l: "Compra" }, { v: "VENTA", l: "Venta" }],
+  CAUCION:  [{ v: "COLOCADORA", l: "Colocadora" }, { v: "TOMADORA", l: "Tomadora" }],
+  FUTURO:   [],
+  OPCIONES: [{ v: "CALL", l: "Call" }, { v: "PUT", l: "Put" }],
+  MEP:      [],
+  SENEBI:   [],
+};
+
+function toTipoOp(instrumento: Instrumento, direccion: string): string {
+  switch (instrumento) {
+    case "BONO":     return direccion === "VENTA"     ? "VENTA_BONO"          : "COMPRA_BONO";
+    case "ACCION":   return direccion === "VENTA"     ? "VENTA_ACCION"        : "COMPRA_ACCION";
+    case "CEDEAR":   return direccion === "VENTA"     ? "VENTA_CEDEAR"        : "COMPRA_CEDEAR";
+    case "CAUCION":  return direccion === "TOMADORA"  ? "CAUCION_TOMADORA"    : "CAUCION_COLOCADORA";
+    case "FUTURO":   return "FUTURO";
+    case "OPCIONES": return direccion === "PUT"       ? "OPCION_PUT"          : "OPCION_CALL";
+    case "MEP":      return "MEP";
+    case "SENEBI":   return "SENEBI";
+    default:         return "COMPRA_BONO";
+  }
+}
 
 const CAUCION_TIPOS = new Set(["CAUCION_COLOCADORA", "CAUCION_TOMADORA"]);
 
-const inputCls =
-  "w-full px-3 py-2 text-[12px] bg-byg-bg border border-byg-border rounded-lg text-byg-text placeholder:text-byg-muted/50 focus:outline-none focus:ring-1 focus:ring-byg-accent/40";
-const labelCls = "text-[10px] font-bold uppercase tracking-widest text-byg-muted mb-1 block";
+const iCls =
+  "w-full px-3 py-2 text-[12px] bg-byg-bg border border-byg-border rounded-lg text-byg-text placeholder:text-byg-muted/50 focus:outline-none focus:ring-1 focus:ring-byg-accent/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
+const lCls = "text-[10px] font-bold uppercase tracking-widest text-byg-muted mb-1 block";
 
-export function MesaDiariaForm({ comitentes, carteras, defaultFecha }: Props) {
+export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefault }: Props) {
   const [state, action, pending] = useActionState(crearOpMesaDiaria, null);
-  const [formKey,          setFormKey]          = useState(0);
-  const [sujetoTipo,       setSujetoTipo]       = useState<"cartera" | "comitente">("cartera");
-  const [tipo,             setTipo]             = useState("COMPRA_BONO");
-  const [expanded,         setExpanded]         = useState(true);
-  const [comitenteSearch,  setComitenteSearch]  = useState("");
+  const [formKey,         setFormKey]         = useState(0);
+  const [sujetoTipo,      setSujetoTipo]      = useState<"cartera" | "comitente">("cartera");
+  const [instrumento,     setInstrumento]     = useState<Instrumento>("BONO");
+  const [direccion,       setDireccion]       = useState("COMPRA");
+  const [expanded,        setExpanded]        = useState(true);
+  const [comitenteSearch, setComitenteSearch] = useState("");
+  const [cargaCompleta,   setCargaCompleta]   = useState(false);
+  const [tcMep,           setTcMep]           = useState(tcMepDefault != null ? String(tcMepDefault) : "");
+
+  // Para el display calculado (no se envía como resultado)
+  const [cantidad,  setCantidad]  = useState("");
+  const [precio,    setPrecio]    = useState("");
+  const netoDisplay = (() => {
+    const q = parseFloat(cantidad);
+    const p = parseFloat(precio);
+    if (!isNaN(q) && !isNaN(p) && q > 0 && p > 0)
+      return (q * p).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return null;
+  })();
 
   useEffect(() => {
     if (state && "ok" in state && state.ok) {
       setFormKey((k) => k + 1);
+      setCantidad("");
+      setPrecio("");
     }
   }, [state]);
 
-  const isCaucion = CAUCION_TIPOS.has(tipo);
+  useEffect(() => {
+    const opts = DIRECCION_OPTS[instrumento];
+    if (opts.length > 0) setDireccion(opts[0].v);
+    else setDireccion("");
+  }, [instrumento]);
+
+  const tipoOp    = toTipoOp(instrumento, direccion);
+  const isCaucion = CAUCION_TIPOS.has(tipoOp);
+  const direccionOpts = DIRECCION_OPTS[instrumento];
 
   return (
     <div className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden">
@@ -68,9 +118,43 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha }: Props) {
 
       {expanded && (
         <form key={formKey} action={action} className="p-5 flex flex-col gap-4">
+
+          {/* ── TC MEP + carga completa (banner superior) ── */}
+          <div className="flex items-center gap-3 bg-byg-surface-2 rounded-xl px-4 py-2.5 border border-byg-border/60">
+            <span className="text-[10px] font-black uppercase tracking-widest text-byg-muted whitespace-nowrap">
+              TC MEP día
+            </span>
+            <input
+              type="number"
+              name="tcMepDia"
+              value={tcMep}
+              onChange={(e) => setTcMep(e.target.value)}
+              step="any"
+              min="0"
+              placeholder="—"
+              className="w-32 px-2.5 py-1.5 text-[12px] bg-byg-bg border border-byg-border rounded-lg text-byg-text focus:outline-none focus:ring-1 focus:ring-byg-accent/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+            />
+            {tcMepDefault != null && (
+              <span className="text-[10px] text-byg-muted hidden sm:inline">
+                último: {tcMepDefault.toLocaleString("es-AR")}
+              </span>
+            )}
+            <label className="ml-auto flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={cargaCompleta}
+                onChange={(e) => setCargaCompleta(e.target.checked)}
+                className="w-4 h-4 rounded border-byg-border accent-byg-accent"
+              />
+              <span className="text-[10px] font-black uppercase tracking-widest text-byg-text whitespace-nowrap">
+                Carga completa
+              </span>
+            </label>
+          </div>
+
           {/* Sujeto toggle */}
           <div className="flex items-center gap-3">
-            <span className={labelCls + " mb-0 whitespace-nowrap"}>Tipo cuenta</span>
+            <span className={lCls + " mb-0 whitespace-nowrap"}>Tipo cuenta</span>
             <div className="flex rounded-lg overflow-hidden border border-byg-border text-[11px] font-black uppercase tracking-widest">
               {(["cartera", "comitente"] as const).map((t) => (
                 <button
@@ -90,15 +174,17 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha }: Props) {
           </div>
 
           <input type="hidden" name="sujetoTipo" value={sujetoTipo} />
+          <input type="hidden" name="tipoOperacion" value={tipoOp} />
 
-          {/* Row 1: Sujeto + Tipo + Fecha */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className={labelCls}>
+          {/* ── ROW 1: Cartera/Comitente | Instrumento | Operación | Fecha ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-start">
+            {/* Sujeto (con search inline en comitente) */}
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>
                 {sujetoTipo === "cartera" ? "Cartera" : "Comitente"}
               </label>
               {sujetoTipo === "cartera" ? (
-                <select name="carteraId" className={inputCls} required>
+                <select name="carteraId" className={iCls} required>
                   <option value="">Seleccionar…</option>
                   {carteras.map((c) => (
                     <option key={c.id} value={c.id}>{c.nombre}</option>
@@ -108,20 +194,18 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha }: Props) {
                 <>
                   <input
                     type="text"
-                    placeholder="Buscar por nombre o N° comitente…"
                     value={comitenteSearch}
                     onChange={(e) => setComitenteSearch(e.target.value)}
-                    className={inputCls + " mb-1"}
+                    placeholder="Filtrar…"
+                    className="w-full px-2.5 py-1 text-[11px] bg-byg-bg border border-byg-border rounded-md text-byg-text placeholder:text-byg-muted/50 focus:outline-none focus:ring-1 focus:ring-byg-accent/30"
                   />
-                  <select name="comitenteId" className={inputCls} required>
+                  <select name="comitenteId" className={iCls} required>
                     <option value="">Seleccionar…</option>
                     {comitentes
                       .filter((c) => {
+                        if (!comitenteSearch) return true;
                         const q = comitenteSearch.toLowerCase();
-                        return (
-                          c.nombre.toLowerCase().includes(q) ||
-                          c.nroComitente.includes(comitenteSearch)
-                        );
+                        return c.nombre.toLowerCase().includes(q) || c.nroComitente.includes(comitenteSearch);
                       })
                       .map((c) => (
                         <option key={c.id} value={c.id}>
@@ -133,155 +217,156 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha }: Props) {
               )}
             </div>
 
-            <div>
-              <label className={labelCls}>Tipo operación</label>
+            {/* Instrumento */}
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>Instrumento</label>
               <select
-                name="tipoOperacion"
-                value={tipo}
-                onChange={(e) => setTipo(e.target.value)}
-                className={inputCls}
-                required
+                value={instrumento}
+                onChange={(e) => setInstrumento(e.target.value as Instrumento)}
+                className={iCls}
               >
-                {TIPO_OPTS.map((o) => (
+                {INSTRUMENTO_OPTS.map((o) => (
                   <option key={o.v} value={o.v}>{o.l}</option>
                 ))}
               </select>
             </div>
 
-            <div>
-              <label className={labelCls}>Fecha operativa</label>
-              <input
-                type="date"
-                name="fechaOperativa"
-                defaultValue={defaultFecha}
-                className={inputCls}
-              />
+            {/* Dirección */}
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>Operación</label>
+              {direccionOpts.length > 0 ? (
+                <select
+                  value={direccion}
+                  onChange={(e) => setDireccion(e.target.value)}
+                  className={iCls}
+                >
+                  {direccionOpts.map((o) => (
+                    <option key={o.v} value={o.v}>{o.l}</option>
+                  ))}
+                </select>
+              ) : (
+                <div className={iCls + " text-byg-muted/50 cursor-default"}>—</div>
+              )}
+            </div>
+
+            {/* Fecha */}
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>Fecha operativa</label>
+              <input type="date" name="fechaOperativa" defaultValue={defaultFecha} className={iCls} />
             </div>
           </div>
 
-          {/* Row 2: Ticker + Cantidad + Precio + Moneda + Mercado */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <div>
-              <label className={labelCls}>
-                Ticker{isCaucion ? " (opcional)" : ""}
+          {/* ── ROW 2: Ticker | Moneda | Cantidad | Precio ── */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-start">
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>
+                Ticker{isCaucion ? " (opc.)" : ""}
               </label>
               <input
                 type="text"
                 name="ticker"
-                placeholder={isCaucion ? "CAUCION" : "Ej: AL30"}
-                className={inputCls + " uppercase"}
+                placeholder={isCaucion ? "CAUCION" : "AL30, GGAL…"}
+                className={iCls + " uppercase"}
                 required={!isCaucion}
               />
             </div>
 
-            <div>
-              <label className={labelCls}>Cantidad</label>
-              <input
-                type="number"
-                name="cantidad"
-                placeholder="0"
-                min="0.000001"
-                step="any"
-                className={inputCls}
-                required
-              />
-            </div>
-
-            <div>
-              <label className={labelCls}>Precio</label>
-              <input
-                type="number"
-                name="precio"
-                placeholder="0.00"
-                min="0.000001"
-                step="any"
-                className={inputCls}
-                required
-              />
-            </div>
-
-            <div>
-              <label className={labelCls}>Moneda</label>
-              <select name="moneda" className={inputCls} defaultValue="ARS">
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>Moneda</label>
+              <select name="moneda" className={iCls} defaultValue="ARS">
                 <option value="ARS">ARS</option>
                 <option value="USD">USD</option>
               </select>
             </div>
 
-            <input type="hidden" name="mercado" value="BYMA" />
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>Cantidad</label>
+              <input
+                type="number"
+                name="cantidad"
+                value={cantidad}
+                onChange={(e) => setCantidad(e.target.value)}
+                placeholder="0"
+                min="0.000001"
+                step="any"
+                className={iCls}
+                required
+              />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>Precio</label>
+              <input
+                type="number"
+                name="precio"
+                value={precio}
+                onChange={(e) => setPrecio(e.target.value)}
+                placeholder="0.00"
+                min="0.000001"
+                step="any"
+                className={iCls}
+                required
+              />
+            </div>
           </div>
 
-          {/* Row 3: Resultados estimados */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div>
-              <label className={labelCls}>Resultado bruto</label>
+          {/* Neto estimado (display, no se envía) */}
+          {netoDisplay && (
+            <p className="text-[10px] text-byg-muted font-mono -mt-2">
+              Neto estimado: <strong className="text-byg-text">{netoDisplay}</strong>
+            </p>
+          )}
+
+          <input type="hidden" name="mercado" value="BYMA" />
+
+          {/* ── ROW 3: Resultado operador (opc.) | Obs ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>
+                Resultado operador
+                <span className="ml-1 normal-case tracking-normal font-normal text-byg-muted/60">(solo rulos/arb)</span>
+              </label>
+              {/* Este campo es SOLO para resultados operativos reales (rulos, arbitraje) */}
               <input
                 type="number"
                 name="resultadoBruto"
-                placeholder="—"
+                placeholder="No completar para compras/ventas normales"
                 step="any"
-                className={inputCls}
+                className={iCls}
               />
             </div>
 
-            <div>
-              <label className={labelCls}>Resultado neto</label>
-              <input
-                type="number"
-                name="resultadoNeto"
-                placeholder="—"
-                step="any"
-                className={inputCls}
-              />
+            <div className="flex flex-col gap-1">
+              <label className={lCls}>Observaciones</label>
+              <input type="text" name="observaciones" placeholder="—" className={iCls} />
             </div>
-
-            <div>
-              <label className={labelCls}>TC MEP día</label>
-              <input
-                type="number"
-                name="tcMepDia"
-                placeholder="—"
-                step="any"
-                className={inputCls}
-              />
-            </div>
-
-            {isCaucion ? (
-              <>
-                <div>
-                  <label className={labelCls}>Tasa caución %</label>
-                  <input
-                    type="number"
-                    name="tasaCaucion"
-                    placeholder="—"
-                    step="any"
-                    className={inputCls}
-                  />
-                </div>
-                <div>
-                  <label className={labelCls}>Días caución</label>
-                  <input
-                    type="number"
-                    name="diasCaucion"
-                    placeholder="—"
-                    min="1"
-                    step="1"
-                    className={inputCls}
-                  />
-                </div>
-              </>
-            ) : (
-              <div>
-                <label className={labelCls}>Observaciones</label>
-                <input
-                  type="text"
-                  name="observaciones"
-                  placeholder="—"
-                  className={inputCls}
-                />
-              </div>
-            )}
           </div>
+
+          {/* Caución */}
+          {isCaucion && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className={lCls}>Tasa caución %</label>
+                <input type="number" name="tasaCaucion" placeholder="—" step="any" className={iCls} />
+              </div>
+              <div>
+                <label className={lCls}>Días caución</label>
+                <input type="number" name="diasCaucion" placeholder="—" min="1" step="1" className={iCls} />
+              </div>
+            </div>
+          )}
+
+          {/* Campos adicionales en carga completa */}
+          {cargaCompleta && (
+            <div className="flex flex-col gap-3 border-t border-byg-border/60 pt-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lCls}>Resultado neto</label>
+                  <input type="number" name="resultadoNeto" placeholder="—" step="any" className={iCls} />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Submit */}
           <div className="flex items-center gap-3 pt-1">
@@ -294,14 +379,10 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha }: Props) {
             </button>
 
             {state && "ok" in state && state.ok && (
-              <span className="text-[11px] font-semibold text-emerald-400">
-                Operación guardada
-              </span>
+              <span className="text-[11px] font-semibold text-emerald-500">Operación guardada</span>
             )}
             {state && "error" in state && state.error && (
-              <span className="text-[11px] font-semibold text-red-400">
-                {state.error}
-              </span>
+              <span className="text-[11px] font-semibold text-rose-500">{state.error}</span>
             )}
           </div>
         </form>

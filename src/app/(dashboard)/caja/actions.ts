@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { calcularSaldoCaja } from "@/lib/services/caja.service";
 import { readOnlyPreview } from "@/lib/config";
+import { requireActionPermission, hasTemporaryPermission } from "@/lib/auth/permissions";
 
 export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -15,6 +16,13 @@ export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   const moneda = formData.get("moneda") as string;
   const descripcion = formData.get("descripcion") as string;
   const slug = formData.get("slug") as string;
+
+  const isTrenqueCreate = slug?.includes("trenque") ?? false;
+  const createCajaPermKey = isTrenqueCreate ? "caja:operar_trenque" : "caja:operar_oficina";
+  const createMovCajaDenied = await requireActionPermission(createCajaPermKey);
+  if (createMovCajaDenied) {
+    if (isTrenqueCreate || !(await hasTemporaryPermission("caja:operar_oficina"))) return createMovCajaDenied;
+  }
 
   if (!cajaId || !tipo || !montoRaw || !moneda) {
     return { error: "Faltan datos obligatorios" };
@@ -56,6 +64,13 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
   const montoCubiertoRaw = (formData.get("montoCubierto") as string)?.trim();
   const descripcionExtra = (formData.get("descripcionExtra") as string)?.trim() ?? "";
   const slug = (formData.get("slug") as string)?.trim();
+
+  const isTrenqueCubrir = slug?.includes("trenque") ?? false;
+  const cubrirPermKey = isTrenqueCubrir ? "caja:operar_trenque" : "caja:operar_oficina";
+  const cubrirDenied = await requireActionPermission(cubrirPermKey);
+  if (cubrirDenied) {
+    if (isTrenqueCubrir || !(await hasTemporaryPermission("caja:operar_oficina"))) return cubrirDenied;
+  }
 
   if (!movimientoId || !cajaId || !montoCubiertoRaw) return { error: "Faltan datos obligatorios" };
 
@@ -102,6 +117,8 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
 
 export async function transferirEntreCajas(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+  const transferirDenied = await requireActionPermission("caja:transferir");
+  if (transferirDenied) return transferirDenied;
   const origenId = formData.get("origenId") as string;
   const destinoId = formData.get("destinoId") as string;
   const moneda = formData.get("moneda") as string;
@@ -180,6 +197,11 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
 // VENTA:  divisa sale de cajaDivisa, ARS entra en cajaArs
 export async function registrarOperacionCambioEnCajas(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const regCambioDenied = await requireActionPermission("caja:operar_oficina");
+  if (regCambioDenied) {
+    if (!(await hasTemporaryPermission("caja:operar_oficina"))) return regCambioDenied;
+  }
 
   const cajaDivisaId = (formData.get("cajaDivisaId") as string)?.trim();
   const cajaArsId = (formData.get("cajaArsId") as string)?.trim();
@@ -278,6 +300,9 @@ export async function revertirMovimientoCaja(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
+  const revertirCajaDenied = await requireActionPermission("caja:eliminar_movimiento");
+  if (revertirCajaDenied) return revertirCajaDenied;
+
   const movimientoId = formData.get("movimientoId")?.toString().trim();
   if (!movimientoId) return { error: "ID requerido" };
 
@@ -323,6 +348,11 @@ export async function confirmarMovimientoCajaPendiente(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
+  const confirmarDenied = await requireActionPermission("caja:operar_oficina");
+  if (confirmarDenied) {
+    if (!(await hasTemporaryPermission("caja:operar_oficina"))) return confirmarDenied;
+  }
+
   const movimientoId = formData.get("movimientoId")?.toString().trim();
   if (!movimientoId) return { error: "ID requerido" };
 
@@ -344,6 +374,9 @@ export async function transferirCajaACartera(
   formData: FormData,
 ): Promise<{ error?: string; success?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const cajACarteraDenied = await requireActionPermission("caja:transferir");
+  if (cajACarteraDenied) return cajACarteraDenied;
 
   const cajaId       = formData.get("cajaId")?.toString().trim();
   const carteraId    = formData.get("carteraId")?.toString().trim();
@@ -436,6 +469,9 @@ export async function transferirCarteraACaja(
   formData: FormData,
 ): Promise<{ error?: string; success?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const carteraACajaDenied = await requireActionPermission("caja:transferir");
+  if (carteraACajaDenied) return carteraACajaDenied;
 
   const carteraId   = formData.get("carteraId")?.toString().trim();
   const cajaId      = formData.get("cajaId")?.toString().trim();

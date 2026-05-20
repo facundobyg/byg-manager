@@ -35,7 +35,7 @@ export default async function ReportesPage() {
       <header>
         <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.3em]">Socios</p>
         <h1 className="text-4xl font-black text-slate-900 tracking-tight">Reportes consolidados</h1>
-        <p className="text-sm text-slate-400 font-medium mt-1">Vista ejecutiva general</p>
+        <p className="text-sm text-slate-400 font-medium mt-1">Centro ejecutivo de indicadores BYG. Reemplaza el módulo Análisis.</p>
       </header>
 
       {/* ── Alertas operativas ──────────────────────────────────────────────── */}

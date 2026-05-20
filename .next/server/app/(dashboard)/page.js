@@ -8,7 +8,7 @@ runtime.loadChunk("server/chunks/ssr/node_modules_96715ba7._.js");
 runtime.loadChunk("server/chunks/ssr/node_modules_next_dist_client_components_forbidden-error_ea7ea172.js");
 runtime.loadChunk("server/chunks/ssr/node_modules_next_dist_client_components_unauthorized-error_c8949b27.js");
 runtime.loadChunk("server/chunks/ssr/node_modules_0c939838._.js");
-runtime.loadChunk("server/chunks/ssr/[root-of-the-server]__b72f1b4c._.js");
+runtime.loadChunk("server/chunks/ssr/[root-of-the-server]__1c1558d5._.js");
 runtime.loadChunk("server/chunks/ssr/node_modules_next_dist_518c664b._.js");
 runtime.loadChunk("server/chunks/ssr/[root-of-the-server]__58263dc5._.js");
 runtime.getOrInstantiateRuntimeModule("[project]/.next-internal/server/app/(dashboard)/page/actions.js { ACTIONS_MODULE0 => \"[project]/src/components/layout/Topbar.tsx [app-rsc] (ecmascript)\" } [app-rsc] (server actions loader, ecmascript)", CHUNK_PUBLIC_PATH);

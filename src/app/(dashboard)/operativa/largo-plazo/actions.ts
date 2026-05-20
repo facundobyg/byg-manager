@@ -4,11 +4,15 @@ import { prisma } from "@/lib/prisma";
 import { Prisma, TipoOperacionLP } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { CUENTAS_OPERATIVAS_ACTUALES } from "@/lib/constants/cuentas-operativas";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function crearLargoPlazo(
   _prev: { error?: string; ok?: boolean },
   formData: FormData
 ): Promise<{ error?: string; ok?: boolean }> {
+  const crearLPDenied = await requireActionPermission("operativa:crear");
+  if (crearLPDenied) return crearLPDenied;
+
   const fechaStr = formData.get("fecha")?.toString();
   const tipo = formData.get("tipo")?.toString() as TipoOperacionLP;
   const ticker = formData.get("ticker")?.toString();

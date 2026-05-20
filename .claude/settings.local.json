@@ -190,7 +190,9 @@
       "Bash(curl -s http://localhost:2024/)",
       "Bash(npx kill-port *)",
       "Bash(Remove-Item -Recurse -Force .next -ErrorAction SilentlyContinue)",
-      "Bash(curl -sv http://localhost:2023/)"
+      "Bash(curl -sv http://localhost:2023/)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\Facundo Giovini\\\\OneDrive\\\\Desktop\\\\IA\\\\Antigravity\\\\Proyecto BYG\" -Force | Select-Object Name, @{Name=\"Type\";Expression={if\\($_.PSIsContainer\\){\"DIR\"}else{\"FILE\"}}} | Format-Table -AutoSize)",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }

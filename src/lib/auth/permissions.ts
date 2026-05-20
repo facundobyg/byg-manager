@@ -3,6 +3,96 @@ import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import { UserRole } from "@prisma/client";
 import { cookies } from "next/headers";
+import { writeAuditLog } from "@/lib/services/audit.service";
+
+// ── Static action permission matrix ───────────────────────────────────────────
+// Primary security layer — no DB required. DB UserPermiso overrides are additive.
+const EMPLEADO_ALLOWED = new Set([
+  "bolsa:crear",
+  "bolsa:concertar",
+  "holdings:comprar",
+  "holdings:vender",
+  "holdings:editar",
+  "saldos:editar",
+  // Caja: solo Trenque (oficina requiere permiso temporal)
+  "caja:operar_trenque",
+  // Operativa diaria
+  "operativa:crear",
+  // Clientes / CC / PF
+  "cc:crear_movimiento",
+  "clientes:crear",
+  "pf:crear",
+  // NOT included: holdings:eliminar, bolsa:anular, configuracion:*, mes:editar,
+  //               caja:operar_oficina, caja:editar_movimiento, caja:eliminar_movimiento,
+  //               caja:transferir, operativa:eliminar, cc:eliminar_movimiento,
+  //               cc:intereses, clientes:editar, clientes:eliminar, pf:editar
+]);
+
+function checkActionRole(role: UserRole, key: string): boolean {
+  if (role === "ADMIN" || role === "SOCIO") return true;
+  if (role === "EMPLEADO") return EMPLEADO_ALLOWED.has(key);
+  return false;
+}
+
+/**
+ * For server actions — returns { error } on denial instead of redirecting.
+ * Usage: const denied = await requireActionPermission("bolsa:concertar");
+ *        if (denied) return denied;
+ */
+export async function requireActionPermission(
+  permissionKey: string,
+): Promise<{ error: string } | null> {
+  const session = await auth();
+  if (!session?.user?.id) return { error: "Sin sesión activa" };
+
+  const role = (session.user as { role?: UserRole }).role ?? "CLIENTE";
+
+  if (checkActionRole(role, permissionKey)) return null;
+
+  // Log the denial
+  await writeAuditLog({
+    userId:      session.user.id,
+    accion:      "ACCESO_DENEGADO",
+    entidad:     "Permission",
+    description: `${(session.user as { name?: string }).name ?? session.user.id} intentó acción sin permiso: ${permissionKey}`,
+  });
+
+  return { error: "No tenés permisos para realizar esta acción." };
+}
+
+/**
+ * For server components — returns boolean to conditionally render UI.
+ * Fast: only checks static matrix, no DB hit.
+ */
+export async function canDoAction(permissionKey: string): Promise<boolean> {
+  const session = await auth();
+  if (!session?.user?.id) return false;
+  const role = (session.user as { role?: UserRole }).role ?? "CLIENTE";
+  return checkActionRole(role, permissionKey);
+}
+
+/**
+ * Checks whether a user has an active *temporary* DB grant for a given key.
+ * Useful for one-off supervisor overrides (e.g. Augusto + Caja Oficina for a day).
+ * This is additive on top of the static matrix — it only grants, never revokes.
+ */
+export async function hasTemporaryPermission(permissionKey: string): Promise<boolean> {
+  const session = await auth();
+  if (!session?.user?.id) return false;
+
+  const [modulo, accion] = permissionKey.split(":");
+  if (!modulo || !accion) return false;
+
+  const permiso = await prisma.permiso.findUnique({ where: { modulo_accion: { modulo, accion } } });
+  if (!permiso) return false;
+
+  const override = await prisma.userPermiso.findUnique({
+    where: { userId_permisoId: { userId: session.user.id, permisoId: permiso.id } },
+  });
+  if (!override || !override.temporal || !override.concedido) return false;
+  if (override.fechaExpiracion && override.fechaExpiracion < new Date()) return false;
+  return true;
+}
 
 const PREVIEW_COOKIE = "byg_preview_user";
 

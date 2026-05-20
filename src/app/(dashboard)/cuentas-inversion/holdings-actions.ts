@@ -1,9 +1,12 @@
 "use server";
 
+import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { CategoriaHoldingInversion } from "@prisma/client";
+import { writeAuditLog } from "@/lib/services/audit.service";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 type ActionResult = { error?: string; success?: boolean };
 
@@ -25,6 +28,9 @@ export async function comprarHolding(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("holdings:comprar");
+  if (denied) return denied;
+
   const comitenteId  = formData.get("comitenteId")?.toString().trim();
   const cuentaId     = formData.get("cuentaInversionId")?.toString().trim();
   const ticker       = formData.get("ticker")?.toString().trim().toUpperCase();
@@ -81,6 +87,17 @@ export async function comprarHolding(
     });
   });
 
+  const session  = await auth();
+  const userId   = session?.user?.id as string | undefined;
+  const userName = (session?.user as { name?: string } | undefined)?.name ?? "Usuario";
+  await writeAuditLog({
+    userId,
+    accion:     "ALTA_HOLDING",
+    entidad:    "ComitenteInversion",
+    entidadId:  comitenteId,
+    description: `${userName} cargó holding ${ticker} ${cantidad.toFixed(4)} @ ${precio.toFixed(4)}`,
+  });
+
   revalidate(cuentaId, comitenteId);
   return { success: true };
 }
@@ -91,6 +108,9 @@ export async function venderHolding(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("holdings:vender");
+  if (denied) return denied;
+
   const holdingId   = formData.get("holdingId")?.toString().trim();
   const comitenteId = formData.get("comitenteId")?.toString().trim();
   const cuentaId    = formData.get("cuentaInversionId")?.toString().trim();
@@ -131,6 +151,17 @@ export async function venderHolding(
     }
   });
 
+  const session  = await auth();
+  const userId   = session?.user?.id as string | undefined;
+  const userName = (session?.user as { name?: string } | undefined)?.name ?? "Usuario";
+  await writeAuditLog({
+    userId,
+    accion:     "VENTA_HOLDING",
+    entidad:    "ComitenteInversion",
+    entidadId:  comitenteId,
+    description: `${userName} registró venta ${holding.ticker} ${cantidad.toFixed(4)} @ ${precio.toFixed(4)}`,
+  });
+
   revalidate(cuentaId, comitenteId);
   return { success: true };
 }
@@ -141,6 +172,9 @@ export async function editHolding(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return denied;
+
   const holdingId   = formData.get("holdingId")?.toString().trim();
   const comitenteId = formData.get("comitenteId")?.toString().trim();
   const cuentaId    = formData.get("cuentaInversionId")?.toString().trim();
@@ -219,13 +253,28 @@ export async function deleteHolding(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("holdings:eliminar");
+  if (denied) return denied;
+
   const holdingId   = formData.get("holdingId")?.toString().trim();
   const comitenteId = formData.get("comitenteId")?.toString().trim();
   const cuentaId    = formData.get("cuentaInversionId")?.toString().trim();
 
   if (!holdingId || !comitenteId || !cuentaId) return { error: "ID requerido" };
 
+  const holding = await prisma.holdingComitenteInversion.findUnique({ where: { id: holdingId }, select: { ticker: true, cantidad: true } });
   await prisma.holdingComitenteInversion.delete({ where: { id: holdingId } });
+
+  const session  = await auth();
+  const userId   = session?.user?.id as string | undefined;
+  const userName = (session?.user as { name?: string } | undefined)?.name ?? "Usuario";
+  await writeAuditLog({
+    userId,
+    accion:     "BAJA_HOLDING",
+    entidad:    "ComitenteInversion",
+    entidadId:  comitenteId,
+    description: `${userName} eliminó holding ${holding?.ticker ?? holdingId.slice(0, 8)} (${holding ? Number(holding.cantidad).toFixed(4) : "—"} u.)`,
+  });
 
   revalidate(cuentaId, comitenteId);
   return { success: true };

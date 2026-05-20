@@ -1,8 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { setTCBlue, setMesActivo, setTCMep, updatePrecioActivo as updatePrecioActivoService, updatePreciosActivosBatch as updatePreciosActivosBatchService, getProductoresConfig } from "@/lib/services/config.service";
-import type { ProductorOption } from "@/lib/services/config.service";
+import { auth } from "@/auth";
+import { setTCBlue, setMesActivo, setTCMep, updatePrecioActivo as updatePrecioActivoService, updatePreciosActivosBatch as updatePreciosActivosBatchService, getProductoresConfig, getAlycConfig, updateAlycConfig } from "@/lib/services/config.service";
+import type { ProductorOption, AlycOption } from "@/lib/services/config.service";
+import { writeAuditLog } from "@/lib/services/audit.service";
+import { requireActionPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { TipoCartera, CategoriaActivo, Moneda } from "@prisma/client";
 
@@ -20,6 +23,9 @@ export async function addProductor(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const label = formData.get("label")?.toString().trim();
   const value = formData.get("value")?.toString() as ProductorOption["value"];
 
@@ -33,6 +39,8 @@ export async function addProductor(
 
   list.push({ label, value, activo: true });
   await saveProductoresConfig(list);
+  const session = await auth();
+  await writeAuditLog({ userId: session?.user?.id, accion: "ALTA_PRODUCTOR", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} agregó productor ${label} (${value})` });
   revalidatePath("/configuracion");
   return { ok: true };
 }
@@ -41,6 +49,9 @@ export async function toggleProductorActivo(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const label = formData.get("label")?.toString();
   if (!label) return { error: "Label requerido" };
 
@@ -48,8 +59,11 @@ export async function toggleProductorActivo(
   const idx  = list.findIndex((p) => p.label === label);
   if (idx === -1) return { error: "Productor no encontrado" };
 
-  list[idx] = { ...list[idx], activo: !list[idx].activo };
+  const wasActivo = list[idx].activo;
+  list[idx] = { ...list[idx], activo: !wasActivo };
   await saveProductoresConfig(list);
+  const session = await auth();
+  await writeAuditLog({ userId: session?.user?.id, accion: "TOGGLE_PRODUCTOR", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} ${wasActivo ? "desactivó" : "activó"} productor ${label}` });
   revalidatePath("/configuracion");
   return { ok: true };
 }
@@ -58,6 +72,9 @@ export async function eliminarProductor(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const label = formData.get("label")?.toString();
   if (!label) return { error: "Label requerido" };
 
@@ -68,6 +85,79 @@ export async function eliminarProductor(
 
   list.splice(idx, 1);
   await saveProductoresConfig(list);
+  const session = await auth();
+  await writeAuditLog({ userId: session?.user?.id, accion: "BAJA_PRODUCTOR", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} eliminó productor ${label}` });
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+// ─── ALYCs ────────────────────────────────────────────────────────────────────
+
+export async function addAlyc(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
+  const nombre = formData.get("nombre")?.toString().trim();
+  if (!nombre) return { error: "El nombre es obligatorio" };
+
+  const list = await getAlycConfig();
+  if (list.some((a) => a.nombre.toLowerCase() === nombre.toLowerCase())) {
+    return { error: "Ya existe una ALYC con ese nombre" };
+  }
+
+  list.push({ nombre, activa: true });
+  await updateAlycConfig(list);
+  const session = await auth();
+  await writeAuditLog({ userId: session?.user?.id, accion: "ALTA_ALYC", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} agregó ALYC ${nombre}` });
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+export async function toggleAlycActiva(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
+  const nombre = formData.get("nombre")?.toString();
+  if (!nombre) return { error: "Nombre requerido" };
+
+  const list = await getAlycConfig();
+  const idx  = list.findIndex((a) => a.nombre === nombre);
+  if (idx === -1) return { error: "ALYC no encontrada" };
+
+  const wasActiva = list[idx].activa;
+  list[idx] = { ...list[idx], activa: !wasActiva };
+  await updateAlycConfig(list);
+  const session = await auth();
+  await writeAuditLog({ userId: session?.user?.id, accion: "TOGGLE_ALYC", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} ${wasActiva ? "desactivó" : "activó"} ALYC ${nombre}` });
+  revalidatePath("/configuracion");
+  return { ok: true };
+}
+
+export async function eliminarAlyc(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
+  const nombre = formData.get("nombre")?.toString();
+  if (!nombre) return { error: "Nombre requerido" };
+  if (nombre === "Banco Industrial") return { error: "Banco Industrial no puede ser eliminada" };
+
+  const list = await getAlycConfig();
+  const idx  = list.findIndex((a) => a.nombre === nombre);
+  if (idx === -1) return { error: "ALYC no encontrada" };
+
+  list.splice(idx, 1);
+  await updateAlycConfig(list);
+  const session = await auth();
+  await writeAuditLog({ userId: session?.user?.id, accion: "BAJA_ALYC", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} eliminó ALYC ${nombre}` });
   revalidatePath("/configuracion");
   return { ok: true };
 }
@@ -104,6 +194,9 @@ export async function updateMesActivo(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("mes:editar");
+  if (denied) return denied;
+
   const mes = formData.get("mes")?.toString().trim();
   if (!mes || !/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) return { error: "Formato inválido (YYYY-MM)" };
 
@@ -378,6 +471,9 @@ export async function createCaja(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:cajas");
+  if (denied) return denied;
+
   const label = formData.get("label")?.toString().trim();
   const slug  = formData.get("slug")?.toString().trim().toLowerCase();
   const tipo  = formData.get("tipo")?.toString() as any;
@@ -398,6 +494,8 @@ export async function createCaja(
         activa: true,
       },
     });
+    const session = await auth();
+    await writeAuditLog({ userId: session?.user?.id, accion: "ALTA_CAJA", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} creó caja "${label}" (${slug})` });
     revalidatePath("/configuracion");
     revalidatePath("/caja");
     return { ok: true };
@@ -410,6 +508,9 @@ export async function updateCaja(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:cajas");
+  if (denied) return denied;
+
   const id     = formData.get("id")?.toString();
   const label  = formData.get("label")?.toString().trim();
   const tipo   = formData.get("tipo")?.toString() as any;

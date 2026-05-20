@@ -8,6 +8,7 @@ import { EditHoldingForm } from "@/components/modules/cuentas-inversion/EditHold
 import { VenderHoldingForm } from "@/components/modules/cuentas-inversion/VenderHoldingForm";
 import { DeleteHoldingButton } from "@/components/modules/cuentas-inversion/DeleteHoldingButton";
 import { setCarteraAction } from "./actions";
+import { canDoAction } from "@/lib/auth/permissions";
 
 function fmt(n: number, dec = 2) {
   return n.toLocaleString("es-AR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -69,7 +70,8 @@ export default async function ComitenteDetailPage({
   const { id, comitenteId }           = await params;
   const { editId, venderId, comprar } = await searchParams;
 
-  const comitente = await prisma.comitenteInversion.findUnique({
+  const [comitente, auditLogs, canDeleteHolding] = await Promise.all([
+  prisma.comitenteInversion.findUnique({
     where: { id: comitenteId },
     include: {
       CuentaInversion: { select: { id: true, nombre: true } },
@@ -85,11 +87,21 @@ export default async function ComitenteDetailPage({
         },
       },
     },
-  });
+  }),
+  prisma.auditLog.findMany({
+    where:   { entidad: "ComitenteInversion", entidadId: comitenteId },
+    orderBy: { createdAt: "desc" },
+    take:    10,
+    include: { User: { select: { name: true } } },
+  }),
+  canDoAction("holdings:eliminar"),
+  ]);
 
   if (!comitente || comitente.cuentaInversionId !== id) notFound();
 
   const isMirror = comitente.esPropioBYG && !!comitente.Cartera;
+  // Ocultar "+ Comprar" en la cuenta Banco Industrial (operaciones propias de la firma)
+  const hideComprar = comitente.CuentaInversion.nombre === "Banco Industrial" || comitente.esPropioBYG;
 
   // Load carteras for selector when esPropioBYG but not yet linked
   const carteras = comitente.esPropioBYG
@@ -496,14 +508,16 @@ export default async function ComitenteDetailPage({
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Holdings</h2>
-            <Link
-              href={comprar ? baseUrl : `${baseUrl}?comprar=1`}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
-                comprar ? "bg-blue-100 text-blue-700" : "bg-blue-600 text-white hover:bg-blue-700"
-              }`}
-            >
-              {comprar ? "Cerrar" : "+ Comprar"}
-            </Link>
+            {!hideComprar && (
+              <Link
+                href={comprar ? baseUrl : `${baseUrl}?comprar=1`}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                  comprar ? "bg-blue-100 text-blue-700" : "bg-blue-600 text-white hover:bg-blue-700"
+                }`}
+              >
+                {comprar ? "Cerrar" : "+ Comprar"}
+              </Link>
+            )}
           </div>
 
           {comprar && (
@@ -608,11 +622,13 @@ export default async function ComitenteDetailPage({
                                     >
                                       Editar
                                     </Link>
-                                    <DeleteHoldingButton
-                                      holdingId={h.id}
-                                      comitenteId={comitenteId}
-                                      cuentaInversionId={id}
-                                    />
+                                    {canDeleteHolding && (
+                                      <DeleteHoldingButton
+                                        holdingId={h.id}
+                                        comitenteId={comitenteId}
+                                        cuentaInversionId={id}
+                                      />
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -713,6 +729,34 @@ export default async function ComitenteDetailPage({
                 ))}
               </tbody>
             </table>
+          </div>
+        </section>
+      )}
+
+      {/* ── Audit — últimos movimientos ───────────────────────────────────── */}
+      {auditLogs.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Últimos movimientos</h2>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <div className="divide-y divide-slate-50">
+              {auditLogs.map((log) => {
+                const desc = (log.datosNuevos as { description?: string } | null)?.description;
+                return (
+                  <div key={log.id} className="px-4 py-2.5 flex items-center gap-3 text-xs">
+                    <span className="text-slate-400 tabular-nums whitespace-nowrap font-mono text-[10px]">
+                      {new Date(log.createdAt).toLocaleString("es-AR", {
+                        day: "2-digit", month: "2-digit", year: "2-digit",
+                        hour: "2-digit", minute: "2-digit",
+                      })}
+                    </span>
+                    <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 uppercase tracking-widest shrink-0">
+                      {log.accion.replace(/_/g, " ")}
+                    </span>
+                    <span className="text-slate-600 truncate">{desc ?? "—"}</span>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </section>
       )}

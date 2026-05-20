@@ -31,6 +31,26 @@ const VENTA_TIPOS = new Set([
     "VENTA_CEDEAR",
     "CAUCION_COLOCADORA"
 ]);
+const COMPRA_ACTIVO = new Set([
+    "COMPRA_BONO",
+    "COMPRA_ACCION",
+    "COMPRA_CEDEAR"
+]);
+const VENTA_ACTIVO = new Set([
+    "VENTA_BONO",
+    "VENTA_ACCION",
+    "VENTA_CEDEAR"
+]);
+const TIPO_TO_HOLDING = {
+    COMPRA_BONO: "BONO",
+    VENTA_BONO: "BONO",
+    COMPRA_ACCION: "ACCION",
+    VENTA_ACCION: "ACCION",
+    COMPRA_CEDEAR: "CEDEAR",
+    VENTA_CEDEAR: "CEDEAR",
+    CAUCION_COLOCADORA: "CAUCION",
+    CAUCION_TOMADORA: "CAUCION"
+};
 function toN(v) {
     if (!v) return null;
     const n = parseFloat(v);
@@ -117,8 +137,9 @@ async function crearOperacionBolsa(prevState, formData) {
             id
         };
     } catch (e) {
+        console.error("[crearOperacionBolsa]", e);
         return {
-            error: e.message || "Error al crear operación"
+            error: "Error al guardar la operación. Verificar datos ingresados."
         };
     }
 }
@@ -160,6 +181,7 @@ async function concertarOperacion(prevState, formData) {
     const impuestos = toN(formData.get("impuestos"));
     const tcMepDia = toN(formData.get("tcMepDia"));
     const comisionUSD = toN(formData.get("comisionUSD"));
+    const netoLiquidadoManual = toN(formData.get("netoLiquidadoManual"));
     const esSenebi = formData.get("esSenebi") === "true";
     const senebiBruto = esSenebi ? toN(formData.get("senebiBruto")) : null;
     const diasCaucionRaw = formData.get("diasCaucion");
@@ -171,8 +193,10 @@ async function concertarOperacion(prevState, formData) {
     const valorBruto = cantidad * precio;
     const costoReal = (comisionFija ?? 0) + valorBruto * ((comisionPct ?? 0) / 100) + (derechosMercado ?? 0) + (gastos ?? 0) + (impuestos ?? 0);
     const esVenta = VENTA_TIPOS.has(op.tipoOperacion);
-    const netoLiquidado = esVenta ? valorBruto - costoReal : valorBruto + costoReal;
+    const netoCalculado = esVenta ? valorBruto - costoReal : valorBruto + costoReal;
+    const netoLiquidado = netoLiquidadoManual ?? netoCalculado;
     const precioPromedioReal = !esVenta && cantidad > 0 ? netoLiquidado / cantidad : null;
+    const isNewConcertation = op.estado === "PENDIENTE_CONCERTACION";
     try {
         const now = new Date();
         await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].$transaction(async (tx)=>{
@@ -221,6 +245,131 @@ async function concertarOperacion(prevState, formData) {
                     }
                 }
             });
+            // ── Impacto en comitente (solo primera concertación, solo compra/venta activos) ──
+            if (isNewConcertation && op.comitenteId) {
+                const holdingCat = TIPO_TO_HOLDING[op.tipoOperacion];
+                const isCompra = COMPRA_ACTIVO.has(op.tipoOperacion);
+                const isVenta = VENTA_ACTIVO.has(op.tipoOperacion);
+                if ((isCompra || isVenta) && holdingCat) {
+                    // 1. Actualizar saldo disponible
+                    const saldoActual = await tx.saldoComitenteInversion.findUnique({
+                        where: {
+                            comitenteId: op.comitenteId
+                        }
+                    });
+                    const delta = Math.abs(netoLiquidado);
+                    const saldoData = op.moneda === "ARS" ? {
+                        saldoARS: Number(saldoActual?.saldoARS ?? 0) + (isVenta ? delta : -delta)
+                    } : {
+                        saldoUSDCable: Number(saldoActual?.saldoUSDCable ?? 0) + (isVenta ? delta : -delta)
+                    };
+                    await tx.saldoComitenteInversion.upsert({
+                        where: {
+                            comitenteId: op.comitenteId
+                        },
+                        update: {
+                            ...saldoData,
+                            updatedAt: new Date()
+                        },
+                        create: {
+                            id: crypto.randomUUID(),
+                            comitenteId: op.comitenteId,
+                            saldoARS: 0,
+                            saldoUSDCable: 0,
+                            saldoUSDMep: 0,
+                            ...saldoData,
+                            updatedAt: new Date()
+                        }
+                    });
+                    // 2. Actualizar holding
+                    const existing = await tx.holdingComitenteInversion.findUnique({
+                        where: {
+                            comitenteId_ticker: {
+                                comitenteId: op.comitenteId,
+                                ticker: op.ticker
+                            }
+                        }
+                    });
+                    if (isCompra) {
+                        const precioReal = precioPromedioReal ?? precio;
+                        if (existing) {
+                            const existQty = Number(existing.cantidad);
+                            const newQty = existQty + cantidad;
+                            const newPrecioP = (existQty * Number(existing.precioPromedio) + cantidad * precioReal) / newQty;
+                            await tx.holdingComitenteInversion.update({
+                                where: {
+                                    id: existing.id
+                                },
+                                data: {
+                                    cantidad: newQty,
+                                    precioPromedio: newPrecioP,
+                                    updatedAt: new Date()
+                                }
+                            });
+                        } else {
+                            await tx.holdingComitenteInversion.create({
+                                data: {
+                                    id: crypto.randomUUID(),
+                                    comitenteId: op.comitenteId,
+                                    ticker: op.ticker,
+                                    categoria: holdingCat,
+                                    cantidad,
+                                    precioPromedio: precioReal,
+                                    updatedAt: new Date()
+                                }
+                            });
+                        }
+                        await tx.operacionHoldingInversion.create({
+                            data: {
+                                id: crypto.randomUUID(),
+                                comitenteId: op.comitenteId,
+                                holdingId: existing?.id ?? null,
+                                tipo: "COMPRA",
+                                ticker: op.ticker,
+                                categoria: holdingCat,
+                                cantidad,
+                                precio,
+                                precioPromedio: precioPromedioReal ?? precio,
+                                notas: `Bolsa #${operacionId.slice(0, 8)}`
+                            }
+                        });
+                    } else if (isVenta && existing) {
+                        const existQty = Number(existing.cantidad);
+                        const newQty = Math.max(0, existQty - cantidad);
+                        if (newQty === 0) {
+                            await tx.holdingComitenteInversion.delete({
+                                where: {
+                                    id: existing.id
+                                }
+                            });
+                        } else {
+                            await tx.holdingComitenteInversion.update({
+                                where: {
+                                    id: existing.id
+                                },
+                                data: {
+                                    cantidad: newQty,
+                                    updatedAt: new Date()
+                                }
+                            });
+                        }
+                        await tx.operacionHoldingInversion.create({
+                            data: {
+                                id: crypto.randomUUID(),
+                                comitenteId: op.comitenteId,
+                                holdingId: existing.id,
+                                tipo: "VENTA",
+                                ticker: op.ticker,
+                                categoria: holdingCat,
+                                cantidad,
+                                precio,
+                                precioPromedio: Number(existing.precioPromedio),
+                                notas: `Bolsa #${operacionId.slice(0, 8)}`
+                            }
+                        });
+                    }
+                }
+            }
         });
         (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["revalidatePath"])("/bolsa");
         (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$cache$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["revalidatePath"])(`/bolsa/${operacionId}`);
@@ -229,8 +378,9 @@ async function concertarOperacion(prevState, formData) {
             ok: true
         };
     } catch (e) {
+        console.error("[concertarOperacion]", e);
         return {
-            error: e.message || "Error al concertar operación"
+            error: "Error al concertar la operación. Verificar datos y volver a intentar."
         };
     }
 }
@@ -340,8 +490,9 @@ async function crearOpMesaDiaria(_prevState, formData) {
             id
         };
     } catch (e) {
+        console.error("[crearOpMesaDiaria]", e);
         return {
-            error: e.message || "Error al crear operación"
+            error: "Error al guardar la operación. Verificar datos ingresados."
         };
     }
 }
@@ -563,6 +714,7 @@ var { g: global, __dirname, a: __turbopack_async_module__ } = __turbopack_contex
 __turbopack_async_module__(async (__turbopack_handle_async_dependencies__, __turbopack_async_result__) => { try {
 __turbopack_context__.s({
     "getActivosPrecios": (()=>getActivosPrecios),
+    "getAlycConfig": (()=>getAlycConfig),
     "getClienteDeMap": (()=>getClienteDeMap),
     "getMesActivo": (()=>getMesActivo),
     "getMesOperativo": (()=>getMesOperativo),
@@ -574,6 +726,7 @@ __turbopack_context__.s({
     "setMesActivo": (()=>setMesActivo),
     "setTCBlue": (()=>setTCBlue),
     "setTCMep": (()=>setTCMep),
+    "updateAlycConfig": (()=>updateAlycConfig),
     "updatePrecioActivo": (()=>updatePrecioActivo),
     "updatePreciosActivosBatch": (()=>updatePreciosActivosBatch)
 });
@@ -796,6 +949,44 @@ async function getClienteDeMap() {
         return {};
     }
 }
+const ALYCS_DEFAULT = [
+    {
+        nombre: "Banco Industrial",
+        activa: true
+    }
+];
+async function getAlycConfig() {
+    try {
+        const row = await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].config.findUnique({
+            where: {
+                clave: "alycs_config"
+            }
+        });
+        if (!row) return ALYCS_DEFAULT;
+        const parsed = JSON.parse(row.valor);
+        if (!Array.isArray(parsed) || parsed.length === 0) return ALYCS_DEFAULT;
+        return parsed;
+    } catch  {
+        return ALYCS_DEFAULT;
+    }
+}
+async function updateAlycConfig(alycs) {
+    await __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].config.upsert({
+        where: {
+            clave: "alycs_config"
+        },
+        update: {
+            valor: JSON.stringify(alycs),
+            updatedAt: new Date()
+        },
+        create: {
+            id: crypto.randomUUID(),
+            clave: "alycs_config",
+            valor: JSON.stringify(alycs),
+            updatedAt: new Date()
+        }
+    });
+}
 async function updatePreciosActivosBatch(items) {
     const now = new Date();
     const fecha = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
@@ -925,9 +1116,13 @@ async function getOperacionesMesaDiaria(fecha) {
             }
             const g = propiaMap.get(r.carteraId);
             g.ops.push(row);
-            const resultado = row.resultadoNeto ?? row.resultadoBruto ?? 0;
-            if (r.moneda === "ARS") g.totalResultadoARS += resultado;
-            else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+            // Solo sumar resultado si fue ingresado manualmente (resultadoBruto != null)
+            // Las compras/ventas normales sin resultado explícito NO suman a la mesa
+            if (row.resultadoBruto !== null) {
+                const resultado = row.resultadoNeto ?? row.resultadoBruto;
+                if (r.moneda === "ARS") g.totalResultadoARS += resultado;
+                else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+            }
         } else if (r.comitenteId) {
             if (!clienteMap.has(r.comitenteId)) {
                 clienteMap.set(r.comitenteId, {
@@ -941,9 +1136,11 @@ async function getOperacionesMesaDiaria(fecha) {
             }
             const g = clienteMap.get(r.comitenteId);
             g.ops.push(row);
-            const resultado = row.resultadoNeto ?? row.resultadoBruto ?? 0;
-            if (r.moneda === "ARS") g.totalResultadoARS += resultado;
-            else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+            if (row.resultadoBruto !== null) {
+                const resultado = row.resultadoNeto ?? row.resultadoBruto;
+                if (r.moneda === "ARS") g.totalResultadoARS += resultado;
+                else if (r.moneda === "USD") g.totalResultadoUSD += resultado;
+            }
         }
     }
     const propias = Array.from(propiaMap.values());
@@ -1291,7 +1488,7 @@ async function BolsaPage({ searchParams }) {
         timeZone: "UTC"
     });
     // Mesa Diaria data
-    const [mesaData, carteras, comitentes] = tab !== "historial" ? await Promise.all([
+    const [mesaData, carteras, comitentes, lastTcMepRow] = tab !== "historial" ? await Promise.all([
         (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$data$2f$operacion$2d$bolsa$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["getOperacionesMesaDiaria"])(fecha),
         __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].cartera.findMany({
             where: {
@@ -1323,12 +1520,27 @@ async function BolsaPage({ searchParams }) {
             orderBy: {
                 nombre: "asc"
             }
+        }),
+        __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$prisma$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["prisma"].operacionBolsa.findFirst({
+            where: {
+                tcMepDia: {
+                    not: null
+                }
+            },
+            orderBy: {
+                createdAt: "desc"
+            },
+            select: {
+                tcMepDia: true
+            }
         })
     ]) : [
         null,
         [],
-        []
+        [],
+        null
     ];
+    const tcMepDefault = lastTcMepRow?.tcMepDia != null ? Number(lastTcMepRow.tcMepDia) : null;
     // Historial data (filtered by active month)
     const historialOps = tab === "historial" ? await (0, __TURBOPACK__imported__module__$5b$project$5d2f$src$2f$lib$2f$data$2f$operacion$2d$bolsa$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["getOperacionesBolsa"])(historialMes) : null;
     const historialRows = historialOps ? historialOps.map((op)=>({
@@ -1354,7 +1566,7 @@ async function BolsaPage({ searchParams }) {
                         className: "absolute top-0 left-0 w-full h-[3px] bg-byg-accent"
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                        lineNumber: 85,
+                        lineNumber: 92,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -1362,7 +1574,7 @@ async function BolsaPage({ searchParams }) {
                         children: "Operativa"
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                        lineNumber: 86,
+                        lineNumber: 93,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1377,14 +1589,14 @@ async function BolsaPage({ searchParams }) {
                                             className: "text-byg-accent"
                                         }, void 0, false, {
                                             fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                            lineNumber: 90,
+                                            lineNumber: 97,
                                             columnNumber: 15
                                         }, this),
                                         "Operaciones Bolsa"
                                     ]
                                 }, void 0, true, {
                                     fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                    lineNumber: 89,
+                                    lineNumber: 96,
                                     columnNumber: 13
                                 }, this),
                                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -1392,24 +1604,24 @@ async function BolsaPage({ searchParams }) {
                                     children: tab !== "historial" ? `Mesa diaria — ${fecha}` : "Historial de operaciones"
                                 }, void 0, false, {
                                     fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                    lineNumber: 93,
+                                    lineNumber: 100,
                                     columnNumber: 13
                                 }, this)
                             ]
                         }, void 0, true, {
                             fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                            lineNumber: 88,
+                            lineNumber: 95,
                             columnNumber: 11
                         }, this)
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                        lineNumber: 87,
+                        lineNumber: 94,
                         columnNumber: 9
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                lineNumber: 84,
+                lineNumber: 91,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$bolsa$2f$TabsNav$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["TabsNav"], {
@@ -1417,7 +1629,7 @@ async function BolsaPage({ searchParams }) {
                 tab: tab
             }, void 0, false, {
                 fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                lineNumber: 101,
+                lineNumber: 108,
                 columnNumber: 7
             }, this),
             tab !== "historial" && mesaData && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["Fragment"], {
@@ -1425,17 +1637,18 @@ async function BolsaPage({ searchParams }) {
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$bolsa$2f$MesaDiariaForm$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["MesaDiariaForm"], {
                         comitentes: comitentes,
                         carteras: carteras,
-                        defaultFecha: fecha
+                        defaultFecha: fecha,
+                        tcMepDefault: tcMepDefault
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                        lineNumber: 106,
+                        lineNumber: 113,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$bolsa$2f$MesaDiariaTable$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["MesaDiariaTable"], {
                         data: mesaData
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                        lineNumber: 111,
+                        lineNumber: 119,
                         columnNumber: 11
                     }, this)
                 ]
@@ -1451,7 +1664,7 @@ async function BolsaPage({ searchParams }) {
                                 children: "←"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                lineNumber: 120,
+                                lineNumber: 128,
                                 columnNumber: 13
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1459,7 +1672,7 @@ async function BolsaPage({ searchParams }) {
                                 children: histMesLabel
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                lineNumber: 126,
+                                lineNumber: 134,
                                 columnNumber: 13
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$client$2f$app$2d$dir$2f$link$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["default"], {
@@ -1468,7 +1681,7 @@ async function BolsaPage({ searchParams }) {
                                 children: "→"
                             }, void 0, false, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                lineNumber: 129,
+                                lineNumber: 137,
                                 columnNumber: 13
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -1479,13 +1692,13 @@ async function BolsaPage({ searchParams }) {
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                lineNumber: 137,
+                                lineNumber: 145,
                                 columnNumber: 13
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                        lineNumber: 119,
+                        lineNumber: 127,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -1523,7 +1736,7 @@ async function BolsaPage({ searchParams }) {
                                         children: label
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                        lineNumber: 148,
+                                        lineNumber: 156,
                                         columnNumber: 17
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
@@ -1531,25 +1744,25 @@ async function BolsaPage({ searchParams }) {
                                         children: value
                                     }, void 0, false, {
                                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                        lineNumber: 149,
+                                        lineNumber: 157,
                                         columnNumber: 17
                                     }, this)
                                 ]
                             }, label, true, {
                                 fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                                lineNumber: 147,
+                                lineNumber: 155,
                                 columnNumber: 15
                             }, this))
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                        lineNumber: 140,
+                        lineNumber: 148,
                         columnNumber: 11
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$src$2f$components$2f$modules$2f$bolsa$2f$BolsaTabla$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["BolsaTabla"], {
                         rows: historialRows
                     }, void 0, false, {
                         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-                        lineNumber: 153,
+                        lineNumber: 161,
                         columnNumber: 11
                     }, this)
                 ]
@@ -1557,7 +1770,7 @@ async function BolsaPage({ searchParams }) {
         ]
     }, void 0, true, {
         fileName: "[project]/src/app/(dashboard)/bolsa/page.tsx",
-        lineNumber: 82,
+        lineNumber: 89,
         columnNumber: 5
     }, this);
 }

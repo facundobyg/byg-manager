@@ -2,12 +2,14 @@
 
 import { useActionState, useState } from "react";
 import { concertarOperacion } from "@/app/(dashboard)/bolsa/actions";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp } from "lucide-react";
 
 type Props = {
   operacionId:    string;
   estado:         string;
   tipoOperacion:  string;
+  fechaOperativa?: string | null;
+  alycList?:      string[];
   // Pre-fill defaults
   nroBoleto?:         string | null;
   alyc?:              string | null;
@@ -35,16 +37,27 @@ function numDefault(v: number | null | undefined) {
 
 export function ConcertarForm({
   operacionId, estado, tipoOperacion,
+  fechaOperativa, alycList,
   nroBoleto, alyc, fechaConcertacion, fechaLiquidacion,
   comisionPct, comisionFija, derechosMercado, gastos, impuestos,
   tcMepDia, comisionUSD, esSenebi, senebiBruto, diasCaucion, tasaCaucion,
 }: Props) {
+  const activeAlycs = alycList && alycList.length > 0 ? alycList : ["Banco Industrial"];
   const [state, action, pending] = useActionState(concertarOperacion, null);
-  const [isSenebi, setIsSenebi] = useState<boolean>(esSenebi ?? false);
+  const [isSenebi,  setIsSenebi]  = useState<boolean>(esSenebi ?? false);
+  const [showAdv,   setShowAdv]   = useState<boolean>(false);
 
   const isCaucion = tipoOperacion === "CAUCION_COLOCADORA" || tipoOperacion === "CAUCION_TOMADORA";
   const isEditing = estado === "CONCERTADA";
   const title = isEditing ? "Editar concertación" : "Revisar y concertar operación";
+
+  // Fecha concertación: si ya tiene valor usar ese, sino la fecha operativa
+  const defaultFechaConcert = fechaConcertacion ?? fechaOperativa ?? "";
+
+  // Si hay algún campo avanzado cargado, expandir automáticamente
+  const hasAdvancedData = comisionPct != null || derechosMercado != null || gastos != null || impuestos != null || tcMepDia != null;
+
+  const [expanded, setExpanded] = useState<boolean>(showAdv || hasAdvancedData);
 
   return (
     <section className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden">
@@ -60,6 +73,8 @@ export function ConcertarForm({
       <form action={action} className="px-6 py-5 flex flex-col gap-4">
         <input type="hidden" name="operacionId" value={operacionId} />
 
+        {/* ── CAMPOS BÁSICOS ── */}
+
         {/* Boleto + ALYC */}
         <div className="grid grid-cols-2 gap-4">
           <div>
@@ -68,7 +83,11 @@ export function ConcertarForm({
           </div>
           <div>
             <label className={LABEL_CLS}>ALYC</label>
-            <input type="text" name="alyc" defaultValue={alyc ?? ""} placeholder="—" className={INPUT_CLS} />
+            <select name="alyc" defaultValue={alyc ?? "Banco Industrial"} className={INPUT_CLS}>
+              {activeAlycs.map((nombre) => (
+                <option key={nombre} value={nombre}>{nombre}</option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -76,57 +95,42 @@ export function ConcertarForm({
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className={LABEL_CLS}>Fecha Concertación</label>
-            <input type="date" name="fechaConcertacion" defaultValue={fechaConcertacion ?? ""} className={INPUT_CLS} />
+            <input type="date" name="fechaConcertacion" defaultValue={defaultFechaConcert} className={INPUT_CLS} />
           </div>
           <div>
-            <label className={LABEL_CLS}>Fecha Liquidación</label>
+            <label className={LABEL_CLS}>Fecha Liquidación <span className="text-byg-muted/60 normal-case tracking-normal font-normal">(opcional)</span></label>
             <input type="date" name="fechaLiquidacion" defaultValue={fechaLiquidacion ?? ""} className={INPUT_CLS} />
           </div>
         </div>
 
-        {/* Comisiones */}
+        {/* Comisión $ + Comisión USD */}
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className={LABEL_CLS}>Comisión %</label>
-            <input type="number" name="comisionPct" defaultValue={numDefault(comisionPct)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
-          </div>
-          <div>
-            <label className={LABEL_CLS}>Comisión Fija</label>
+            <label className={LABEL_CLS}>Comisión $</label>
             <input type="number" name="comisionFija" defaultValue={numDefault(comisionFija)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
           </div>
-        </div>
-
-        {/* Gastos */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className={LABEL_CLS}>Derechos Mercado</label>
-            <input type="number" name="derechosMercado" defaultValue={numDefault(derechosMercado)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
-          </div>
-          <div>
-            <label className={LABEL_CLS}>Gastos</label>
-            <input type="number" name="gastos" defaultValue={numDefault(gastos)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
-          </div>
-        </div>
-
-        {/* Impuestos + TC MEP */}
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className={LABEL_CLS}>Impuestos</label>
-            <input type="number" name="impuestos" defaultValue={numDefault(impuestos)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
-          </div>
-          <div>
-            <label className={LABEL_CLS}>TC MEP Real</label>
-            <input type="number" name="tcMepDia" defaultValue={numDefault(tcMepDia)} step="any" min="0" placeholder="0.0000" className={INPUT_CLS} />
-          </div>
-        </div>
-
-        {/* Comisión USD */}
-        <div className="grid grid-cols-2 gap-4">
           <div>
             <label className={LABEL_CLS}>Comisión USD</label>
             <input type="number" name="comisionUSD" defaultValue={numDefault(comisionUSD)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
           </div>
-          <div />
+        </div>
+
+        {/* Neto liquidado final — campo clave de concertación */}
+        <div className="rounded-xl border border-byg-accent/30 bg-byg-accent/5 px-4 py-3 flex flex-col gap-1">
+          <label className="block text-[10px] font-black uppercase tracking-widest text-byg-accent mb-1">
+            Neto liquidado final
+          </label>
+          <input
+            type="number"
+            name="netoLiquidadoManual"
+            defaultValue={""}
+            step="any"
+            placeholder="Calculado automáticamente si se deja vacío"
+            className={INPUT_CLS}
+          />
+          <p className="text-[9px] text-byg-muted mt-0.5">
+            Si se completa, anula el cálculo automático. Este valor impacta saldos y holdings del cliente.
+          </p>
         </div>
 
         {/* SENEBI */}
@@ -160,9 +164,55 @@ export function ConcertarForm({
           )}
         </div>
 
+        {/* ── TOGGLE AVANZADO ── */}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-byg-accent hover:text-blue-400 transition-colors w-fit"
+        >
+          {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          {expanded ? "Ocultar carga avanzada" : "Mostrar carga avanzada"}
+        </button>
+
+        {/* ── CAMPOS AVANZADOS ── */}
+        {expanded && (
+          <div className="flex flex-col gap-4 border-t border-byg-border/60 pt-4">
+            {/* Comisión % */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className={LABEL_CLS}>Comisión %</label>
+                <input type="number" name="comisionPct" defaultValue={numDefault(comisionPct)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
+              </div>
+              <div>
+                <label className={LABEL_CLS}>Derechos Mercado</label>
+                <input type="number" name="derechosMercado" defaultValue={numDefault(derechosMercado)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className={LABEL_CLS}>Gastos</label>
+                <input type="number" name="gastos" defaultValue={numDefault(gastos)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
+              </div>
+              <div>
+                <label className={LABEL_CLS}>Impuestos</label>
+                <input type="number" name="impuestos" defaultValue={numDefault(impuestos)} step="any" min="0" placeholder="0.00" className={INPUT_CLS} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className={LABEL_CLS}>TC MEP Real</label>
+                <input type="number" name="tcMepDia" defaultValue={numDefault(tcMepDia)} step="any" min="0" placeholder="0.0000" className={INPUT_CLS} />
+              </div>
+              <div />
+            </div>
+          </div>
+        )}
+
         {/* Caución — condicional */}
         {isCaucion && (
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 gap-4 border-t border-byg-border/60 pt-4">
             <div>
               <label className={LABEL_CLS}>Días Caución</label>
               <input type="number" name="diasCaucion" defaultValue={diasCaucion ?? ""} step="1" min="0" placeholder="1" className={INPUT_CLS} />
@@ -175,11 +225,11 @@ export function ConcertarForm({
         )}
 
         {state && "error" in state && (
-          <p className="text-[11px] text-rose-400 font-semibold">{state.error}</p>
+          <p className="text-[11px] text-rose-500 font-semibold">{state.error}</p>
         )}
 
         {state && "ok" in state && state.ok && (
-          <div className="flex items-center gap-1.5 text-emerald-400">
+          <div className="flex items-center gap-1.5 text-emerald-500">
             <CheckCircle2 size={14} />
             <span className="text-[11px] font-black uppercase tracking-wider">Guardado</span>
           </div>

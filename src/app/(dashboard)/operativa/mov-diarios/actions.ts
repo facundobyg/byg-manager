@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { Moneda, TipoMovCaja, TipoOperacionCambio } from "@prisma/client";
 import { readOnlyPreview } from "@/lib/config";
+import { requireActionPermission, hasTemporaryPermission } from "@/lib/auth/permissions";
 
 export async function crearMovimientoDiario(
   _prev: { error?: string; ok?: boolean },
@@ -22,6 +23,9 @@ export async function crearMovimientoDiario(
 
   // Campos para transferencia
   const cajaDestinoId = formData.get("cajaDestinoId")?.toString();
+
+  const movDiarioDenied = await requireActionPermission("operativa:crear");
+  if (movDiarioDenied) return movDiarioDenied;
 
   if (!fechaStr || !rawMonto || !moneda || !clasificacion) {
     return { error: "Faltan campos obligatorios" };
@@ -115,6 +119,11 @@ export async function crearOperacionCambio(
   const descripcion = formData.get("descripcion")?.toString();
   const estado = formData.get("estado")?.toString(); // PENDIENTE | COBRADA
   const impactoCC = formData.get("impactoCC") === "on";
+
+  const opCambioDenied = await requireActionPermission("caja:operar_oficina");
+  if (opCambioDenied) {
+    if (!(await hasTemporaryPermission("caja:operar_oficina"))) return opCambioDenied;
+  }
 
   if (!fechaStr || !tipoOp || !moneda || !rawCantidad || !rawTipoCambio || !estado) {
     return { error: "Todos los campos obligatorios deben completarse" };
@@ -257,6 +266,9 @@ export async function eliminarMovimientoCaja(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
+  const elimMovDiarioDenied = await requireActionPermission("caja:eliminar_movimiento");
+  if (elimMovDiarioDenied) return elimMovDiarioDenied;
+
   const id = formData.get("id")?.toString();
   if (!id) return { error: "ID requerido" };
 
@@ -288,6 +300,11 @@ export async function editarFechaMovimientoCaja(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
+  const editFechaDenied = await requireActionPermission("caja:editar_movimiento");
+  if (editFechaDenied) {
+    if (!(await hasTemporaryPermission("caja:editar_movimiento"))) return editFechaDenied;
+  }
+
   const id = formData.get("id")?.toString();
   const fechaStr = formData.get("fecha")?.toString();
 
@@ -317,6 +334,11 @@ export async function editarMovimientoCajaCompleto(
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const editMovDenied = await requireActionPermission("caja:editar_movimiento");
+  if (editMovDenied) {
+    if (!(await hasTemporaryPermission("caja:editar_movimiento"))) return editMovDenied;
+  }
 
   const id = formData.get("id")?.toString();
   const fechaStr = formData.get("fecha")?.toString();
@@ -360,6 +382,9 @@ export async function editarMovimientoCajaCompleto(
 export async function relocalizarMovimientosIniciales(): Promise<{ error?: string; ok?: boolean; count?: number }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
+  const relocDenied = await requireActionPermission("configuracion:editar");
+  if (relocDenied) return relocDenied;
+
   try {
     const targetDate = new Date(Date.UTC(2026, 4, 1)); // 01/05/2026
 
@@ -387,6 +412,9 @@ export async function cancelarOperacionCambioPendiente(
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const cancelOpDenied = await requireActionPermission("caja:eliminar_movimiento");
+  if (cancelOpDenied) return cancelOpDenied;
 
   const id = formData.get("id")?.toString();
   if (!id) return { error: "ID requerido" };
@@ -417,6 +445,11 @@ export async function cobrarOperacionCambio(
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const cobrarDenied = await requireActionPermission("caja:operar_oficina");
+  if (cobrarDenied) {
+    if (!(await hasTemporaryPermission("caja:operar_oficina"))) return cobrarDenied;
+  }
 
   const ids = formData.getAll("operacionId").map((v) => v.toString().trim()).filter(Boolean);
   if (ids.length === 0) return { error: "Debe indicar al menos una operación" };
