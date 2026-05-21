@@ -1,4 +1,6 @@
 import { getResumenConsolidado, getExposicionPorMoneda, getBalanceGeneral, getExposicionPorCliente } from "@/lib/data/reportes";
+import { getUtilidadMes, getAperturaMoneda, getKPIsEjecutivos, getReporteProductores, getResumenPFCC } from "@/lib/data/reportes-ejecutivo";
+import { getMesOperativo } from "@/lib/services/config.service";
 import Link from "next/link";
 import { ExportCsvButton } from "@/components/modules/reportes/ExportCsvButton";
 import { Decimal } from "@prisma/client/runtime/library";
@@ -7,7 +9,6 @@ import { requirePermission } from "@/lib/auth/permissions";
 function fmt(n: Decimal) {
   return Number(n).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-
 
 const MONEDA_CLS: Record<string, { badge: string; row: string }> = {
   USD: { badge: "bg-emerald-100 text-emerald-700", row: "bg-emerald-50/40" },
@@ -21,22 +22,74 @@ function fmtN(n: number) {
   return n.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function fmtDate(d: Date) {
+  return d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
 export default async function ReportesPage() {
   await requirePermission("patrimonio:leer");
-  const [r, exposicion, balance, expCliente] = await Promise.all([
+
+  const mes = await getMesOperativo();
+  const [r, exposicion, balance, expCliente, utilidad, apertura, kpis, productores, pfcc] = await Promise.all([
     getResumenConsolidado(),
     getExposicionPorMoneda(),
     getBalanceGeneral(),
     getExposicionPorCliente(),
+    getUtilidadMes(mes),
+    getAperturaMoneda(),
+    getKPIsEjecutivos(mes),
+    getReporteProductores(mes),
+    getResumenPFCC(),
   ]);
 
   return (
     <div className="flex flex-col gap-8">
       <header>
         <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.3em]">Socios</p>
-        <h1 className="text-4xl font-black text-slate-900 tracking-tight">Reportes consolidados</h1>
-        <p className="text-sm text-slate-400 font-medium mt-1">Centro ejecutivo de indicadores BYG. Reemplaza el módulo Análisis.</p>
+        <h1 className="text-4xl font-black text-slate-900 tracking-tight">Reportes ejecutivos</h1>
+        <p className="text-sm text-slate-400 font-medium mt-1">
+          Mes operativo: <strong className="text-slate-600">{mes}</strong>
+          {" · "}TC Blue: <strong className="text-slate-600">{fmtN(apertura.tcBlue)}</strong>
+        </p>
       </header>
+
+      {/* ── KPIs Ejecutivos ─────────────────────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">KPIs del mes — {mes}</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { label: "Clientes activos",   value: String(kpis.cantClientes),    color: "text-slate-900" },
+            { label: "Comitentes activos", value: String(kpis.cantComitentes),  color: "text-slate-900" },
+            { label: "Ops bolsa mes",      value: String(kpis.opsBolsaMes),     color: "text-blue-700" },
+            { label: "Arbitrajes mes",     value: String(kpis.arbsMes),         color: "text-violet-700" },
+            { label: "PF activos",         value: String(kpis.pfActivos),       color: "text-emerald-700" },
+            { label: "PF vencidos",        value: String(kpis.pfVencidos),      color: kpis.pfVencidos > 0 ? "text-red-600" : "text-slate-400" },
+            { label: "Vencen en 30d",      value: String(kpis.pfProximos),      color: kpis.pfProximos > 0 ? "text-amber-600" : "text-slate-400" },
+            { label: "CCs",                value: String(kpis.ccCount),         color: "text-slate-700" },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+              <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">{label}</p>
+              <p className={`text-2xl font-black tabular-nums ${color}`}>{value}</p>
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="bg-white rounded-xl border border-emerald-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-emerald-600">Comisiones mes (ARS)</p>
+            <p className="text-xl font-black tabular-nums text-emerald-700">{fmtN(kpis.comisionesMes)}</p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Ops propias / cartera</p>
+            <p className="text-xl font-black tabular-nums text-slate-700">{kpis.opsPropias}</p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Tasa PF promedio</p>
+            <p className="text-xl font-black tabular-nums text-slate-700">
+              {kpis.pfTasaPromedio != null ? `${fmtN(kpis.pfTasaPromedio)}%` : "—"}
+            </p>
+          </div>
+        </div>
+      </section>
 
       {/* ── Alertas operativas ──────────────────────────────────────────────── */}
       {(() => {
@@ -84,11 +137,151 @@ export default async function ReportesPage() {
         );
       })()}
 
+      {/* ── Utilidad Real del Mes ───────────────────────────────────────────── */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Utilidad real del mes — {mes}</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className={`bg-white rounded-xl border shadow-sm px-5 py-4 flex flex-col gap-1 ${utilidad.utilidadTotalUSD >= 0 ? "border-emerald-300" : "border-red-300"}`}>
+            <p className={`text-[10px] font-black uppercase tracking-[0.15em] ${utilidad.utilidadTotalUSD >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+              Utilidad total USD
+            </p>
+            <p className={`text-2xl font-black tabular-nums ${utilidad.utilidadTotalUSD >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+              {utilidad.utilidadTotalUSD >= 0 ? "+" : ""}{fmtN(utilidad.utilidadTotalUSD)}
+            </p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Cambio FX (USD eq.)</p>
+            <p className={`text-xl font-black tabular-nums ${utilidad.cambioUSD >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {utilidad.cambioUSD >= 0 ? "+" : ""}{fmtN(utilidad.cambioUSD)}
+            </p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Arbitrajes ARS</p>
+            <p className={`text-xl font-black tabular-nums ${utilidad.arbitrajesARS >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {utilidad.arbitrajesARS >= 0 ? "+" : ""}{fmtN(utilidad.arbitrajesARS)}
+            </p>
+            {utilidad.arbitrajesUSD !== 0 && (
+              <p className={`text-[11px] font-bold tabular-nums ${utilidad.arbitrajesUSD >= 0 ? "text-emerald-500" : "text-red-500"}`}>
+                {utilidad.arbitrajesUSD >= 0 ? "+" : ""}{fmtN(utilidad.arbitrajesUSD)} USD
+              </p>
+            )}
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Ingresos − Egresos ARS</p>
+            <p className={`text-xl font-black tabular-nums ${utilidad.ingresosARS - utilidad.egresosARS >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {fmtN(utilidad.ingresosARS - utilidad.egresosARS)}
+            </p>
+          </div>
+        </div>
+        {(utilidad.ingresosItems.length > 0 || utilidad.egresosItems.length > 0) && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {utilidad.ingresosItems.length > 0 && (
+              <div className="bg-white rounded-xl border border-emerald-100 shadow-sm overflow-hidden">
+                <div className="bg-emerald-50 border-b border-emerald-100 px-4 py-2.5">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Ingresos operativos</p>
+                </div>
+                <table className="w-full text-xs">
+                  <tbody>
+                    {utilidad.ingresosItems.map((it, i) => (
+                      <tr key={i} className="border-b border-slate-50 last:border-0">
+                        <td className="px-4 py-2.5 text-slate-600">{it.label}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-emerald-700">{fmtN(it.montoARS)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {utilidad.egresosItems.length > 0 && (
+              <div className="bg-white rounded-xl border border-red-100 shadow-sm overflow-hidden">
+                <div className="bg-red-50 border-b border-red-100 px-4 py-2.5">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-red-600">Egresos operativos</p>
+                </div>
+                <table className="w-full text-xs">
+                  <tbody>
+                    {utilidad.egresosItems.map((it, i) => (
+                      <tr key={i} className="border-b border-slate-50 last:border-0">
+                        <td className="px-4 py-2.5 text-slate-600">{it.label}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-bold text-red-600">{fmtN(it.montoARS)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* ── Apertura Moneda Real ────────────────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Posición financiera BYG</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {[
+            { label: "Apertura USD BYG",    value: apertura.usdNeto,        color: apertura.usdNeto >= 0 ? "text-emerald-700" : "text-red-600" },
+            { label: "Caja USD",            value: apertura.usdDisponible,  color: "text-slate-700" },
+            { label: "Cartera USD",         value: apertura.usdActivos,     color: "text-slate-700" },
+            { label: "Recobros USD",        value: apertura.ccUSDRecobros,  color: apertura.ccUSDRecobros > 0 ? "text-emerald-700" : "text-slate-400" },
+            { label: "Pasivo USD clientes", value: apertura.usdDeuda,       color: apertura.usdDeuda > 0 ? "text-red-600" : "text-slate-400" },
+            { label: "ARS neto BYG",        value: apertura.arsNeto,        color: apertura.arsNeto >= 0 ? "text-blue-700" : "text-red-600" },
+          ].map(({ label, value, color }) => (
+            <div key={label} className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+              <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">{label}</p>
+              <p className={`text-lg font-black tabular-nums ${color}`}>{fmtN(value)}</p>
+            </div>
+          ))}
+        </div>
+        {/* Sensibilidad cambiaria — B5 */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="bg-slate-50 border-b border-slate-200 px-4 py-2.5">
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+              Sensibilidad cambiaria BYG — base: {fmtN(apertura.usdNeto)} USD apertura BYG
+            </p>
+          </div>
+          <div className="grid grid-cols-3 divide-x divide-slate-100">
+            {([100, 500, 1000] as const).map((delta) => {
+              const impacto = apertura.usdNeto * delta;
+              return (
+                <div key={delta} className="px-4 py-3 flex flex-col gap-0.5">
+                  <p className="text-[10px] font-black uppercase text-slate-400">+{delta} ARS/USD</p>
+                  <p className={`text-sm font-black tabular-nums ${impacto >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                    {impacto >= 0 ? "+" : ""}{fmtN(impacto)} ARS
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* USD administrado clientes — B4 */}
+        <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
+          <div className="bg-slate-50 border-b border-slate-100 px-4 py-2.5">
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+              Administrado clientes (no afecta P&amp;L BYG)
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4">
+            {[
+              { label: "PF USD clientes",  value: apertura.pfClientesUSD,    moneda: "USD" },
+              { label: "PF ARS clientes",  value: apertura.pfClientesARS,    moneda: "ARS" },
+              { label: "CC USD pos.",      value: apertura.ccClientesUSDPos, moneda: "USD" },
+              { label: "Custodia USD",     value: apertura.custodiaUSD,      moneda: "USD" },
+            ].map(({ label, value, moneda }) => (
+              <div key={label} className="flex flex-col gap-0.5">
+                <p className="text-[10px] font-black uppercase text-slate-400">{label}</p>
+                <p className="text-sm font-black tabular-nums text-slate-600">
+                  {fmtN(value)} <span className="text-[10px] font-medium text-slate-400">{moneda}</span>
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* ── Balance General ─────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-4">
         <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Balance General</h2>
 
-        {/* Summary cards */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="bg-white rounded-xl border border-emerald-200 shadow-sm px-6 py-5 flex flex-col gap-1">
             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-600">Activo total</p>
@@ -115,9 +308,7 @@ export default async function ReportesPage() {
           </div>
         </div>
 
-        {/* Detail tables */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Activo */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="bg-emerald-50 border-b border-emerald-100 px-4 py-2.5">
               <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Activo</p>
@@ -147,7 +338,6 @@ export default async function ReportesPage() {
             </table>
           </div>
 
-          {/* Pasivo */}
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="bg-red-50 border-b border-red-100 px-4 py-2.5">
               <p className="text-[10px] font-black uppercase tracking-widest text-red-600">Pasivo</p>
@@ -180,7 +370,6 @@ export default async function ReportesPage() {
           </div>
         </div>
       </section>
-
 
       <section className="flex flex-col gap-3">
         <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Exposición por moneda</h2>
@@ -236,22 +425,58 @@ export default async function ReportesPage() {
       </section>
 
       <section className="flex flex-col gap-3">
-        <div className="flex items-center gap-3">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Patrimonio total</h2>
-          <span className="text-[10px] text-slate-400 font-medium">TC Blue: {fmt(r.tcBlue)}</span>
+        <div className="flex items-center gap-3 flex-wrap">
+          <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Volumen administrado (AUM)</h2>
+          <span className="text-[10px] text-slate-400 font-medium">CC + PF + Cartera + Custodia · TC Blue: {fmt(r.tcBlue)}</span>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-6 py-5 flex flex-col gap-1">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Patrimonio total ARS</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">AUM bruto ARS</p>
             <p className="text-2xl font-black text-slate-900 tabular-nums">{fmt(r.patrimonioTotalARS)}</p>
           </div>
           <div className="bg-white rounded-xl border border-blue-100 shadow-sm px-6 py-5 flex flex-col gap-1">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500">Patrimonio total USD</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500">AUM bruto USD eq.</p>
             <p className="text-2xl font-black text-blue-700 tabular-nums">{fmt(r.patrimonioTotalUSD)}</p>
           </div>
         </div>
       </section>
 
+      {/* ── Productores ─────────────────────────────────────────────────────── */}
+      {productores.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Productores — {mes}</h2>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  {["Productor", "Ops", "Clientes", "Comis. ARS", "Comis. USD", "SENEBI bruto"].map((h, i) => (
+                    <th
+                      key={h}
+                      className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 ${i === 0 ? "text-left" : "text-right"}`}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {productores.map((p) => (
+                  <tr key={p.productor} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
+                    <td className="px-4 py-3 font-black text-slate-800">{p.productor}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">{p.ops}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">{p.clientes}</td>
+                    <td className="px-4 py-3 text-right tabular-nums font-bold text-emerald-700">{fmtN(p.comisionARS)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums font-bold text-emerald-700">{fmtN(p.comisionUSD)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">{fmtN(p.senebiBruto)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* ── Exposición por cliente ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
           <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Exposición por cliente</h2>
@@ -327,6 +552,116 @@ export default async function ReportesPage() {
               })}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      {/* ── PF / CC ─────────────────────────────────────────────────────────── */}
+      <section className="flex flex-col gap-4">
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Plazos fijos y cuentas corrientes</h2>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-white rounded-xl border border-emerald-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-emerald-600">PF activos</p>
+            <p className="text-2xl font-black tabular-nums text-emerald-700">{pfcc.pfActivos}</p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Capital equiv. ARS</p>
+            <p className="text-lg font-black tabular-nums text-slate-700">{fmtN(pfcc.pfCapitalTotalARS)}</p>
+            <p className="text-[10px] font-mono text-slate-400 mt-0.5">
+              {fmtN(pfcc.pfCapitalARS)} ARS · {fmtN(pfcc.pfCapitalUSD)} USD
+            </p>
+          </div>
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Tasa promedio</p>
+            <p className="text-2xl font-black tabular-nums text-slate-700">
+              {pfcc.pfTasaPromedio != null ? `${fmtN(pfcc.pfTasaPromedio)}%` : "—"}
+            </p>
+          </div>
+          <div className={`bg-white rounded-xl border shadow-sm px-4 py-3 flex flex-col gap-1 ${pfcc.pfVencidosCount > 0 ? "border-red-200" : "border-slate-200"}`}>
+            <p className={`text-[10px] font-black uppercase tracking-[0.15em] ${pfcc.pfVencidosCount > 0 ? "text-red-500" : "text-slate-400"}`}>PF vencidos</p>
+            <p className={`text-2xl font-black tabular-nums ${pfcc.pfVencidosCount > 0 ? "text-red-600" : "text-slate-400"}`}>{pfcc.pfVencidosCount}</p>
+          </div>
+        </div>
+
+        {pfcc.pfProximos.length > 0 && (
+          <div className="bg-white rounded-xl border border-amber-200 shadow-sm overflow-hidden">
+            <div className="bg-amber-50 border-b border-amber-100 px-4 py-2.5 flex items-center gap-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">
+                Vencen en 30 días ({pfcc.pfProximos.length})
+              </p>
+            </div>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  {["Cliente", "Capital", "Mon.", "Tasa", "Vencimiento"].map((h, i) => (
+                    <th key={h} className={`px-4 py-2.5 text-[10px] font-black uppercase tracking-widest text-slate-400 ${i === 0 ? "text-left" : "text-right"}`}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pfcc.pfProximos.map((pf, i) => (
+                  <tr key={i} className="border-b border-slate-50 last:border-0 hover:bg-amber-50/40">
+                    <td className="px-4 py-2.5 font-medium text-slate-700">{pf.cliente}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-bold text-slate-800">{fmtN(pf.capital)}</td>
+                    <td className="px-4 py-2.5 text-right text-slate-500">{pf.moneda}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-slate-600">
+                      {pf.tasaAnual != null ? `${fmtN(pf.tasaAnual)}%` : "—"}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-600">
+                      {pf.fechaVencimiento ? fmtDate(new Date(pf.fechaVencimiento)) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {pfcc.pfVencidosData.length > 0 && (
+          <div className="bg-white rounded-xl border border-red-200 shadow-sm overflow-hidden">
+            <div className="bg-red-50 border-b border-red-100 px-4 py-2.5">
+              <p className="text-[10px] font-black uppercase tracking-widest text-red-600">
+                PF vencidos recientes ({pfcc.pfVencidosData.length})
+              </p>
+            </div>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  {["Cliente", "Capital", "Mon."].map((h, i) => (
+                    <th key={h} className={`px-4 py-2.5 text-[10px] font-black uppercase tracking-widest text-slate-400 ${i === 0 ? "text-left" : "text-right"}`}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pfcc.pfVencidosData.map((pf, i) => (
+                  <tr key={i} className="border-b border-slate-50 last:border-0">
+                    <td className="px-4 py-2.5 font-medium text-slate-700">{pf.cliente}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-bold text-red-600">{fmtN(pf.capital)}</td>
+                    <td className="px-4 py-2.5 text-right text-slate-500">{pf.moneda}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-4 py-3 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">CCs totales</p>
+            <p className="text-2xl font-black tabular-nums text-slate-700">{pfcc.ccCount}</p>
+          </div>
+          <div className={`bg-white rounded-xl border shadow-sm px-4 py-3 flex flex-col gap-1 ${pfcc.ccSaldoTotal >= 0 ? "border-emerald-200" : "border-red-200"}`}>
+            <p className={`text-[10px] font-black uppercase tracking-[0.15em] ${pfcc.ccSaldoTotal >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+              Saldo neto CCs
+            </p>
+            <p className={`text-2xl font-black tabular-nums ${pfcc.ccSaldoTotal >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+              {fmtN(pfcc.ccSaldoTotal)}
+            </p>
+          </div>
         </div>
       </section>
     </div>
