@@ -46,13 +46,17 @@ export async function getUtilidadMes(mes: string) {
 
   const tc = new Decimal(tcConfig?.valor ?? "1000");
 
-  // No-doble-conteo entre fuentes:
-  // Source 1 (OperacionCambio INGRESO/EGRESO_CAMBIO): honorarios y comisiones de FX,
-  //   registrados por transacción en el módulo de cambio usando mesContable.
-  // Source 3 (MovimientoCaja [RESULTADO_OPERATIVO:]): resultados operativos marcados
-  //   manualmente para ingresos/egresos que NO provienen de cambio ni bolsa.
-  //   Invariante: registrar un honorario en OperacionCambio NO genera un MovimientoCaja
-  //   con prefix [RESULTADO_OPERATIVO:]. Verificar al incorporar nuevos flujos.
+  // ── INVARIANTE ANTI-DOBLE CONTEO ────────────────────────────────────────────
+  // Source 1 — OperacionCambio (tipos INGRESO/EGRESO_CAMBIO): honorarios, comisiones,
+  //   ajustes y distribuciones registrados en el módulo de cambio (mesContable).
+  //   Estos son la fuente de verdad para honorarios FX.
+  // Source 2 — OperacionBolsa (grupoArbitrajeId, allClosed): resultado de arbitrajes
+  //   cerrados en el día. No se superpone con Source 1 ni Source 3.
+  // Source 3 — MovimientoCaja [RESULTADO_OPERATIVO:]: ingresos/egresos operativos
+  //   cargados manualmente para conceptos que NO están en OperacionCambio ni OperacionBolsa.
+  //   REGLA OPERATIVA: nunca cargar un honorario/comisión en Source 3 si ya fue cargado
+  //   en OperacionCambio. El sistema no puede detectar esto automáticamente.
+  // ─────────────────────────────────────────────────────────────────────────────
 
   // 1. Cambio FX
   type DivisaRec = { divisa: Decimal; ars: Decimal };

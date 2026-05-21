@@ -269,22 +269,19 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
                 notas:       `Bolsa #${operacionId.slice(0, 8)}`,
               },
             });
-          } else if (isVenta && existing) {
+          } else if (isVenta) {
+            // No short selling: bloquear si no hay holding o cantidad insuficiente
+            if (!existing || Number(existing.cantidad) < cantidad) {
+              throw new Error("No se puede vender: el cliente no tiene posición suficiente");
+            }
             const existQty = Number(existing.cantidad);
             const newQty   = Math.max(0, existQty - cantidad);
-            if (newQty === 0) {
-              await tx.holdingComitenteInversion.delete({ where: { id: existing.id } });
-            } else {
-              await tx.holdingComitenteInversion.update({
-                where: { id: existing.id },
-                data:  { cantidad: newQty, updatedAt: new Date() },
-              });
-            }
+            // Create operacion BEFORE deleting holding to avoid FK violation
             await tx.operacionHoldingInversion.create({
               data: {
                 id:          crypto.randomUUID(),
                 comitenteId: op.comitenteId,
-                holdingId:   existing.id,
+                holdingId:   newQty === 0 ? null : existing.id,
                 tipo:        "VENTA",
                 ticker:      op.ticker,
                 categoria:   holdingCat,
@@ -294,6 +291,14 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
                 notas:       `Bolsa #${operacionId.slice(0, 8)}`,
               },
             });
+            if (newQty === 0) {
+              await tx.holdingComitenteInversion.delete({ where: { id: existing.id } });
+            } else {
+              await tx.holdingComitenteInversion.update({
+                where: { id: existing.id },
+                data:  { cantidad: newQty, updatedAt: new Date() },
+              });
+            }
           }
         }
       }

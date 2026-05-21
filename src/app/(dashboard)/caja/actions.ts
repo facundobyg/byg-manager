@@ -3,9 +3,10 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
-import { calcularSaldoCaja } from "@/lib/services/caja.service";
+import { calcularSaldoCaja, calcularSaldoCajaConCliente } from "@/lib/services/caja.service";
 import { readOnlyPreview } from "@/lib/config";
 import { requireActionPermission } from "@/lib/auth/permissions";
+import { auth } from "@/auth";
 
 export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -30,7 +31,9 @@ export async function crearMovimientoCaja(prevState: any, formData: FormData) {
 
   try {
     const monto = new Decimal(montoRaw);
-    const descFinal = `${descripcion?.trim() || "MOV"} | op:${operationRef}`;
+    const session = await auth();
+    const userName = (session?.user as { name?: string })?.name ?? "Sistema";
+    const descFinal = `${descripcion?.trim() || "MOV"} | op:${operationRef} | usr:${userName}`;
 
     await prisma.movimientoCaja.create({
       data: {
@@ -83,36 +86,38 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
   }
 
   try {
-    const original = await prisma.movimientoCaja.findUnique({ where: { id: movimientoId } });
-    if (!original) return { error: "Movimiento no encontrado" };
-    if (original.confirmado) return { error: "El movimiento ya está confirmado" };
-    if (montoCubierto.gt(new Decimal(original.monto.toString()))) {
-      return { error: "El monto cubierto supera el monto original" };
-    }
+    // Checks de negocio + write dentro de la misma transacción para evitar race conditions.
+    await prisma.$transaction(async (tx) => {
+      const original = await tx.movimientoCaja.findUnique({ where: { id: movimientoId } });
+      if (!original) throw new Error("Movimiento no encontrado");
+      if (original.confirmado) throw new Error("El movimiento ya está confirmado");
+      if (montoCubierto.gt(new Decimal(original.monto.toString())))
+        throw new Error("El monto cubierto supera el monto original");
 
-    const desc = `COBERTURA PARCIAL ${movimientoId}${descripcionExtra ? ` | ${descripcionExtra}` : ""}`;
+      const desc = `COBERTURA PARCIAL ${movimientoId}${descripcionExtra ? ` | ${descripcionExtra}` : ""}`;
 
-    await prisma.movimientoCaja.create({
-      data: {
-        id: crypto.randomUUID(),
-        cajaId,
-        tipo: original.tipo as never,
-        monto: montoCubierto,
-        moneda: original.moneda as never,
-        descripcion: desc,
-        confirmado: true,
-        fecha: new Date(),
-      },
+      await tx.movimientoCaja.create({
+        data: {
+          id: crypto.randomUUID(),
+          cajaId,
+          tipo: original.tipo as never,
+          monto: montoCubierto,
+          moneda: original.moneda as never,
+          descripcion: desc,
+          confirmado: true,
+          fecha: new Date(),
+        },
+      });
     });
-
-    revalidatePath("/caja");
-    if (slug) revalidatePath(`/caja/${slug}`);
-
-    return { success: true };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : "Error al registrar cobertura";
     return { error: msg };
   }
+
+  revalidatePath("/caja");
+  if (slug) revalidatePath(`/caja/${slug}`);
+
+  return { success: true };
 }
 
 export async function transferirEntreCajas(prevState: any, formData: FormData) {
@@ -143,21 +148,14 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
   // GENERAR ID DE TRANSFERENCIA
   const transferenciaRef = crypto.randomUUID();
 
-  // VALIDAR SALDO
-  try {
-    const saldo = await calcularSaldoCaja(origenId, moneda as "USD" | "ARS");
-
-    if (saldo.lessThan(monto)) {
-      return { error: "Saldo insuficiente en la caja origen" };
-    }
-  } catch (error) {
-    return { error: "Caja origen no encontrada o error de cálculo" };
-  }
-
   // TRANSACCIÓN ATÓMICA
   try {
-    await prisma.$transaction([
-      prisma.movimientoCaja.create({
+    await prisma.$transaction(async (tx) => {
+      // Saldo calculado dentro de la transacción para evitar TOCTOU.
+      const saldo = await calcularSaldoCajaConCliente(tx, origenId, moneda as "USD" | "ARS");
+      if (saldo.lessThan(monto)) throw new Error("Saldo insuficiente en la caja origen");
+
+      await tx.movimientoCaja.create({
         data: {
           id: crypto.randomUUID(),
           cajaId: origenId,
@@ -169,8 +167,8 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
           fecha: new Date(),
           transferenciaRef,
         },
-      }),
-      prisma.movimientoCaja.create({
+      });
+      await tx.movimientoCaja.create({
         data: {
           id: crypto.randomUUID(),
           cajaId: destinoId,
@@ -182,14 +180,14 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
           fecha: new Date(),
           transferenciaRef,
         },
-      }),
-    ]);
+      });
+    });
 
     revalidatePath("/caja");
 
     return { success: true };
   } catch (error) {
-    return { error: "Error crítico al ejecutar la transferencia" };
+    return { error: (error instanceof Error ? error.message : null) || "Error crítico al ejecutar la transferencia" };
   }
 }
 
@@ -244,20 +242,15 @@ export async function registrarOperacionCambioEnCajas(prevState: any, formData: 
       ? (["ENTRADA", "SALIDA"] as const)
       : (["SALIDA", "ENTRADA"] as const);
 
-  if (tipoOperacion === "COMPRA") {
-    try {
-      const saldoArs = await calcularSaldoCaja(cajaArsId, "ARS");
-      if (saldoArs.lessThan(montoArs)) {
-        return { error: "Saldo ARS insuficiente en caja seleccionada" };
-      }
-    } catch {
-      return { error: "Error al calcular saldo ARS de caja" };
-    }
-  }
-
   try {
-    await prisma.$transaction([
-      prisma.movimientoCaja.create({
+    await prisma.$transaction(async (tx) => {
+      // Saldo calculado dentro de la transacción para evitar TOCTOU.
+      if (tipoOperacion === "COMPRA") {
+        const saldoArs = await calcularSaldoCajaConCliente(tx, cajaArsId, "ARS");
+        if (saldoArs.lessThan(montoArs)) throw new Error("Saldo ARS insuficiente en caja seleccionada");
+      }
+
+      await tx.movimientoCaja.create({
         data: {
           id: crypto.randomUUID(),
           cajaId: cajaDivisaId,
@@ -269,8 +262,8 @@ export async function registrarOperacionCambioEnCajas(prevState: any, formData: 
           fecha,
           transferenciaRef: opRef,
         },
-      }),
-      prisma.movimientoCaja.create({
+      });
+      await tx.movimientoCaja.create({
         data: {
           id: crypto.randomUUID(),
           cajaId: cajaArsId,
@@ -282,13 +275,13 @@ export async function registrarOperacionCambioEnCajas(prevState: any, formData: 
           fecha,
           transferenciaRef: opRef,
         },
-      }),
-    ]);
+      });
+    });
 
     revalidatePath("/caja");
     return { success: true };
-  } catch {
-    return { error: "Error al registrar operación de cambio" };
+  } catch (e: unknown) {
+    return { error: (e instanceof Error ? e.message : null) || "Error al registrar operación de cambio" };
   }
 }
 
@@ -309,11 +302,6 @@ export async function revertirMovimientoCaja(
   if (!original.confirmado) return { error: "No se puede revertir un movimiento no confirmado" };
   if (original.descripcion?.startsWith("REVERSO |")) return { error: "Este movimiento ya es un reverso" };
 
-  const yaRevertido = await prisma.movimientoCaja.findFirst({
-    where: { descripcion: { startsWith: `REVERSO | ref:${movimientoId}` } },
-  });
-  if (yaRevertido) return { error: "Este movimiento ya fue revertido" };
-
   const tipoMap: Record<string, string> = {
     ENTRADA: "SALIDA",
     SALIDA: "ENTRADA",
@@ -323,20 +311,37 @@ export async function revertirMovimientoCaja(
   const tipoReverso = tipoMap[original.tipo];
   if (!tipoReverso) return { error: "Tipo de movimiento no reversible" };
 
-  await prisma.movimientoCaja.create({
-    data: {
-      id: crypto.randomUUID(),
-      cajaId: original.cajaId,
-      tipo: tipoReverso as never,
-      monto: original.monto,
-      moneda: original.moneda,
-      descripcion: `REVERSO | ref:${movimientoId} | ${original.descripcion ?? ""}`,
-      confirmado: true,
-      fecha: new Date(),
-    },
-  });
+  try {
+    // yaRevertido check + create atómicos: evita doble reversa bajo concurrencia.
+    await prisma.$transaction(async (tx) => {
+      const yaRevertido = await tx.movimientoCaja.findFirst({
+        where: { descripcion: { startsWith: `REVERSO | ref:${movimientoId}` } },
+      });
+      if (yaRevertido) throw new Error("Este movimiento ya fue revertido");
+
+      await tx.movimientoCaja.create({
+        data: {
+          id: crypto.randomUUID(),
+          cajaId: original.cajaId,
+          tipo: tipoReverso as never,
+          monto: original.monto,
+          moneda: original.moneda,
+          descripcion: `REVERSO | ref:${movimientoId} | ${original.descripcion ?? ""}`,
+          confirmado: true,
+          fecha: new Date(),
+        },
+      });
+    });
+  } catch (e: unknown) {
+    return { error: (e instanceof Error ? e.message : null) || "Error al revertir movimiento" };
+  }
 
   revalidatePath("/caja");
+  const cajaSlug = (await prisma.caja.findUnique({ where: { id: original.cajaId }, select: { slug: true } }))?.slug;
+  if (cajaSlug) {
+    revalidatePath(`/caja/${cajaSlug}`);
+    revalidatePath(`/operativa/${cajaSlug}`);
+  }
   return { ok: true };
 }
 
@@ -352,14 +357,20 @@ export async function confirmarMovimientoCajaPendiente(
   const movimientoId = formData.get("movimientoId")?.toString().trim();
   if (!movimientoId) return { error: "ID requerido" };
 
-  const mov = await prisma.movimientoCaja.findUnique({ where: { id: movimientoId } });
-  if (!mov) return { error: "Movimiento no encontrado" };
-  if (mov.confirmado) return { error: "El movimiento ya está confirmado" };
+  try {
+    await prisma.$transaction(async (tx) => {
+      const mov = await tx.movimientoCaja.findUnique({ where: { id: movimientoId } });
+      if (!mov) throw new Error("Movimiento no encontrado");
+      if (mov.confirmado) throw new Error("El movimiento ya está confirmado");
 
-  await prisma.movimientoCaja.update({
-    where: { id: movimientoId },
-    data: { confirmado: true },
-  });
+      await tx.movimientoCaja.update({
+        where: { id: movimientoId },
+        data: { confirmado: true },
+      });
+    });
+  } catch (e: unknown) {
+    return { error: (e instanceof Error ? e.message : null) || "Error al confirmar movimiento" };
+  }
 
   revalidatePath("/caja");
   return { ok: true };

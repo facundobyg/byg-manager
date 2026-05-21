@@ -140,6 +140,9 @@ export default async function ReportesPage() {
       {/* ── Utilidad Real del Mes ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-4">
         <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Utilidad real del mes — {mes}</h2>
+        <p className="text-[10px] text-slate-400 font-medium -mt-2">
+          La utilidad depende de clasificar correctamente ingresos/egresos. No duplicar honorarios o comisiones ya cargados como operación de cambio.
+        </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div className={`bg-white rounded-xl border shadow-sm px-5 py-4 flex flex-col gap-1 ${utilidad.utilidadTotalUSD >= 0 ? "border-emerald-300" : "border-red-300"}`}>
             <p className={`text-[10px] font-black uppercase tracking-[0.15em] ${utilidad.utilidadTotalUSD >= 0 ? "text-emerald-600" : "text-red-500"}`}>
