@@ -1,14 +1,9 @@
-import { getResumenConsolidado, getExposicionPorMoneda, getBalanceGeneral, getExposicionPorCliente } from "@/lib/data/reportes";
+import { getExposicionPorMoneda, getBalanceGeneral, getExposicionPorCliente } from "@/lib/data/reportes";
 import { getUtilidadMes, getAperturaMoneda, getKPIsEjecutivos, getReporteProductores, getResumenPFCC } from "@/lib/data/reportes-ejecutivo";
 import { getMesOperativo } from "@/lib/services/config.service";
 import Link from "next/link";
 import { ExportCsvButton } from "@/components/modules/reportes/ExportCsvButton";
-import { Decimal } from "@prisma/client/runtime/library";
 import { requirePermission } from "@/lib/auth/permissions";
-
-function fmt(n: Decimal) {
-  return Number(n).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
 
 const MONEDA_CLS: Record<string, { badge: string; row: string }> = {
   USD: { badge: "bg-emerald-100 text-emerald-700", row: "bg-emerald-50/40" },
@@ -30,8 +25,7 @@ export default async function ReportesPage() {
   await requirePermission("patrimonio:leer");
 
   const mes = await getMesOperativo();
-  const [r, exposicion, balance, expCliente, utilidad, apertura, kpis, productores, pfcc] = await Promise.all([
-    getResumenConsolidado(),
+  const [exposicion, balance, expCliente, utilidad, apertura, kpis, productores, pfcc] = await Promise.all([
     getExposicionPorMoneda(),
     getBalanceGeneral(),
     getExposicionPorCliente(),
@@ -252,33 +246,11 @@ export default async function ReportesPage() {
             </div>
           ))}
         </div>
-        {/* Sensibilidad cambiaria — B5 */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="bg-slate-50 border-b border-slate-200 px-4 py-2.5">
-            <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-              Sensibilidad cambiaria BYG — base: {fmtN(apertura.usdNeto)} USD apertura BYG
-            </p>
-          </div>
-          <div className="grid grid-cols-3 divide-x divide-slate-100">
-            {([100, 500, 1000] as const).map((delta) => {
-              const impacto = apertura.usdNeto * delta;
-              return (
-                <div key={delta} className="px-4 py-3 flex flex-col gap-0.5">
-                  <p className="text-[10px] font-black uppercase text-slate-400">+{delta} ARS/USD</p>
-                  <p className={`text-sm font-black tabular-nums ${impacto >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-                    {impacto >= 0 ? "+" : ""}{fmtN(impacto)} ARS
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
         {/* USD administrado clientes — B4 */}
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
           <div className="bg-slate-50 border-b border-slate-100 px-4 py-2.5">
             <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-              Administrado clientes (no afecta P&amp;L BYG)
+              Administrado clientes
             </p>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4">
@@ -329,7 +301,7 @@ export default async function ReportesPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="bg-emerald-50 border-b border-emerald-100 px-4 py-2.5">
               <p className="text-[10px] font-black uppercase tracking-widest text-emerald-700">Activo</p>
@@ -378,17 +350,19 @@ export default async function ReportesPage() {
                   <td className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-red-600">Total pasivo</td>
                   <td className="px-4 py-3 text-right tabular-nums font-black text-red-700 text-sm">{fmtN(balance.pasivoTotal)}</td>
                 </tr>
-                <tr className={`border-t border-slate-200 ${balance.patrimonioNeto >= 0 ? "bg-emerald-50" : "bg-red-50"}`}>
-                  <td className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest ${balance.patrimonioNeto >= 0 ? "text-emerald-700" : "text-red-600"}`}>
-                    Patrimonio neto
-                  </td>
-                  <td className={`px-4 py-3 text-right tabular-nums font-black text-sm ${balance.patrimonioNeto >= 0 ? "text-emerald-800" : "text-red-700"}`}>
-                    {balance.patrimonioNeto >= 0 ? "" : "−"}{fmtN(Math.abs(balance.patrimonioNeto))}
-                  </td>
-                </tr>
               </tbody>
             </table>
           </div>
+        </div>
+
+        {/* Patrimonio Neto — cierre visual debajo de ambas tablas */}
+        <div className={`rounded-xl border px-6 py-4 flex items-center justify-between ${balance.patrimonioNeto >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-red-50 border-red-200"}`}>
+          <p className={`text-[10px] font-black uppercase tracking-[0.25em] ${balance.patrimonioNeto >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+            Patrimonio Neto · Activo − Pasivo
+          </p>
+          <p className={`text-2xl font-black tabular-nums ${balance.patrimonioNeto >= 0 ? "text-emerald-800" : "text-red-700"}`}>
+            {balance.patrimonioNeto >= 0 ? "" : "−"}{fmtN(Math.abs(balance.patrimonioNeto))}
+          </p>
         </div>
       </section>
 
@@ -442,23 +416,6 @@ export default async function ReportesPage() {
               })()}
             </tbody>
           </table>
-        </div>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Volumen administrado (AUM)</h2>
-          <span className="text-[10px] text-slate-400 font-medium">CC + PF + Cartera + Custodia · TC Blue: {fmt(r.tcBlue)}</span>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-6 py-5 flex flex-col gap-1">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">AUM bruto ARS</p>
-            <p className="text-2xl font-black text-slate-900 tabular-nums">{fmt(r.patrimonioTotalARS)}</p>
-          </div>
-          <div className="bg-white rounded-xl border border-blue-100 shadow-sm px-6 py-5 flex flex-col gap-1">
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500">AUM bruto USD eq.</p>
-            <p className="text-2xl font-black text-blue-700 tabular-nums">{fmt(r.patrimonioTotalUSD)}</p>
-          </div>
         </div>
       </section>
 

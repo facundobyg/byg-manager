@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getResumenConsolidado, getBalanceGeneral, getExposicionPorMoneda, getExposicionPorCliente } from "@/lib/data/reportes";
+import { getResumenConsolidado, getExposicionPorCliente, getPosicionPN } from "@/lib/data/reportes";
 import { getPlazosFijosVencimientos } from "@/lib/data/plazos-fijos";
 
 const ACCESOS = [
@@ -24,23 +24,20 @@ const fmtUSD = (n: number) =>
   `USD ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 0 }).format(n)}`;
 
 export default async function InicioDashboardPage() {
-  const [resumenRes, balanceRes, monedaRes, clientesRes, pfRes] = await Promise.allSettled([
+  const [resumenRes, pnRes, clientesRes, pfRes] = await Promise.allSettled([
     getResumenConsolidado(),
-    getBalanceGeneral(),
-    getExposicionPorMoneda(),
+    getPosicionPN(),
     getExposicionPorCliente(),
     getPlazosFijosVencimientos(),
   ]);
 
   const resumen  = resumenRes.status  === "fulfilled" ? resumenRes.value  : null;
-  const balance  = balanceRes.status  === "fulfilled" ? balanceRes.value  : null;
-  const monedas  = monedaRes.status   === "fulfilled" ? monedaRes.value   : null;
+  const pn       = pnRes.status       === "fulfilled" ? pnRes.value       : null;
   const clientes = clientesRes.status === "fulfilled" ? clientesRes.value : null;
   const pfs      = pfRes.status       === "fulfilled" ? pfRes.value       : null;
 
   const pfVencidos      = pfs      ? pfs.filter((p) => p.estado === "VENCIDO").length : null;
   const ccNegativas     = clientes ? clientes.filter((c) => c.ccSaldo < 0).length     : null;
-  const monedaDominante = monedas  && monedas.length > 0  ? monedas[0].moneda          : null;
   const clienteMayorExp = clientes && clientes.length > 0 ? clientes[0].clienteNombre  : null;
 
   const posiciones = resumen
@@ -76,16 +73,12 @@ export default async function InicioDashboardPage() {
 
       <section className="flex flex-col gap-3">
         <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-byg-muted">Estado operativo</h2>
-        <div className="bg-byg-surface rounded-xl border border-byg-border p-5 grid grid-cols-1 sm:grid-cols-3 gap-6">
+        <div className="bg-byg-surface rounded-xl border border-byg-border p-5 grid grid-cols-1 sm:grid-cols-2 gap-6">
           <div className="flex flex-col gap-1">
             <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Patrimonio neto</p>
-            <p className="text-xl font-black text-byg-text tabular-nums">
-              {balance ? fmtUSD(balance.patrimonioNeto) : "—"}
+            <p className={`text-xl font-black tabular-nums ${pn !== null ? (pn >= 0 ? "text-emerald-400" : "text-red-400") : "text-byg-text"}`}>
+              {pn !== null ? fmtUSD(pn) : "—"}
             </p>
-          </div>
-          <div className="flex flex-col gap-1">
-            <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Moneda dominante</p>
-            <p className="text-xl font-black text-byg-text">{monedaDominante ?? "—"}</p>
           </div>
           <div className="flex flex-col gap-1">
             <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Mayor exposición</p>

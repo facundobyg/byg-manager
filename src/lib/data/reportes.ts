@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
 import { Moneda } from "@prisma/client";
+import { getCajasWithBalances } from "@/lib/data/caja";
 
 export async function getExposicionPorCliente() {
   const [clientes, tcConfig] = await Promise.all([
@@ -191,6 +192,107 @@ export async function getExposicionPorMoneda() {
 
   rows.sort((a, b) => b.total - a.total);
   return rows;
+}
+
+/**
+ * Patrimonio Neto con la misma fuente y cálculo que /posicion.
+ * Incluye cajas (saldo real), carteras, inmobiliarias, CC, PF y pendientes.
+ */
+export async function getPosicionPN(): Promise<number> {
+  const [cajas, clientes, carteras, propiedades, tcConfig, movPendientes] = await Promise.all([
+    getCajasWithBalances(),
+    prisma.cliente.findMany({
+      where: { activo: true },
+      include: {
+        CuentaCorriente: true,
+        PlazoFijo: { where: { estado: "ACTIVO" } },
+      },
+    }),
+    prisma.cartera.findMany({
+      where: { activa: true },
+      include: {
+        PosicionCartera: {
+          include: { Activo: { select: { precioActual: true, monedaPrecio: true } } },
+        },
+      },
+    }),
+    prisma.propiedad.findMany({
+      where: { activa: true },
+      include: { InversionInmobiliaria: true },
+    }),
+    prisma.config.findUnique({ where: { clave: "tc_blue" } }),
+    prisma.movimientoCaja.findMany({
+      where: { confirmado: false, tipo: { in: ["ENTRADA", "SALIDA"] as never[] } },
+      select: { tipo: true, monto: true, moneda: true },
+    }),
+  ]);
+
+  const tcBlue = Number(tcConfig?.valor ?? "1000");
+  const arsToUSD = (ars: number) => (tcBlue > 0 ? ars / tcBlue : 0);
+
+  const cajaTotalUSD = cajas.reduce(
+    (s, c) => s + Number(c.saldoActualUSD) + arsToUSD(Number(c.saldoActualARS)),
+    0,
+  );
+
+  const carteraTotalUSD = carteras.reduce((s, c) => {
+    let posValUSD = 0;
+    for (const pos of c.PosicionCartera) {
+      if (pos.Activo.precioActual != null) {
+        const p =
+          pos.Activo.monedaPrecio === "ARS"
+            ? Number(pos.Activo.precioActual) / tcBlue
+            : Number(pos.Activo.precioActual);
+        posValUSD += Number(pos.cantidad) * p;
+      }
+    }
+    const cashUSD =
+      Number(c.saldoUSDCable) + Number(c.saldoUSDMep) + arsToUSD(Number(c.saldoPesos));
+    return s + posValUSD + cashUSD;
+  }, 0);
+
+  const propiedadTotalUSD = propiedades.reduce((s, p) => {
+    let netUSD = 0, netARS = 0;
+    for (const m of p.InversionInmobiliaria) {
+      if (m.tipo === "RENTA") continue;
+      const sign = m.tipo === "INGRESO" || m.tipo === "MEJORA" ? 1 : -1;
+      if (m.moneda === "USD") netUSD += sign * Number(m.monto);
+      else if (m.moneda === "ARS") netARS += sign * Number(m.monto);
+    }
+    return s + netUSD + arsToUSD(netARS);
+  }, 0);
+
+  let activoCCUSD = 0, pasivoCCUSD = 0, pasivoPFUSD = 0;
+  for (const c of clientes) {
+    let ccUSD = 0, ccARS = 0;
+    for (const cc of c.CuentaCorriente) {
+      const sv = Number(cc.saldo);
+      if (cc.moneda === "USD") ccUSD += sv;
+      else if (cc.moneda === "ARS") ccARS += sv;
+    }
+    const ccTotalUSD = ccUSD + arsToUSD(ccARS);
+    activoCCUSD += Math.max(0, -ccTotalUSD);
+    pasivoCCUSD += Math.max(0, ccTotalUSD);
+    for (const pf of c.PlazoFijo) {
+      const m = Number(pf.saldoActual);
+      pasivoPFUSD += pf.moneda === "USD" ? m : arsToUSD(m);
+    }
+  }
+
+  const pendingRec = movPendientes.filter((m) => m.tipo === "ENTRADA");
+  const pendingPay = movPendientes.filter((m) => m.tipo === "SALIDA");
+  const pendRecUSD = pendingRec.reduce(
+    (s, m) => s + (m.moneda === "ARS" ? arsToUSD(Number(m.monto)) : Number(m.monto)),
+    0,
+  );
+  const pendPayUSD = pendingPay.reduce(
+    (s, m) => s + (m.moneda === "ARS" ? arsToUSD(Number(m.monto)) : Number(m.monto)),
+    0,
+  );
+
+  const activoTotal = cajaTotalUSD + carteraTotalUSD + propiedadTotalUSD + activoCCUSD + pendRecUSD;
+  const pasivoTotal = pasivoCCUSD + pasivoPFUSD + pendPayUSD;
+  return activoTotal - pasivoTotal;
 }
 
 export async function getBalanceGeneral() {
