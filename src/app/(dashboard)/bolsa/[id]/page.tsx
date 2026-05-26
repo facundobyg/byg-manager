@@ -126,8 +126,6 @@ export default async function BolsaDetailPage({ params }: PageProps) {
   const costoReal          = op.costoReal          != null ? Number(op.costoReal)          : null;
   const netoLiquidado      = op.netoLiquidado      != null ? Number(op.netoLiquidado)      : null;
   const precioPromedioReal = op.precioPromedioReal  != null ? Number(op.precioPromedioReal) : null;
-  const resultadoBruto     = op.resultadoBruto     != null ? Number(op.resultadoBruto)     : null;
-  const resultadoNeto      = op.resultadoNeto      != null ? Number(op.resultadoNeto)      : null;
 
   const canEditBoleto = op.estado === "PENDIENTE_CONCERTACION" || op.estado === "CONCERTADA";
   const canAnular     = !op.anulada;
@@ -216,14 +214,6 @@ export default async function BolsaDetailPage({ params }: PageProps) {
             <p className="text-[10px] font-bold uppercase tracking-widest text-byg-muted">Cargada</p>
             <p className="text-[13px] font-semibold text-byg-text">{fmtDateTime(op.fechaCarga.toISOString())}</p>
           </div>
-          {op.resultadoBruto != null && (
-            <div className="bg-byg-surface rounded-xl border border-byg-border p-4 flex flex-col gap-1">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-byg-muted">Resultado est.</p>
-              <p className="text-[13px] font-semibold font-mono text-byg-text">
-                {op.moneda} {fmt(Number(op.resultadoBruto))}
-              </p>
-            </div>
-          )}
         </div>
         {op.observaciones && (
           <div className="bg-byg-surface-2 rounded-xl border border-byg-border px-5 py-3">
@@ -262,13 +252,6 @@ export default async function BolsaDetailPage({ params }: PageProps) {
               <InfoCell label="Costo / Comisión" value={`${op.moneda} ${fmt(costoReal)}`} />
               {precioPromedioReal != null && (
                 <InfoCell label="Precio Prom. Real" value={fmt(precioPromedioReal, 4)} />
-              )}
-              {/* Resultado operativo: solo si fue cargado manualmente (rulo/arbitraje) */}
-              {resultadoBruto != null && (
-                <InfoCell label="Resultado operador" value={`${op.moneda} ${fmt(resultadoBruto)}`} />
-              )}
-              {resultadoNeto != null && (
-                <InfoCell label="Resultado neto" value={`${op.moneda} ${fmt(resultadoNeto)}`} />
               )}
             </div>
           </div>

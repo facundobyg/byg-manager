@@ -4,12 +4,14 @@ import { useState, useMemo, useActionState, useEffect, Fragment } from "react";
 import Link from "next/link";
 import type { MovDiarioRow, TipoMovDiario, EstadoMovDiario } from "@/lib/data/mov-diarios-utils";
 import { agruparPorCliente, normalizarNombreCliente } from "@/lib/data/mov-diarios-utils";
-import { Trash2, Activity, Plus, User, X } from "lucide-react";
+import { Trash2, Activity, Plus, User, X, RotateCcw } from "lucide-react";
 import {
-  cobrarOperacionCambio,
+  liquidarPagoPendiente,
   eliminarMovimientoCaja,
   cancelarOperacionCambioPendiente,
   editarMovimientoCajaCompleto,
+  editarOperacionCambio,
+  revertirOperacionCambio,
 } from "@/app/(dashboard)/operativa/mov-diarios/actions";
 import { Edit2, Settings } from "lucide-react";
 
@@ -67,38 +69,165 @@ function getRowPriority(row: MovDiarioRow) {
   return 10;
 }
 
-function SumarPagoButton({ operaciones }: { operaciones: MovDiarioRow[] }) {
-  const [state, action, pending] = useActionState(cobrarOperacionCambio, null);
-  const cambioIds = operaciones.filter((op) => op.clasificacionOperativa === "CAMBIO").map((op) => op.id);
+type CajaOpt = { id: string; label: string; slug?: string };
 
-  if (state?.ok) {
-    return (
-      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-[10px] font-black uppercase tracking-widest">
-        ✓ Cobrado
-      </span>
-    );
-  }
+function LiquidarPagoModal({ operaciones, cajas, clienteNombre }: {
+  operaciones: MovDiarioRow[];
+  cajas: CajaOpt[];
+  clienteNombre: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [modo, setModo] = useState<"total" | "parcial">("total");
+  const [state, action, pending] = useActionState(liquidarPagoPendiente, null);
 
-  if (cambioIds.length === 0) {
+  const cambioOps = operaciones.filter(op => op.clasificacionOperativa === "CAMBIO");
+  const operativeCajas = cajas.filter(c =>
+    (c as any).tipo === "CENTRAL_CONTABLE" || (c as any).tipo === "SUCURSAL_OPERATIVA" ||
+    !(c as any).tipo
+  );
+
+  useEffect(() => {
+    if (state?.ok) setOpen(false);
+  }, [state?.ok]);
+
+  if (cambioOps.length === 0) {
     return <span className="text-[10px] text-byg-muted font-bold uppercase">Sin cambios</span>;
   }
 
   return (
-    <form action={action} className="flex flex-col gap-1 items-center">
-      {cambioIds.map((id) => (
-        <input key={id} type="hidden" name="operacionId" value={id} />
-      ))}
+    <>
       <button
-        type="submit"
-        disabled={pending}
-        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-byg-accent text-white text-[10px] font-black uppercase tracking-widest hover:bg-blue-500 transition-all shadow-lg shadow-blue-600/20 disabled:opacity-50"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-byg-accent text-white text-[10px] font-black uppercase tracking-widest hover:bg-blue-500 transition-all shadow-lg shadow-blue-600/20"
       >
-        <Plus size={12} /> {pending ? "Registrando…" : "Sumar Pago"}
+        <Plus size={12} /> Sumar Pago
       </button>
-      {state?.error && (
-        <span className="text-[9px] text-red-500 font-semibold mt-1">{state.error}</span>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-byg-bg/70 backdrop-blur-[12px]"
+          onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
+        >
+          <div className="bg-byg-surface rounded-2xl shadow-2xl w-full max-w-2xl border border-byg-border max-h-[90vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-byg-border shrink-0">
+              <div>
+                <h3 className="text-sm font-black text-byg-text uppercase tracking-widest">Liquidar Pago</h3>
+                <p className="text-[10px] text-byg-muted mt-0.5">
+                  {clienteNombre} · {cambioOps.length} op{cambioOps.length !== 1 ? "s" : ""} pendiente{cambioOps.length !== 1 ? "s" : ""}
+                </p>
+              </div>
+              <button onClick={() => setOpen(false)} className="p-1.5 rounded-lg hover:bg-byg-surface-2 transition-colors">
+                <X size={16} className="text-byg-muted hover:text-byg-text" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-6 flex flex-col gap-5">
+              {/* Ops summary */}
+              <div className="flex flex-col gap-2">
+                {cambioOps.map(op => (
+                  <div key={op.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-byg-bg border border-byg-border flex-wrap">
+                    <span className="text-[10px] font-black uppercase text-byg-muted shrink-0">{op.subTipo?.replace(/_/g, " ") || op.tipo}</span>
+                    <span className="text-sm font-black tabular-nums font-mono text-byg-text">{formatMoney(op.monto, op.moneda)}</span>
+                    {op.tc !== undefined && <span className="text-[10px] text-byg-muted">TC {op.tc.toLocaleString("es-AR")}</span>}
+                    {op.totalARS !== undefined && (
+                      <span className="text-[10px] font-bold tabular-nums font-mono text-rose-500 ml-auto">{formatMoney(op.totalARS, "ARS")}</span>
+                    )}
+                    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase shrink-0 ${
+                      op.estado === "PARCIAL"
+                        ? "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20"
+                        : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+                    }`}>{op.estado === "PARCIAL" ? "PARCIAL" : "PEND."}</span>
+                  </div>
+                ))}
+              </div>
+
+              <form action={action} className="flex flex-col gap-5">
+                {cambioOps.map(op => (
+                  <input key={op.id} type="hidden" name="operacionId" value={op.id} />
+                ))}
+                <input type="hidden" name="modo" value={modo} />
+
+                {/* Mode toggle */}
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted mb-2">Modo de liquidación</p>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => setModo("total")}
+                      className={`flex-1 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
+                        modo === "total"
+                          ? "bg-byg-accent/20 text-byg-accent border-byg-accent/40"
+                          : "border-byg-border text-byg-muted hover:bg-byg-surface-2"
+                      }`}>
+                      Total
+                    </button>
+                    <button type="button" onClick={() => setModo("parcial")}
+                      className={`flex-1 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest border transition-all ${
+                        modo === "parcial"
+                          ? "bg-amber-500/20 text-amber-600 dark:text-amber-400 border-amber-500/40"
+                          : "border-byg-border text-byg-muted hover:bg-byg-surface-2"
+                      }`}>
+                      Parcial
+                    </button>
+                  </div>
+                </div>
+
+                {/* Total: caja selector */}
+                {modo === "total" && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Caja de liquidación</label>
+                    <select name="cajaId" required
+                      className="bg-byg-bg border border-byg-border rounded-xl px-3 py-2.5 text-sm font-bold text-byg-text focus:outline-none focus:ring-1 focus:ring-byg-accent/40">
+                      <option value="">Seleccionar caja...</option>
+                      {operativeCajas.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                    </select>
+                  </div>
+                )}
+
+                {/* Parcial: per-caja grid */}
+                {modo === "parcial" && (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Distribuir en cajas</p>
+                    <div className="rounded-xl border border-byg-border overflow-hidden">
+                      <div className="grid grid-cols-3 bg-byg-bg border-b border-byg-border">
+                        <div className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-byg-muted">Caja</div>
+                        <div className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-byg-muted text-right">Divisa</div>
+                        <div className="px-3 py-2 text-[8px] font-black uppercase tracking-widest text-byg-muted text-right">ARS</div>
+                      </div>
+                      {operativeCajas.map(c => (
+                        <div key={c.id} className="grid grid-cols-3 border-b border-byg-border/50 last:border-0">
+                          <div className="px-3 py-2.5 flex items-center">
+                            <span className="text-[11px] font-bold text-byg-text">{c.label}</span>
+                          </div>
+                          <div className="px-2 py-1.5">
+                            <input type="number" name={`caja_${c.id}_div`} step="0.01" min="0" placeholder="0"
+                              className="w-full bg-byg-bg border border-byg-border rounded-lg px-2 py-1.5 text-sm font-mono text-byg-text focus:outline-none focus:ring-1 focus:ring-byg-accent/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none text-right" />
+                          </div>
+                          <div className="px-2 py-1.5">
+                            <input type="number" name={`caja_${c.id}_ars`} step="1" min="0" placeholder="0"
+                              className="w-full bg-byg-bg border border-byg-border rounded-lg px-2 py-1.5 text-sm font-mono text-byg-text focus:outline-none focus:ring-1 focus:ring-amber-500/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none text-right" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[9px] text-byg-muted">Campos vacíos = caja no participa. ARS se calcula automáticamente si se omite.</p>
+                  </div>
+                )}
+
+                <button type="submit" disabled={pending}
+                  className="w-full py-3 rounded-xl bg-byg-accent text-white text-[11px] font-black uppercase tracking-widest hover:bg-blue-500 transition-all disabled:opacity-50">
+                  {pending ? "Procesando..." : modo === "total" ? "Confirmar Liquidación Total" : "Confirmar Pago Parcial"}
+                </button>
+
+                {state?.error && (
+                  <p className="text-[11px] font-black uppercase text-rose-400 bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 text-center">
+                    ⚠️ {state.error}
+                  </p>
+                )}
+              </form>
+            </div>
+          </div>
+        </div>
       )}
-    </form>
+    </>
   );
 }
 
@@ -244,6 +373,109 @@ function EditMovButton({ row }: { row: MovDiarioRow }) {
   );
 }
 
+function EditCambioButton({ row }: { row: MovDiarioRow }) {
+  const [state, action, pending] = useActionState(editarOperacionCambio, null);
+  const [isEditing, setIsEditing] = useState(false);
+  const isPendiente = row.estado === "PENDIENTE";
+  const currentTipoOp = row.subTipo?.startsWith("COMPRA") ? "COMPRA" : "VENTA";
+
+  useEffect(() => {
+    if (state?.ok) {
+      const t = setTimeout(() => setIsEditing(false), 600);
+      return () => clearTimeout(t);
+    }
+  }, [state?.ok]);
+
+  if (!isEditing) {
+    return (
+      <button
+        onClick={() => setIsEditing(true)}
+        title="Editar operación de cambio"
+        className="flex items-center gap-1 p-2 text-byg-muted hover:text-byg-accent transition-all font-bold text-[10px]"
+      >
+        <Edit2 size={14} /> <span className="uppercase">Editar</span>
+      </button>
+    );
+  }
+
+  const dateStr = typeof row.fecha === "string" ? row.fecha : row.fecha.toISOString();
+
+  return (
+    <div className="fixed inset-0 bg-byg-bg/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+      <div className="bg-byg-surface rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200 border border-byg-border">
+        <div className="px-6 py-4 border-b border-byg-border flex items-center justify-between bg-byg-bg">
+          <h3 className="text-sm font-black text-byg-text uppercase tracking-widest">Editar Operación Cambio</h3>
+          <button onClick={() => setIsEditing(false)} className="p-2 text-byg-muted hover:text-byg-text"><X size={20} /></button>
+        </div>
+        <form action={action} className="p-6 flex flex-col gap-4">
+          <input type="hidden" name="id" value={row.id} />
+          {!isPendiente && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold bg-amber-500/10 rounded-lg px-3 py-2">
+              Edición limitada: solo cliente y descripción. Usá "Revertir" para modificar monto/TC.
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="flex flex-col gap-1 col-span-2">
+              <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Cliente</label>
+              <input type="text" name="clienteNombre" defaultValue={row.cliente !== "—" ? row.cliente : ""} className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none bg-byg-bg text-byg-text" />
+            </div>
+          </div>
+          {isPendiente && (
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Tipo Op.</label>
+                <select name="tipoOp" defaultValue={currentTipoOp} className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none bg-byg-bg text-byg-text font-bold">
+                  <option value="COMPRA">COMPRA</option>
+                  <option value="VENTA">VENTA</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Estado</label>
+                <select name="estadoNuevo" defaultValue="PENDIENTE" className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none bg-byg-bg text-byg-text font-bold">
+                  <option value="PENDIENTE">Pendiente</option>
+                  <option value="COBRADA">Liquidar (Cobrada)</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Fecha</label>
+                <input type="date" name="fecha" defaultValue={dateStr.split("T")[0]} className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none bg-byg-bg text-byg-text" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Moneda</label>
+                <select name="moneda" defaultValue={row.moneda} className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none bg-byg-bg text-byg-text font-bold">
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                  <option value="BRL">BRL</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Cantidad</label>
+                <input type="number" name="cantidad" defaultValue={row.monto || ""} step="any" min="0.01" className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-mono bg-byg-bg text-byg-text" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Tipo de Cambio</label>
+                <input type="number" name="tipoCambio" defaultValue={row.tc || ""} step="any" min="0.01" className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none font-mono bg-byg-bg text-byg-text" />
+              </div>
+            </div>
+          )}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Descripción</label>
+            <textarea name="descripcion" defaultValue={row.descripcion || ""} className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none h-16 resize-none bg-byg-bg text-byg-text" />
+          </div>
+          {state?.error && <p className="text-[10px] font-bold text-red-500 text-center">{state.error}</p>}
+          {state?.ok && <p className="text-[10px] font-bold text-emerald-500 text-center">¡Actualizado!</p>}
+          <div className="flex items-center gap-3 mt-2">
+            <button type="button" onClick={() => setIsEditing(false)} className="flex-1 px-4 py-3 rounded-xl font-bold text-[11px] uppercase tracking-widest text-byg-muted bg-byg-surface-2 hover:bg-byg-border transition-all">Cancelar</button>
+            <button type="submit" disabled={pending} className="flex-1 px-4 py-3 rounded-xl font-bold text-[11px] uppercase tracking-widest text-white bg-blue-600 hover:bg-blue-500 transition-all shadow-lg shadow-blue-600/20 disabled:opacity-50">
+              {pending ? "Guardando..." : "Guardar"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function CancelarPendienteButton({ id }: { id: string }) {
   const [state, action, pending] = useActionState(cancelarOperacionCambioPendiente, null);
   const [confirmed, setConfirmed] = useState(false);
@@ -287,6 +519,55 @@ function CancelarPendienteButton({ id }: { id: string }) {
   );
 }
 
+function RevertirButton({ id }: { id: string }) {
+  const [state, action, pending] = useActionState(revertirOperacionCambio, null);
+  const [confirmed, setConfirmed] = useState(false);
+
+  if (state?.ok) {
+    return (
+      <span className="text-[9px] font-black uppercase text-emerald-600 dark:text-emerald-400 px-2 py-1 rounded bg-emerald-500/10">
+        Revertida — edite y liquide
+      </span>
+    );
+  }
+
+  if (!confirmed) {
+    return (
+      <button
+        onClick={() => setConfirmed(true)}
+        title="Revertir y recrear operación"
+        className="flex items-center gap-1 p-2 text-amber-600 dark:text-amber-400 hover:text-amber-500 transition-colors font-bold text-[10px]"
+      >
+        <RotateCcw size={13} /> <span className="uppercase">Revertir</span>
+      </button>
+    );
+  }
+
+  return (
+    <form action={action} className="flex flex-col gap-1 items-center">
+      <input type="hidden" name="id" value={id} />
+      <div className="flex items-center gap-1">
+        <span className="text-[8px] text-amber-600 dark:text-amber-400 font-black uppercase">¿Confirmar?</span>
+        <button
+          type="submit"
+          disabled={pending}
+          className="text-[9px] font-black uppercase text-amber-700 dark:text-amber-400 px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 disabled:opacity-50 transition-colors"
+        >
+          {pending ? "..." : "Sí"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirmed(false)}
+          className="text-[9px] font-black uppercase text-byg-muted px-2 py-1 rounded hover:bg-byg-surface-2 transition-colors"
+        >
+          <X size={10} />
+        </button>
+      </div>
+      {state?.error && <span className="text-[9px] text-red-500 text-center max-w-[120px]">{state.error}</span>}
+    </form>
+  );
+}
+
 type Props = {
   rows: MovDiarioRow[];
   resultadoCambio?: {
@@ -307,6 +588,7 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
   const [filtroCliente, setFiltroCliente] = useState("");
   const [filtroTipo, setFiltroTipo] = useState<TipoMovDiario | "">("");
   const [filtroEstado, setFiltroEstado] = useState<EstadoMovDiario | "">("");
+  const [showMovCaja, setShowMovCaja] = useState(false);
   const diasUnicos = useMemo(() => {
     const set = new Set(rows.map(r => new Date(r.fecha).toISOString().split("T")[0]));
     const all = Array.from(set).sort((a, b) => b.localeCompare(a));
@@ -387,7 +669,20 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
       });
 
       dayConsolidated.sort((a, b) => getRowPriority(a) - getRowPriority(b));
-      result.set(day, dayConsolidated);
+
+      // Attach children to consolidated rows for B3 expand/collapse
+      const withChildren = dayConsolidated.map((r) => {
+        if ((r as any).isConsolidated) {
+          const key = r.id.replace("consolidated-", "");
+          const origGroup = Array.from(clientGroups.values()).find(
+            (g) => g.length > 1 && g[0].id === key
+          );
+          return { ...r, children: origGroup ?? [] };
+        }
+        return r;
+      });
+
+      result.set(day, withChildren);
     });
 
     return result;
@@ -408,14 +703,18 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
   const saldadasGroups = useMemo(() => {
     const map = new Map<string, MovDiarioRow[]>();
     consolidated.forEach((dayRows, day) => {
-      const filteredDay = dayRows.filter(r => r.estado !== "PENDIENTE");
+      const filteredDay = dayRows.filter(r => {
+        if (r.estado === "REVERTIDA") return false;
+        if (!showMovCaja && r.clasificacionOperativa === "MOVIMIENTO_CAJA") return false;
+        return true;
+      });
       if (filteredDay.length > 0) map.set(day, filteredDay);
     });
     return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
-  }, [consolidated]);
+  }, [consolidated, showMovCaja]);
 
   const deudaPorCliente = useMemo(() => {
-    const pendientes = filtered.filter(r => r.estado === "PENDIENTE");
+    const pendientes = filtered.filter(r => r.estado === "PENDIENTE" || r.estado === "PARCIAL");
     return Object.values(agruparPorCliente(pendientes)).sort((a, b) => a.cliente.localeCompare(b.cliente));
   }, [filtered]);
 
@@ -426,6 +725,34 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
       next.has(cliente) ? next.delete(cliente) : next.add(cliente);
       return next;
     });
+
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (id: string) =>
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  // B4: Pendientes operativos — subtipos de obligación visible en sección aparte
+  const OBLIGATION_SUBTYPES = new Set([
+    "GUARDA_CLIENTE", "DEVOLUCION_GUARDA_CLIENTE",
+    "PRESTAMO_TEMPORAL", "PRESTAMO_CLIENTE", "DEVOLUCION_PRESTAMO",
+    "ADELANTO_FUTURA_OP", "DIFERENCIA_LIQUIDACION",
+    "INGRESO_CC_CLIENTE", "EGRESO_CC_CLIENTE",
+    "INGRESO_PF_CLIENTE", "EGRESO_PF_CLIENTE",
+  ]);
+
+  const pendientesOp = useMemo(
+    () => rows
+      .filter((r) =>
+        r.clasificacionOperativa === "MOVIMIENTO_CAJA" &&
+        OBLIGATION_SUBTYPES.has(r.subtipoOperativo ?? "")
+      )
+      .sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows]
+  );
 
   const anyActive = selectedDay || filtroCliente || filtroTipo || filtroEstado;
 
@@ -556,9 +883,10 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                 className="text-[13px] font-bold text-byg-text border border-byg-border rounded-xl px-4 py-2 bg-byg-bg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none"
               >
                 <option value="">Todos los estados</option>
-                <option value="COBRADO">Saldado / Cobrado</option>
+                <option value="LIQUIDADA">Liquidada</option>
                 <option value="PENDIENTE">Pendiente</option>
                 <option value="PARCIAL">Parcial</option>
+                <option value="REVERTIDA">Revertida</option>
               </select>
               {anyActive && (
                 <button
@@ -568,6 +896,17 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                   Limpiar
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setShowMovCaja(v => !v)}
+                className={`text-[11px] font-black px-4 py-2 rounded-xl uppercase tracking-widest transition-all ${
+                  showMovCaja
+                    ? "bg-byg-accent/20 text-byg-accent"
+                    : "bg-byg-surface-2 text-byg-muted hover:bg-byg-border"
+                }`}
+              >
+                {showMovCaja ? "Ocultar entradas/salidas" : "Ver entradas/salidas"}
+              </button>
             </div>
             {children}
           </div>
@@ -637,8 +976,11 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                           }
                         }
 
+                        const isGroup = (row as any).isConsolidated && ((row as any).children?.length ?? 0) > 0;
+                        const isGroupOpen = expandedGroups.has(row.id);
                         return (
-                          <tr key={row.id} className="hover:bg-byg-surface-2 transition-colors group">
+                          <Fragment key={row.id}>
+                          <tr className="hover:bg-byg-surface-2 transition-colors group">
                             <td className="px-6 py-4">
                               <div className="flex flex-col gap-0.5">
                                 <span className="text-[11px] font-black uppercase tracking-tighter text-byg-muted">
@@ -650,14 +992,27 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                                   </span>
                                 )}
                                 {(row as any).isConsolidated && (
-                                  <span className="text-[8px] font-black text-blue-500 uppercase">
-                                    {(row as any).rowCount} operaciones
-                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); toggleGroup(row.id); }}
+                                    className="text-[8px] font-black text-blue-500 uppercase hover:text-blue-400 transition-colors"
+                                  >
+                                    {expandedGroups.has(row.id) ? "▲" : "▼"} {(row as any).rowCount} ops
+                                  </button>
                                 )}
                               </div>
                             </td>
                             <td className="px-6 py-4">
-                              <span className="text-[13px] font-black text-byg-text">{row.cliente}</span>
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-[13px] font-black text-byg-text">
+                                  {row.cliente !== "—" ? row.cliente : (row.descripcion !== "—" ? row.descripcion : "—")}
+                                </span>
+                                {row.operador && (
+                                  <span className="text-[9px] font-bold text-byg-muted uppercase tracking-wide">
+                                    por {row.operador}
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className={`px-6 py-4 text-right tabular-nums font-black text-[15px] ${colorDivisa}`}>
                               {row.moneda !== "ARS" ? formatMoney(row.monto, row.moneda) : "—"}
@@ -673,12 +1028,24 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                             </td>
                             <td className="px-6 py-4 text-center">
                               <div className="flex flex-col items-center gap-1">
-                                <span className="text-[10px] font-bold text-byg-muted uppercase">Oficina</span>
-                                <div className="flex gap-1">
+                                {row.operador && (
+                                  <span className="text-[9px] font-semibold text-byg-muted">por {row.operador}</span>
+                                )}
+                                <span className="text-[10px] font-bold text-byg-muted uppercase">
+                                  {row.cajaLabel ?? "Sin liquidar"}
+                                </span>
+                                <div className="flex gap-1 flex-wrap justify-center">
                                   {row.impactaResultado && (
                                     <span className="text-[7px] font-black bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-1 py-0.5 rounded border border-emerald-500/20 uppercase">Resultado</span>
                                   )}
-                                  <span className="text-[7px] font-black bg-byg-surface-2 text-byg-muted px-1 py-0.5 rounded border border-byg-border uppercase">Caja</span>
+                                  <span className={`text-[7px] font-black px-1 py-0.5 rounded border uppercase ${
+                                    row.estado === "REVERTIDA" ? "bg-gray-500/10 text-gray-400 border-gray-500/20" :
+                                    row.estado === "PENDIENTE" ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20" :
+                                    row.estado === "PARCIAL"   ? "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20" :
+                                    "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                                  }`}>
+                                    {row.estado === "PENDIENTE" ? "SIN LIQ." : row.estado}
+                                  </span>
                                 </div>
                               </div>
                             </td>
@@ -695,15 +1062,20 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                                 </div>
                               )}
 
+                              {canWrite && row.clasificacionOperativa === "CAMBIO" && !(row as any).isConsolidated && (
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <EditCambioButton row={row} />
+                                  {row.estado === "PENDIENTE"
+                                    ? <CancelarPendienteButton id={row.id} />
+                                    : <RevertirButton id={row.id} />
+                                  }
+                                </div>
+                              )}
                               {((row as any).isConsolidated ||
-                                (row.clasificacionOperativa as string) === "TRANSFERENCIA" ||
-                                (row.clasificacionOperativa === "CAMBIO")) && (
+                                (row.clasificacionOperativa as string) === "TRANSFERENCIA") && (
                                 <div className="flex flex-col items-center">
-                                  <span className="text-[8px] font-black uppercase text-byg-muted italic">Editar operación origen</span>
-                                  <button
-                                    disabled
-                                    className="p-2 text-byg-border-2 cursor-not-allowed opacity-50"
-                                  >
+                                  <span className="text-[8px] font-black uppercase text-byg-muted italic">Agrupado</span>
+                                  <button disabled className="p-2 text-byg-border-2 cursor-not-allowed opacity-50">
                                     <Settings size={14} />
                                   </button>
                                 </div>
@@ -711,6 +1083,38 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                             </div>
                           </td>
                           </tr>
+                          {isGroup && isGroupOpen && ((row as any).children as MovDiarioRow[]).map((child) => (
+                            <tr key={child.id} className="bg-byg-bg/60 border-l-4 border-l-blue-500/30">
+                              <td className="px-6 py-3 pl-10">
+                                <span className="text-[10px] font-black uppercase text-byg-muted">{child.subTipo?.replace(/_/g, " ") || child.tipo}</span>
+                              </td>
+                              <td className="px-6 py-3">
+                                <span className="text-xs text-byg-muted">{child.cliente !== "—" ? child.cliente : child.descripcion}</span>
+                              </td>
+                              <td className="px-6 py-3 text-right tabular-nums font-mono text-xs text-byg-text">
+                                {child.moneda !== "ARS" ? formatMoney(child.monto, child.moneda) : "—"}
+                              </td>
+                              <td className="px-6 py-3 text-center tabular-nums font-mono text-xs text-byg-muted">
+                                {child.tc ? child.tc.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+                              </td>
+                              <td className="px-6 py-3 text-right tabular-nums font-mono text-xs text-byg-text">
+                                {child.totalARS ? formatMoney(child.totalARS, "ARS") : "—"}
+                              </td>
+                              <td />
+                              <td className="px-6 py-3 text-center">
+                                {canWrite && child.clasificacionOperativa === "CAMBIO" && (
+                                  <div className="flex flex-col items-center gap-0.5">
+                                    <EditCambioButton row={child} />
+                                    {child.estado === "PENDIENTE"
+                                      ? <CancelarPendienteButton id={child.id} />
+                                      : <RevertirButton id={child.id} />
+                                    }
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                          </Fragment>
                         );
                       })}
                     </tbody>
@@ -722,83 +1126,138 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
         )}
       </div>
 
-      {deudaPorCliente.length > 0 && (
-        <div className="flex flex-col gap-6 mt-12 mb-20 animate-in fade-in slide-in-from-bottom-4 duration-700">
-          <div className="flex items-center justify-between px-4">
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <div className="h-6 w-1.5 bg-amber-500 rounded-full"></div>
-                <h3 className="text-xl font-black uppercase tracking-tight text-byg-text">Modelo de Deuda por Cliente</h3>
-              </div>
-              <p className="text-[10px] font-bold text-byg-muted uppercase tracking-widest pl-4">Consolidado de saldos pendientes</p>
+      {pendientesOp.length > 0 && (
+        <div className="flex flex-col gap-4 mt-6">
+          <div className="flex items-center gap-3 px-4">
+            <div className="h-6 w-1.5 bg-violet-500 rounded-full" />
+            <div className="flex flex-col gap-0.5">
+              <h3 className="text-[14px] font-black uppercase tracking-widest text-byg-text">Pendientes Operativos</h3>
+              <p className="text-[9px] font-bold text-byg-muted uppercase tracking-wider">
+                Guardas · Préstamos · Adelantos · Diferencias — registros históricos hasta su contrapartida
+              </p>
             </div>
           </div>
+          <div className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden border-b-4 border-b-violet-500">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse min-w-[700px]">
+                <thead>
+                  <tr className="bg-byg-bg border-b border-byg-border">
+                    <th className="px-5 py-3 text-[10px] font-black uppercase text-byg-muted tracking-wider">Fecha</th>
+                    <th className="px-5 py-3 text-[10px] font-black uppercase text-byg-muted tracking-wider">Tipo</th>
+                    <th className="px-5 py-3 text-[10px] font-black uppercase text-byg-muted tracking-wider">Descripción</th>
+                    <th className="px-5 py-3 text-[10px] font-black uppercase text-byg-muted tracking-wider text-right">Monto</th>
+                    <th className="px-5 py-3 text-[10px] font-black uppercase text-byg-muted tracking-wider text-center">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-byg-border/40">
+                  {pendientesOp.map((r) => (
+                    <tr key={r.id} className="hover:bg-byg-surface-2 transition-colors">
+                      <td className="px-5 py-3 text-[11px] font-mono text-byg-muted">
+                        {new Date(r.fecha).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" })}
+                      </td>
+                      <td className="px-5 py-3">
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded uppercase ${
+                          r.tipo === "INGRESO"
+                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                            : "bg-rose-500/10 text-rose-600 dark:text-rose-400"
+                        }`}>
+                          {r.subtipoOperativo?.replace(/_/g, " ") || r.tipo}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-xs text-byg-text">{r.descripcion || "—"}</td>
+                      <td className={`px-5 py-3 text-right tabular-nums font-mono font-black text-sm ${r.tipo === "INGRESO" ? "text-emerald-500" : "text-rose-400"}`}>
+                        {r.tipo === "INGRESO" ? "+" : "-"}{formatMoney(r.monto, r.moneda)}
+                      </td>
+                      <td className="px-5 py-3 text-center">
+                        {canWrite && (
+                          <div className="flex items-center justify-center gap-1">
+                            <EditMovButton row={r} />
+                            <DeleteMovButton id={r.id} />
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
-          <div className="bg-byg-surface rounded-3xl border border-byg-border overflow-hidden border-b-4 border-b-amber-500">
+      {deudaPorCliente.length > 0 && (
+        <div className="flex flex-col gap-3 mt-6 mb-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+          <div className="flex items-center gap-2 px-2">
+            <div className="h-4 w-1 bg-amber-500 rounded-full"></div>
+            <h3 className="text-[12px] font-black uppercase tracking-widest text-byg-text">Deuda Pendiente por Cliente</h3>
+            <span className="text-[9px] font-bold text-byg-muted uppercase">({deudaPorCliente.length})</span>
+          </div>
+
+          <div className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden border-b-2 border-b-amber-500">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-byg-bg border-b border-byg-border">
-                    <th className="px-8 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest">Cliente</th>
-                    <th className="px-8 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest text-right">Saldo USD</th>
-                    <th className="px-8 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest text-right">Saldo ARS</th>
-                    <th className="px-8 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest text-center">Estado</th>
-                    <th className="px-8 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest text-center">Acción</th>
+                    <th className="px-4 py-2.5 text-[9px] font-black uppercase text-byg-muted tracking-widest">Cliente</th>
+                    <th className="px-4 py-2.5 text-[9px] font-black uppercase text-byg-muted tracking-widest text-right">USD</th>
+                    <th className="px-4 py-2.5 text-[9px] font-black uppercase text-byg-muted tracking-widest text-right">ARS</th>
+                    <th className="px-4 py-2.5 text-[9px] font-black uppercase text-byg-muted tracking-widest text-center">Estado</th>
+                    <th className="px-4 py-2.5 text-[9px] font-black uppercase text-byg-muted tracking-widest text-center">Acción</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y-0">
                   {deudaPorCliente.map((d) => (
                     <Fragment key={d.cliente}>
                       <tr className="hover:bg-byg-surface-2 transition-all group border-b border-byg-border/40">
-                        <td className="px-8 py-6">
-                          <div className="flex items-center gap-3">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
                             <button
                               onClick={() => toggleDeuda(d.cliente)}
-                              className="w-10 h-10 rounded-full bg-byg-surface-2 flex items-center justify-center text-byg-muted group-hover:bg-amber-500/20 group-hover:text-amber-700 dark:text-amber-400 transition-colors shrink-0"
+                              className="w-7 h-7 rounded-full bg-byg-surface-2 flex items-center justify-center text-byg-muted group-hover:bg-amber-500/20 group-hover:text-amber-400 transition-colors shrink-0"
                               title={expandedDeuda.has(d.cliente) ? "Contraer" : "Ver operaciones"}
                             >
-                              <User size={18} />
+                              <User size={13} />
                             </button>
                             <div className="flex flex-col">
-                              <span className="text-[15px] font-black text-byg-text leading-tight">{d.cliente}</span>
+                              <span className="text-[12px] font-black text-byg-text leading-tight">{d.cliente}</span>
                               <button
                                 onClick={() => toggleDeuda(d.cliente)}
-                                className="text-[9px] font-bold text-blue-500 hover:text-blue-700 uppercase tracking-tighter text-left"
+                                className="text-[9px] font-bold text-blue-500 hover:text-blue-400 uppercase tracking-tighter text-left"
                               >
-                                {d.operaciones.length} {d.operaciones.length === 1 ? "operación pendiente" : "operaciones"} {expandedDeuda.has(d.cliente) ? "▲" : "▼"}
+                                {d.operaciones.length} {d.operaciones.length === 1 ? "op" : "ops"} {expandedDeuda.has(d.cliente) ? "▲" : "▼"}
                               </button>
                             </div>
                           </div>
                         </td>
-                        <td className="px-8 py-6 text-right">
-                          <span className={`text-lg font-black tabular-nums font-mono transition-colors ${d.totalUSD > 0 ? "text-emerald-600 dark:text-emerald-400" : (d.totalUSD < 0 ? "text-rose-600 dark:text-rose-400" : "text-byg-muted")}`}>
+                        <td className="px-4 py-3 text-right">
+                          <span className={`text-[13px] font-black tabular-nums font-mono ${d.totalUSD > 0 ? "text-emerald-600 dark:text-emerald-400" : (d.totalUSD < 0 ? "text-rose-600 dark:text-rose-400" : "text-byg-muted")}`}>
                             {formatMoney(d.totalUSD, "USD")}
                           </span>
                         </td>
-                        <td className="px-8 py-6 text-right">
-                          <span className={`text-lg font-black tabular-nums font-mono transition-colors ${d.totalARS > 0 ? "text-emerald-600 dark:text-emerald-400" : (d.totalARS < 0 ? "text-rose-600 dark:text-rose-400" : "text-byg-muted")}`}>
+                        <td className="px-4 py-3 text-right">
+                          <span className={`text-[13px] font-black tabular-nums font-mono ${d.totalARS > 0 ? "text-emerald-600 dark:text-emerald-400" : (d.totalARS < 0 ? "text-rose-600 dark:text-rose-400" : "text-byg-muted")}`}>
                             {formatMoney(d.totalARS, "ARS")}
                           </span>
                         </td>
-                        <td className="px-8 py-6 text-center">
-                          <div className="flex flex-col items-center gap-1">
+                        <td className="px-4 py-3 text-center">
+                          <div className="flex flex-col items-center gap-0.5">
                             {estadoDeuda(d.totalUSD, d.totalARS).map((b) => (
                               <span
                                 key={b.moneda || "comp"}
-                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest border ${b.cls}`}
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest border ${b.cls}`}
                               >
                                 {b.label}{b.moneda ? ` (${b.moneda})` : ""}
                               </span>
                             ))}
                           </div>
                         </td>
-                        <td className="px-8 py-6 text-center">
-                          {canWrite && <SumarPagoButton operaciones={d.operaciones} />}
+                        <td className="px-4 py-3 text-center">
+                          {canWrite && <LiquidarPagoModal operaciones={d.operaciones} cajas={cajas ?? []} clienteNombre={d.cliente} />}
                         </td>
                       </tr>
                       {expandedDeuda.has(d.cliente) && (
                         <tr className="bg-byg-bg/40">
-                          <td colSpan={5} className="px-8 py-3">
+                          <td colSpan={5} className="px-4 py-2">
                             <div className="flex flex-col gap-1">
                               <p className="text-[9px] font-black uppercase tracking-widest text-byg-muted mb-1">Operaciones individuales</p>
                               {d.operaciones.map((op) => (
@@ -810,6 +1269,7 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                                     {op.subTipo?.replace(/_/g, " ") || op.tipo}
                                   </span>
                                   <span className={`text-[8px] font-black px-1.5 py-0.5 rounded border uppercase shrink-0 ${
+                                    op.estado === "REVERTIDA" ? "bg-gray-500/10 text-gray-400 border-gray-500/20" :
                                     op.estado === "PENDIENTE" ? "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/20" :
                                     op.estado === "PARCIAL"   ? "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20" :
                                                                 "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
@@ -823,14 +1283,17 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
                                     {formatMoney(op.monto, op.moneda)}
                                   </span>
                                   {canWrite && (
-                                    <div className="shrink-0">
+                                    <div className="shrink-0 flex items-center gap-1">
                                       {op.clasificacionOperativa === "CAMBIO" ? (
-                                        <CancelarPendienteButton id={op.id} />
+                                        <>
+                                          <EditCambioButton row={op} />
+                                          <CancelarPendienteButton id={op.id} />
+                                        </>
                                       ) : (
-                                        <div className="flex items-center gap-1">
+                                        <>
                                           <EditMovButton row={op} />
                                           <DeleteMovButton id={op.id} />
-                                        </div>
+                                        </>
                                       )}
                                     </div>
                                   )}
@@ -847,28 +1310,18 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
             </div>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-byg-surface rounded-2xl p-6 border border-byg-border border-l-[4px] border-l-amber-500">
-              <p className="text-[10px] font-black uppercase tracking-widest text-amber-700 dark:text-amber-400 mb-2">Total Deuda USD</p>
-              <p className="text-2xl font-black text-byg-text tabular-nums font-mono">
+          <div className="grid grid-cols-2 gap-3 px-1">
+            <div className="bg-byg-surface rounded-xl p-3 border border-byg-border border-l-[3px] border-l-amber-500">
+              <p className="text-[8px] font-black uppercase tracking-widest text-amber-400 mb-1">Total Deuda</p>
+              <p className="text-[14px] font-black text-byg-text tabular-nums font-mono">
                 {formatMoney(deudaPorCliente.reduce((acc, d) => acc + (d.totalUSD < 0 ? d.totalUSD : 0), 0), "USD")}
               </p>
-              <p className="text-[9px] font-bold text-byg-muted uppercase mt-1">Saldo negativo (lo que debemos)</p>
             </div>
-            <div className="bg-byg-surface rounded-2xl p-6 border border-byg-border border-l-[4px] border-l-emerald-500">
-              <p className="text-[10px] font-black uppercase tracking-widest text-emerald-600 dark:text-emerald-400 mb-2">Total a Cobrar USD</p>
-              <p className="text-2xl font-black text-byg-text tabular-nums font-mono">
+            <div className="bg-byg-surface rounded-xl p-3 border border-byg-border border-l-[3px] border-l-emerald-500">
+              <p className="text-[8px] font-black uppercase tracking-widest text-emerald-400 mb-1">Total a Cobrar</p>
+              <p className="text-[14px] font-black text-byg-text tabular-nums font-mono">
                 {formatMoney(deudaPorCliente.reduce((acc, d) => acc + (d.totalUSD > 0 ? d.totalUSD : 0), 0), "USD")}
               </p>
-              <p className="text-[9px] font-bold text-byg-muted uppercase mt-1">Saldo positivo (lo que nos deben)</p>
-            </div>
-            <div className="bg-byg-surface rounded-2xl p-6 border border-byg-border flex flex-col justify-center">
-              <button
-                disabled
-                className="w-full py-3 rounded-xl border-2 border-dashed border-byg-border-2 text-byg-muted text-[10px] font-black uppercase tracking-widest cursor-not-allowed"
-              >
-                Próximamente: Reporte de Deuda PDF
-              </button>
             </div>
           </div>
         </div>

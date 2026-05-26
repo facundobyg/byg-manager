@@ -1,12 +1,15 @@
 import { requirePermission } from "@/lib/auth/permissions";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, UserCircle, ArrowRight, Banknote, TrendingUp, BarChart2, Briefcase } from "lucide-react";
+import { ChevronLeft, UserCircle, ArrowRight, Banknote, TrendingUp, BarChart2, Briefcase, FileText } from "lucide-react";
 import { getClienteById } from "@/lib/data/cuenta-corriente";
 import { ClienteFormsClientSlot } from "@/components/modules/clientes/ClienteFormsClientSlot";
 import { ClienteAdminActions } from "@/components/modules/clientes/ClienteAdminActions";
 import { VerPFButton } from "@/components/modules/clientes/VerPFButton";
 import { getClienteDeMap } from "@/lib/services/config.service";
+import { canDoAction } from "@/lib/auth/permissions";
+import { AsignarProductorSelect } from "@/components/modules/comisiones/AsignarProductorSelect";
+import { prisma } from "@/lib/prisma";
 
 const SOCIOS = new Set(["Facu", "Fran", "Nanu"]);
 
@@ -84,7 +87,13 @@ function SectionHeader({ label, count, right }: { label: string; count?: number;
 export default async function ClienteDetailPage({ params }: PageProps) {
   await requirePermission("clientes:leer");
   const { id } = await params;
-  const [cliente, deMap] = await Promise.all([getClienteById(id), getClienteDeMap()]);
+  const [cliente, deMap, canWriteCC, canWritePF, productores] = await Promise.all([
+    getClienteById(id),
+    getClienteDeMap(),
+    canDoAction("cc:crear_movimiento"),
+    canDoAction("pf:crear"),
+    prisma.productor.findMany({ where: { activo: true }, orderBy: { nombre: "asc" } }),
+  ]);
   if (!cliente) notFound();
 
   const socio    = deMap[cliente.nombre] ?? null;
@@ -95,6 +104,13 @@ export default async function ClienteDetailPage({ params }: PageProps) {
   const plazosFijos = cliente.PlazoFijo || [];
   const custodias = cliente.CustodiaCliente || [];
   const operaciones = cliente.operaciones;
+  const transferencias = cliente.transferencias ?? [];
+  const transfByActivo = new Map<string, { carteraNombre: string; fecha: Date }>();
+  for (const t of transferencias) {
+    if (!transfByActivo.has(t.activoId)) {
+      transfByActivo.set(t.activoId, { carteraNombre: t.Cartera.nombre, fecha: t.fecha });
+    }
+  }
 
   const saldoCC = cuentasCorrientes.reduce((acc, cc) => acc + toNum(cc.saldo), 0);
   const pfActivos = plazosFijos.filter((pf) => pf.estado === "ACTIVO");
@@ -105,6 +121,18 @@ export default async function ClienteDetailPage({ params }: PageProps) {
       : toNum(cu.precioPromedio);
     return acc + toNum(cu.cantidadTotal) * precio;
   }, 0);
+  const custodiaUSD = custodias
+    .filter((cu) => cu.Activo?.monedaPrecio !== "ARS")
+    .reduce((acc, cu) => {
+      const precio = cu.Activo?.precioActual != null ? toNum(cu.Activo.precioActual) : toNum(cu.precioPromedio);
+      return acc + toNum(cu.cantidadTotal) * precio;
+    }, 0);
+  const custodiaARS = custodias
+    .filter((cu) => cu.Activo?.monedaPrecio === "ARS")
+    .reduce((acc, cu) => {
+      const precio = cu.Activo?.precioActual != null ? toNum(cu.Activo.precioActual) : toNum(cu.precioPromedio);
+      return acc + toNum(cu.cantidadTotal) * precio;
+    }, 0);
 
   return (
     <div className="flex flex-col gap-7">
@@ -153,7 +181,27 @@ export default async function ClienteDetailPage({ params }: PageProps) {
               ))}
           </div>
         </div>
-        <ClienteAdminActions clienteId={cliente.id} />
+        <div className="flex flex-col items-end gap-2 shrink-0">
+          <Link
+            href={`/print/clientes/${id}`}
+            target="_blank"
+            className="inline-flex items-center gap-1.5 text-[10px] font-black px-3 py-1.5 rounded-lg bg-byg-surface-2 text-byg-muted hover:bg-byg-border hover:text-byg-text transition-colors uppercase tracking-wider border border-byg-border"
+          >
+            <FileText size={11} />
+            PDF
+          </Link>
+          <ClienteAdminActions clienteId={cliente.id} />
+          {productores.length > 0 && (
+            <div className="flex flex-col items-end gap-1">
+              <p className="text-[9px] font-black uppercase tracking-widest text-byg-muted">Productor</p>
+              <AsignarProductorSelect
+                clienteId={cliente.id}
+                productorIdActual={(cliente as { productorId?: string | null }).productorId ?? null}
+                productores={productores.map((p) => ({ id: p.id, nombre: p.nombre, porcentaje: Number(p.porcentaje) }))}
+              />
+            </div>
+          )}
+        </div>
       </header>
 
       {/* Summary cards */}
@@ -191,7 +239,7 @@ export default async function ClienteDetailPage({ params }: PageProps) {
 
       {/* Cuentas corrientes */}
       <section className="bg-byg-surface rounded-xl border border-byg-border overflow-hidden">
-        <SectionHeader label="Cuentas corrientes" count={cuentasCorrientes.length} right={<ClienteFormsClientSlot clienteId={cliente.id} />} />
+        <SectionHeader label="Cuentas corrientes" count={cuentasCorrientes.length} right={<ClienteFormsClientSlot clienteId={cliente.id} canWriteCC={canWriteCC} canWritePF={canWritePF} />} />
         {cuentasCorrientes.length === 0 ? (
           <EmptyState message="Sin cuentas corrientes registradas" />
         ) : (
@@ -232,8 +280,8 @@ export default async function ClienteDetailPage({ params }: PageProps) {
         )}
       </section>
 
-      {/* Plazos fijos */}
-      <section className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden flex flex-col relative">
+      {/* Plazos fijos — oculto si no tiene ninguno */}
+      {plazosFijos.length > 0 && <section className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden flex flex-col relative">
         <div className="absolute top-0 left-0 w-1 h-full bg-emerald-500"></div>
         <SectionHeader
           label="Plazos fijos"
@@ -322,27 +370,44 @@ export default async function ClienteDetailPage({ params }: PageProps) {
             </table>
           </div>
         )}
-      </section>
+      </section>}
 
-      {/* Cartera (custodia asignada desde carteras) */}
-      <section className="bg-white rounded-2xl border border-slate-200 border-l-[5px] border-l-amber-400 shadow-sm overflow-hidden flex flex-col relative">
+      {/* Cartera — oculta si no tiene posiciones */}
+      {custodias.length > 0 && <section className="bg-white rounded-2xl border border-slate-200 border-l-[5px] border-l-amber-400 shadow-sm overflow-hidden flex flex-col relative">
         <SectionHeader
-          label="Cartera"
+          label="Custodia BYG"
           count={custodias.length}
           right={
-            custodias.length > 0 ? (
+            <div className="flex items-center gap-3">
+              <span className="text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                No integra patrimonio propio
+              </span>
               <span className="text-xs font-black tabular-nums text-byg-text font-mono">{fmt(totalCustodia)}</span>
-            ) : undefined
+            </div>
           }
         />
-        <p className="px-6 py-2 text-[10px] font-bold text-amber-400 bg-amber-500/5 border-b border-amber-500/20">
-          Posiciones asignadas desde carteras — no computan como CC ni PF
-        </p>
+        <div className="px-6 py-2 border-b border-amber-500/20 bg-amber-500/5 flex items-center justify-between gap-4 flex-wrap">
+          <p className="text-[10px] font-bold text-amber-400">
+            Posiciones asignadas desde carteras — no computan como CC ni PF
+          </p>
+          <div className="flex items-center gap-4 shrink-0">
+            {custodiaUSD > 0 && (
+              <span className="text-[11px] font-black text-amber-400 tabular-nums font-mono">
+                USD {fmt(custodiaUSD)}
+              </span>
+            )}
+            {custodiaARS > 0 && (
+              <span className="text-[11px] font-black text-amber-400/80 tabular-nums font-mono">
+                $ {fmt(custodiaARS)}
+              </span>
+            )}
+          </div>
+        </div>
         {custodias.length === 0 ? (
           <EmptyState message="Sin posiciones en cartera asignada" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[680px]">
+            <table className="w-full text-left border-collapse min-w-[860px]">
               <thead>
                 <tr className="border-b border-byg-border bg-byg-bg">
                   <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest w-[90px]">Ticker</th>
@@ -351,6 +416,8 @@ export default async function ClienteDetailPage({ params }: PageProps) {
                   <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest text-right">P. Promedio</th>
                   <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest text-right">P. Actual</th>
                   <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest text-right">Valor est.</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest">Origen</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest">Últ. transf.</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-byg-border/40">
@@ -360,6 +427,7 @@ export default async function ClienteDetailPage({ params }: PageProps) {
                   const hasPrecio    = cu.Activo?.precioActual != null;
                   const precioActual = hasPrecio ? toNum(cu.Activo!.precioActual) : null;
                   const valorEst     = cantidad * (precioActual ?? promedio);
+                  const transf       = transfByActivo.get(cu.activoId);
 
                   return (
                     <tr key={cu.id} className="hover:bg-byg-surface-2 transition-colors">
@@ -386,6 +454,12 @@ export default async function ClienteDetailPage({ params }: PageProps) {
                       <td className="px-5 py-3 text-[13px] font-black text-right tabular-nums text-byg-text font-mono">
                         {fmt(valorEst)}
                       </td>
+                      <td className="px-5 py-3 text-[12px] text-byg-muted truncate max-w-[120px]">
+                        {transf?.carteraNombre ?? "—"}
+                      </td>
+                      <td className="px-5 py-3 text-[12px] text-byg-muted tabular-nums whitespace-nowrap font-mono">
+                        {transf ? fmtFecha(transf.fecha) : "—"}
+                      </td>
                     </tr>
                   );
                 })}
@@ -393,7 +467,65 @@ export default async function ClienteDetailPage({ params }: PageProps) {
             </table>
           </div>
         )}
-      </section>
+      </section>}
+
+      {/* Historial de transferencias de custodia */}
+      {transferencias.length > 0 && (
+        <section className="bg-byg-surface rounded-2xl border border-byg-border border-l-[5px] border-l-amber-300 overflow-hidden flex flex-col">
+          <SectionHeader label="Historial de transferencias" count={transferencias.length} />
+          <p className="px-6 py-2 text-[10px] font-bold text-amber-400 bg-amber-500/5 border-b border-amber-500/20">
+            Activos recibidos en custodia desde carteras propias de la firma
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse min-w-[800px]">
+              <thead>
+                <tr className="border-b border-byg-border bg-byg-bg">
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest">Fecha</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest w-[90px]">Ticker</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest">Descripción</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest text-right">Cantidad</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest text-right">Precio</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest">Cartera origen</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest">Operador</th>
+                  <th className="px-5 py-3 text-[10px] font-bold uppercase text-byg-muted tracking-widest">Notas</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-byg-border/40">
+                {transferencias.map((t) => (
+                  <tr key={t.id} className="hover:bg-byg-surface-2 transition-colors">
+                    <td className="px-5 py-3 text-[12px] text-byg-muted tabular-nums whitespace-nowrap font-mono">
+                      {fmtFecha(t.fecha)}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span className="text-[11px] font-black font-mono text-byg-text bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded">
+                        {t.Activo.ticker}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-[12px] text-byg-muted max-w-[160px] truncate">
+                      {t.Activo.descripcion || "—"}
+                    </td>
+                    <td className="px-5 py-3 text-[12px] font-bold text-right tabular-nums text-byg-text font-mono">
+                      {fmt(t.cantidad)}
+                    </td>
+                    <td className="px-5 py-3 text-[12px] text-right tabular-nums text-byg-muted font-mono">
+                      {fmt(t.precioEnTransferencia)}
+                    </td>
+                    <td className="px-5 py-3 text-[12px] text-byg-muted truncate max-w-[120px]">
+                      {t.Cartera.nombre}
+                    </td>
+                    <td className="px-5 py-3 text-[12px] text-byg-muted whitespace-nowrap">
+                      {t.User.name}
+                    </td>
+                    <td className="px-5 py-3 text-[12px] text-byg-muted italic max-w-[160px] truncate">
+                      {t.notas || "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* Operaciones relacionadas */}
       <section className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden flex flex-col">

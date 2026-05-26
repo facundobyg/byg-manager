@@ -5,14 +5,26 @@ import { Plus, X, Loader2 } from "lucide-react";
 import { crearMovimientoCC } from "@/app/(dashboard)/clientes/actions";
 import { readOnlyPreview } from "@/lib/config";
 
-export function MovimientoButton({ cuentaId, clienteId }: { cuentaId: string; clienteId: string }) {
+type CajaOption = { id: string; label: string };
+
+export function MovimientoButton({
+  cuentaId,
+  clienteId,
+  cajas = [],
+}: {
+  cuentaId: string;
+  clienteId: string;
+  cajas?: CajaOption[];
+}) {
   const [open, setOpen] = useState(false);
   const [state, action, isPending] = useActionState(crearMovimientoCC, null);
+  const [impactaCaja, setImpactaCaja] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (state?.success) {
       formRef.current?.reset();
+      setImpactaCaja(false);
       setOpen(false);
     }
   }, [state]);
@@ -83,6 +95,32 @@ export function MovimientoButton({ cuentaId, clienteId }: { cuentaId: string; cl
                   className={`${INPUT_CLS} placeholder:text-byg-muted/50`}
                 />
               </div>
+
+              {/* Impacta caja */}
+              <label className="flex items-center gap-2.5 cursor-pointer group w-fit">
+                <input
+                  type="checkbox"
+                  name="impactaCaja"
+                  checked={impactaCaja}
+                  onChange={(e) => setImpactaCaja(e.target.checked)}
+                  className="w-4 h-4 accent-byg-accent cursor-pointer"
+                />
+                <span className="text-[10px] font-bold text-byg-muted group-hover:text-byg-text transition-colors uppercase tracking-wider">
+                  Impacta Caja
+                </span>
+              </label>
+
+              {impactaCaja && cajas.length > 0 && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] font-bold text-byg-muted uppercase tracking-wider">Caja</label>
+                  <select name="cajaImpactoId" required={impactaCaja} className={`${INPUT_CLS} font-medium`}>
+                    <option value="">Seleccionar caja…</option>
+                    {cajas.map((c) => (
+                      <option key={c.id} value={c.id}>{c.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {state?.error && (
                 <p className="text-[11px] text-rose-400 font-bold leading-tight">{state.error}</p>

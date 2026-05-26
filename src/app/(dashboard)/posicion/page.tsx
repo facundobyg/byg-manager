@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { getCajasWithBalances } from "@/lib/data/caja";
 import { getResultadoCambioMensual } from "@/lib/data/mov-diarios";
+import { calcExposicionCambiaria } from "@/lib/data/exposicion-cambiaria";
 import { prisma } from "@/lib/prisma";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ function Empty({ text }: { text: string }) {
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default async function PosicionPage() {
-  const [cajas, clientes, carteras, propiedades, tcConfig, movPendientes, mesActivo] =
+  const [cajas, clientes, carteras, propiedades, tcConfig, movPendientes, mesActivo, todaCustodia] =
     await Promise.all([
       getCajasWithBalances(),
       prisma.cliente.findMany({
@@ -107,6 +108,9 @@ export default async function PosicionPage() {
         orderBy: { fecha: "desc" },
       }),
       prisma.mesContable.findFirst({ where: { activo: true } }),
+      prisma.custodiaCliente.findMany({
+        include: { Activo: { select: { precioActual: true, monedaPrecio: true } } },
+      }),
     ]);
 
   const tcBlue = Number(tcConfig?.valor ?? "1000");
@@ -176,11 +180,15 @@ export default async function PosicionPage() {
       else if (cc.moneda === "ARS") ccARS += s;
     }
     const ccTotalUSD = ccUSD + arsToUSD(ccARS);
-    const pfCap = c.PlazoFijo.reduce((sum: number, pf: { saldoActual: unknown; moneda: string }) => {
+    let pfUSD = 0;
+    let pfARS = 0;
+    for (const pf of c.PlazoFijo) {
       const m = Number(pf.saldoActual);
-      return sum + (pf.moneda === "ARS" ? arsToUSD(m) : m);
-    }, 0);
-    return { id: c.id, nombre: c.nombre, ccUSD, ccARS, ccTotalUSD, pfCap };
+      if (pf.moneda === "USD") pfUSD += m;
+      else if (pf.moneda === "ARS") pfARS += m;
+    }
+    const pfCap = pfUSD + arsToUSD(pfARS);
+    return { id: c.id, nombre: c.nombre, ccUSD, ccARS, ccTotalUSD, pfCap, pfUSD, pfARS };
   });
 
   // positive CC = BYG owes client → Pasivo
@@ -202,11 +210,52 @@ export default async function PosicionPage() {
     return s + (m.moneda === "ARS" ? arsToUSD(n) : n);
   }, 0);
 
+  // ── Custodia clientes (SOLO informativo — NUNCA suma al activo) ───────────
+  const custodiaValorUSD = todaCustodia.reduce((s, c) => {
+    const pa = c.Activo.precioActual;
+    if (!pa) return s;
+    const precioUSD = c.Activo.monedaPrecio === "ARS" ? Number(pa) / tcBlue : Number(pa);
+    return s + Number(c.cantidadTotal) * precioUSD;
+  }, 0);
+
   // ── Balance ────────────────────────────────────────────────────────────────
   const activoTotal =
     cajaTotalUSD + carteraTotalUSD + propiedadTotalUSD + activoCCTotalUSD + pendingRecTotalUSD;
   const pasivoTotal = pasivoCCTotalUSD + pasivoPFTotalUSD + pendingPayTotalUSD;
   const patrimonioNeto = activoTotal - pasivoTotal;
+
+  // ── Exposición Cambiaria ───────────────────────────────────────────────────
+  const cajaUSD = cajasRows.reduce((s, c) => s + c.usd, 0);
+  const cajaARS = cajasRows.reduce((s, c) => s + c.ars, 0);
+
+  let carteraUSDDirecto = 0;
+  let carteraARSDirecto = 0;
+  for (const c of carteras) {
+    carteraUSDDirecto += Number(c.saldoUSDCable) + Number(c.saldoUSDMep);
+    carteraARSDirecto += Number(c.saldoPesos);
+    for (const pos of c.PosicionCartera) {
+      if (pos.Activo.precioActual == null) continue;
+      const valor = Number(pos.cantidad) * Number(pos.Activo.precioActual);
+      if (pos.Activo.monedaPrecio === "ARS") carteraARSDirecto += valor;
+      else carteraUSDDirecto += valor;
+    }
+  }
+
+  const pasivoCCUSD  = clientesData.reduce((s, c) => s + Math.max(0,  c.ccUSD), 0);
+  const pasivoCCARS  = clientesData.reduce((s, c) => s + Math.max(0,  c.ccARS), 0);
+  const activoCCUSD  = clientesData.reduce((s, c) => s + Math.max(0, -c.ccUSD), 0);
+  const activoCCARS  = clientesData.reduce((s, c) => s + Math.max(0, -c.ccARS), 0);
+  const pasivoPFUSD  = clientesData.reduce((s, c) => s + c.pfUSD, 0);
+  const pasivoPFARS  = clientesData.reduce((s, c) => s + c.pfARS, 0);
+
+  const exposicion = calcExposicionCambiaria({
+    cajaUSD, cajaARS,
+    carteraUSDDirecto, carteraARSDirecto,
+    activoCCUSD, activoCCARS,
+    pasivoCCUSD, pasivoCCARS,
+    pasivoPFUSD, pasivoPFARS,
+    tcBlue,
+  });
 
   const clientesPasivo = clientesData
     .filter((c) => Math.max(0, c.ccTotalUSD) > 0 || c.pfCap > 0)
@@ -250,7 +299,7 @@ export default async function PosicionPage() {
       </div>
 
       {/* KPI row 2 */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <Kpi
           label="Valor Carteras"
           value={`USD ${fmt(carteraTotalUSD)}`}
@@ -267,6 +316,15 @@ export default async function PosicionPage() {
           sub={`CC ${fmt(pasivoCCTotalUSD)} · PF ${fmt(pasivoPFTotalUSD)}`}
           color={(pasivoCCTotalUSD + pasivoPFTotalUSD) > 0 ? "text-red-400" : "text-byg-text"}
         />
+        <div className="bg-byg-surface rounded-2xl border border-byg-border border-l-[5px] border-l-amber-400 p-5 flex flex-col gap-1">
+          <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">Custodia Clientes</p>
+          <p className="text-2xl font-black tabular-nums font-mono tracking-tight text-amber-400">
+            {`USD ${fmt(custodiaValorUSD)}`}
+          </p>
+          <p className="text-[10px] text-amber-500/70 font-medium">
+            {todaCustodia.length} pos. · solo informativo
+          </p>
+        </div>
       </div>
 
       {/* Main two-column balance */}
@@ -492,6 +550,88 @@ export default async function PosicionPage() {
               </p>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ── Exposición Cambiaria BYG ─────────────────────────────────────── */}
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center gap-3">
+          <div className="w-1 h-5 bg-byg-accent rounded-full" />
+          <h2 className="text-sm font-black text-byg-accent uppercase tracking-widest font-mono">
+            Exposición Cambiaria BYG
+          </h2>
+          <span className="text-[10px] text-byg-muted font-medium">· caja + cartera propia · sin custodia ni comitentes</span>
+        </div>
+
+        {/* Activos y Pasivos por moneda */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <Kpi
+            label="Activo USD Directo"
+            value={`USD ${fmt(exposicion.activoUSDDirecto)}`}
+            sub="caja USD + cartera USD + recobros"
+            color="text-emerald-400"
+          />
+          <Kpi
+            label="Activo ARS Equiv."
+            value={`USD ${fmt(exposicion.activoARSEnUSD)}`}
+            sub={`$ ${fmt(exposicion.activoARS, 0)} ARS`}
+            color="text-emerald-400"
+          />
+          <Kpi
+            label="Pasivo USD"
+            value={`USD ${fmt(exposicion.pasivoUSD)}`}
+            sub="CC USD positivas + PF USD"
+            color="text-red-400"
+          />
+          <Kpi
+            label="Pasivo ARS Equiv."
+            value={`USD ${fmt(exposicion.pasivoARSEnUSD)}`}
+            sub={`$ ${fmt(exposicion.pasivoARS, 0)} ARS`}
+            color="text-red-400"
+          />
+        </div>
+
+        {/* Aperturas netas */}
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          <Kpi
+            label="Apertura USD Neta"
+            value={`${exposicion.aperturaUSD >= 0 ? "+" : ""}USD ${fmt(exposicion.aperturaUSD)}`}
+            sub="activo USD − pasivo USD"
+            color={exposicion.aperturaUSD >= 0 ? "text-emerald-400" : "text-red-400"}
+          />
+          <Kpi
+            label="Apertura ARS Neta (Equiv.)"
+            value={`${exposicion.aperturaARS >= 0 ? "+" : ""}USD ${fmt(exposicion.aperturaARS / (exposicion.tcBlue || 1))}`}
+            sub={`$ ${fmt(exposicion.aperturaARS, 0)} ARS netos`}
+            color={exposicion.aperturaARS >= 0 ? "text-byg-text" : "text-red-400"}
+          />
+          <div className="bg-byg-surface rounded-2xl border border-byg-border border-l-[5px] border-l-byg-accent p-5 flex flex-col gap-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Apertura Total Equiv.</p>
+            <p className={`text-2xl font-black tabular-nums font-mono tracking-tight ${exposicion.aperturaUSDTotalEquivalente >= 0 ? "text-byg-accent" : "text-red-400"}`}>
+              {`${exposicion.aperturaUSDTotalEquivalente >= 0 ? "+" : ""}USD ${fmt(exposicion.aperturaUSDTotalEquivalente)}`}
+            </p>
+            <p className="text-[10px] text-byg-muted font-medium">posición neta consolidada</p>
+          </div>
+        </div>
+
+        {/* Sensibilidad cambiaria */}
+        <div className="flex flex-col gap-2">
+          <SectionTitle>Sensibilidad cambiaria · escenarios de suba TC</SectionTitle>
+          <FinTable headers={["Escenario", "TC Nuevo", "Impacto en apertura", "Apertura total equiv."]}>
+            {exposicion.sensibilidad.map((row) => (
+              <Tr
+                key={row.delta}
+                cells={[
+                  `+${row.delta} ARS/USD`,
+                  `$ ${fmt(row.tcNuevo, 0)}`,
+                  <span key="imp" className={row.impactoUSD >= 0 ? "text-emerald-400" : "text-red-400"}>
+                    {row.impactoUSD >= 0 ? "+" : ""}{fmt(row.impactoUSD)} USD
+                  </span>,
+                  `USD ${fmt(row.aperturaEquiv)}`,
+                ]}
+              />
+            ))}
+          </FinTable>
         </div>
       </div>
     </div>

@@ -15,15 +15,15 @@ import {
   Building2,
   Briefcase,
   Settings,
-  Database,
   ChevronDown,
   Landmark,
   BarChart3,
+  Scale,
   Clock,
   ClipboardList,
-  KeyRound,
   CandlestickChart,
   Tag,
+  DollarSign,
 } from "lucide-react";
 
 type NavItem = { label: string; href: string; icon: React.ElementType };
@@ -33,8 +33,10 @@ const NAV_STATIC: NavGroup[] = [
   {
     group: "General",
     items: [
-      { label: "Posición", href: "/posicion", icon: LayoutDashboard },
-      { label: "Reportes", href: "/reportes", icon: BarChart3 },
+      { label: "Inicio",       href: "/inicio",            icon: LayoutDashboard },
+      { label: "Posición",     href: "/posicion",          icon: Scale },
+      { label: "Reportes",     href: "/reportes",          icon: BarChart3 },
+      { label: "Rep. Mensual", href: "/reportes/mensual",  icon: CalendarClock },
     ],
   },
   {
@@ -52,7 +54,7 @@ const NAV_STATIC: NavGroup[] = [
   {
     group: "Clientes",
     items: [
-      { label: "Clientes CC", href: "/clientes/cc", icon: Users },
+      { label: "Clientes CC",     href: "/clientes/cc",            icon: Users        },
       { label: "Vencimientos PF", href: "/clientes/vencimientos-pf", icon: CalendarClock },
     ],
   },
@@ -65,8 +67,6 @@ const NAV_SISTEMA: NavGroup[] = [
       { label: "Pendientes",    href: "/pendientes",    icon: Clock         },
       { label: "Precios",       href: "/precios",       icon: Tag           },
       { label: "Auditoría",     href: "/auditoria",     icon: ClipboardList },
-      { label: "Permisos",      href: "/permisos",      icon: KeyRound      },
-      { label: "Backup",        href: "/backup",        icon: Database      },
       { label: "Configuración", href: "/configuracion", icon: Settings      },
     ],
   },
@@ -77,8 +77,10 @@ type CuentaInversionLink = { id: string; nombre: string };
 
 // Maps each sidebar href to the permission key required to view it
 const NAV_ITEM_PERMISSIONS: Record<string, string> = {
+  "/inicio":                    "posicion:leer",
   "/posicion":                  "posicion:leer",
   "/reportes":                  "patrimonio:leer",
+  "/reportes/mensual":          "patrimonio:leer",
   "/bolsa":                     "operaciones_rulo:leer",
   "/operativa/mov-diarios":     "mov_diarios:leer",
   "/operativa/nanu_trenque":    "mov_diarios:leer",
@@ -88,11 +90,10 @@ const NAV_ITEM_PERMISSIONS: Record<string, string> = {
   "/historial":                 "historial:leer",
   "/clientes/cc":               "clientes:leer",
   "/clientes/vencimientos-pf":  "plazos_fijos:leer",
+  "/comisiones":                "configuracion:leer",
   "/pendientes":                "recordatorios:leer",
   "/precios":                   "activos:leer",
   "/auditoria":                 "auditoria:leer",
-  "/permisos":                  "usuarios:leer",
-  "/backup":                    "backups:leer",
   "/configuracion":             "configuracion:leer",
 };
 
@@ -109,7 +110,7 @@ function getActiveSection(pathname: string | null): SectionKey {
   if (!pathname) return "General";
   if (pathname.startsWith("/cuentas-inversion"))                              return "Cuentas de Inversión";
   if (pathname.startsWith("/carteras"))                                       return "Carteras";
-  if (pathname.startsWith("/clientes"))                                       return "Clientes";
+  if (pathname.startsWith("/clientes") || pathname.startsWith("/comisiones"))  return "Clientes";
   if (
     pathname.startsWith("/operativa") ||
     pathname.startsWith("/caja")      ||
@@ -117,7 +118,7 @@ function getActiveSection(pathname: string | null): SectionKey {
     pathname.startsWith("/bolsa")     ||
     pathname === "/historial"
   )                                                                           return "Operativa";
-  if (pathname.startsWith("/reportes"))                                       return "General";
+  if (pathname.startsWith("/reportes") || pathname.startsWith("/inicio") || pathname.startsWith("/posicion")) return "General";
   if (
     pathname.startsWith("/backup")        ||
     pathname.startsWith("/auditoria")     ||
@@ -147,6 +148,7 @@ export function Sidebar({ carteras, cuentasInversion, allowedPermissions }: Side
 
   const canSeeCarteras = permSet === null || permSet.has("carteras:leer");
   const canSeeCuentas  = permSet === null || permSet.has("banco_industrial:leer");
+  const canSeeComisiones = canSee("/comisiones");
 
   const [mounted, setMounted] = useState(false);
   const pathname = usePathname();
@@ -177,7 +179,7 @@ export function Sidebar({ carteras, cuentasInversion, allowedPermissions }: Side
   return (
     <aside className="fixed left-0 top-0 flex h-screen w-64 flex-col bg-byg-sidebar border-r border-byg-border text-byg-text">
       <Link
-        href="/posicion"
+        href="/inicio"
         className="flex h-20 items-center justify-center border-b border-byg-border shrink-0 px-4 hover:bg-[var(--byg-nav-hover)] transition-colors"
       >
         <img src="/brand/bg-logo-light.png" alt="BG Advisors" className="w-[170px] max-w-[170px] h-auto object-contain dark:hidden" />
@@ -240,13 +242,13 @@ export function Sidebar({ carteras, cuentasInversion, allowedPermissions }: Side
           </div>
         )}
 
-        {/* Cuentas de Inversión — dynamic from DB */}
-        {canSeeCuentas && (
+        {/* Cuentas de Inversión — dynamic from DB + Comisiones fixed */}
+        {(canSeeCuentas || canSeeComisiones) && (
           <div>
             <SectionHeader label="Cuentas de Inversión" isOpen={open["Cuentas de Inversión"]} onToggle={() => toggle("Cuentas de Inversión")} />
             {open["Cuentas de Inversión"] && (
               <div className="flex flex-col gap-0.5">
-                {cuentasInversion.map((c) => {
+                {canSeeCuentas && cuentasInversion.map((c) => {
                   const href   = `/cuentas-inversion/${c.id}`;
                   const active = pathname === href || pathname.startsWith(href + "/");
                   return (
@@ -262,9 +264,24 @@ export function Sidebar({ carteras, cuentasInversion, allowedPermissions }: Side
                     </Link>
                   );
                 })}
-                {cuentasInversion.length === 0 && (
+                {canSeeCuentas && cuentasInversion.length === 0 && (
                   <p className="px-3 py-2 text-xs text-byg-muted italic">Sin cuentas activas</p>
                 )}
+                {canSeeComisiones && (() => {
+                  const href   = "/comisiones";
+                  const active = pathname === href || pathname.startsWith(href + "/");
+                  return (
+                    <Link
+                      href={href}
+                      className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
+                        active ? "bg-blue-600 text-white shadow-md shadow-blue-600/20" : "text-byg-muted hover:bg-[var(--byg-nav-hover)] hover:text-byg-text"
+                      }`}
+                    >
+                      <DollarSign size={16} />
+                      Comisiones
+                    </Link>
+                  );
+                })()}
               </div>
             )}
           </div>

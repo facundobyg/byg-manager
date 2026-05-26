@@ -8,8 +8,6 @@ import { writeAuditLog } from "@/lib/services/audit.service";
 // ── Static action permission matrix ───────────────────────────────────────────
 // Primary security layer — no DB required. DB UserPermiso overrides are additive.
 const EMPLEADO_ALLOWED = new Set([
-  "bolsa:crear",
-  "bolsa:concertar",
   "holdings:comprar",
   "holdings:vender",
   "holdings:editar",
@@ -35,13 +33,38 @@ function checkActionRole(role: UserRole, key: string): boolean {
 }
 
 /**
+ * Checks for a user-level DB override (grant or revoke).
+ * Returns: true = explicitly granted, false = explicitly revoked, null = no override.
+ * Works for any role — allows revoking SOCIO/ADMIN on specific actions,
+ * and granting EMPLEADO beyond the static matrix.
+ */
+async function checkUserLevelOverride(userId: string, permissionKey: string): Promise<boolean | null> {
+  const [modulo, accion] = permissionKey.split(":");
+  if (!modulo || !accion) return null;
+
+  const permiso = await prisma.permiso.findUnique({ where: { modulo_accion: { modulo, accion } } });
+  if (!permiso) return null;
+
+  const override = await prisma.userPermiso.findUnique({
+    where: { userId_permisoId: { userId, permisoId: permiso.id } },
+  });
+  if (!override) return null;
+
+  const expired = override.temporal && override.fechaExpiracion !== null && override.fechaExpiracion < new Date();
+  if (expired) return null;
+
+  return override.concedido;
+}
+
+/**
  * For server actions — returns { error } on denial instead of redirecting.
  * Usage: const denied = await requireActionPermission("bolsa:concertar");
  *        if (denied) return denied;
  *
- * Pass { allowTemporary: true } for actions that can be unlocked via DB temp grants.
- * The temp check runs BEFORE the denial audit log to avoid false-positive ACCESO_DENEGADO
- * entries for users whose access was legitimately extended (e.g. Augusto + caja:operar_oficina).
+ * Check order:
+ *  1. User-level DB override (can grant OR revoke, even for SOCIO/ADMIN)
+ *  2. Static role matrix
+ *  3. Optional temporal DB grant (legacy path, kept for compatibility)
  */
 export async function requireActionPermission(
   permissionKey: string,
@@ -52,8 +75,26 @@ export async function requireActionPermission(
 
   const role = (session.user as { role?: UserRole }).role ?? "CLIENTE";
 
+  // ADMIN always has full access (no overrides), preview mode handled separately
+  if (role === "ADMIN") return null;
+
+  // Check user-level DB override first — can revoke SOCIO or grant EMPLEADO
+  const userOverride = await checkUserLevelOverride(session.user.id, permissionKey);
+  if (userOverride === false) {
+    await writeAuditLog({
+      userId:      session.user.id,
+      accion:      "ACCESO_DENEGADO",
+      entidad:     "Permission",
+      description: `${(session.user as { name?: string }).name ?? session.user.id} bloqueado por override: ${permissionKey}`,
+    });
+    return { error: "No tenés permisos para realizar esta acción." };
+  }
+  if (userOverride === true) return null;
+
+  // Static role check
   if (checkActionRole(role, permissionKey)) return null;
 
+  // Temporal DB grant (additive, for one-off supervisor overrides)
   if (opts?.allowTemporary && await hasTemporaryPermission(permissionKey)) return null;
 
   await writeAuditLog({

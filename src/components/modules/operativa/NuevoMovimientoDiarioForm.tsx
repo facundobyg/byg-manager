@@ -7,6 +7,7 @@ type Caja = { id: string; label: string };
 type Props = {
   cajas: Caja[];
   defaultCajaId?: string;
+  defaultClasificacion?: "RESULTADO_OPERATIVO" | "MOVIMIENTO_CAJA" | "TRANSFERENCIA";
 };
 
 const init: { error?: string; ok?: boolean } = {};
@@ -21,17 +22,27 @@ const SUBTIPOS_RESULTADO = {
 };
 
 const SUBTIPOS_CAJA = [
-  "TRANSFERENCIA_ENTRE_CAJAS", "GUARDA_CLIENTE", "DEVOLUCION_GUARDA_CLIENTE", "PRESTAMO_TEMPORAL", "DEVOLUCION_PRESTAMO", "AJUSTE_CAJA"
+  "INGRESO_CC_CLIENTE",
+  "EGRESO_CC_CLIENTE",
+  "INGRESO_PF_CLIENTE",
+  "EGRESO_PF_CLIENTE",
+  "GUARDA_CLIENTE",
+  "DEVOLUCION_GUARDA_CLIENTE",
+  "PRESTAMO_CLIENTE",
+  "DEVOLUCION_PRESTAMO",
+  "ADELANTO_FUTURA_OP",
+  "DIFERENCIA_LIQUIDACION",
+  "AJUSTE_CAJA",
 ];
 
 const INPUT_CLS = "bg-byg-bg border border-byg-border rounded-xl px-3 py-2 text-sm text-byg-text focus:outline-none focus:ring-1 focus:ring-byg-accent/40";
 const LABEL_CLS = "text-[10px] font-black uppercase tracking-widest text-byg-muted";
 
-export function NuevoMovimientoDiarioForm({ cajas, defaultCajaId }: Props) {
+export function NuevoMovimientoDiarioForm({ cajas, defaultCajaId, defaultClasificacion }: Props) {
   const [state, action, pending] = useActionState(crearMovimientoDiario, init);
   const formRef = useRef<HTMLFormElement>(null);
 
-  const [clasificacion, setClasificacion] = useState<"RESULTADO_OPERATIVO" | "MOVIMIENTO_CAJA" | "TRANSFERENCIA">("MOVIMIENTO_CAJA");
+  const [clasificacion, setClasificacion] = useState<"RESULTADO_OPERATIVO" | "MOVIMIENTO_CAJA" | "TRANSFERENCIA">(defaultClasificacion ?? "MOVIMIENTO_CAJA");
   const [tipo, setTipo] = useState<"ENTRADA" | "SALIDA">("ENTRADA");
 
   useEffect(() => {
@@ -57,6 +68,13 @@ export function NuevoMovimientoDiarioForm({ cajas, defaultCajaId }: Props) {
         <div className="flex bg-byg-bg p-1 rounded-xl border border-byg-border">
           <button
             type="button"
+            onClick={() => setClasificacion("RESULTADO_OPERATIVO")}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${clasificacion === "RESULTADO_OPERATIVO" ? "bg-byg-surface text-emerald-400 shadow-sm" : "text-byg-muted hover:text-byg-text"}`}
+          >
+            Resultado
+          </button>
+          <button
+            type="button"
             onClick={() => setClasificacion("MOVIMIENTO_CAJA")}
             className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${clasificacion === "MOVIMIENTO_CAJA" ? "bg-byg-surface text-byg-accent shadow-sm" : "text-byg-muted hover:text-byg-text"}`}
           >
@@ -68,13 +86,6 @@ export function NuevoMovimientoDiarioForm({ cajas, defaultCajaId }: Props) {
             className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${clasificacion === "TRANSFERENCIA" ? "bg-byg-surface text-amber-400 shadow-sm" : "text-byg-muted hover:text-byg-text"}`}
           >
             Transferencia
-          </button>
-          <button
-            type="button"
-            onClick={() => setClasificacion("RESULTADO_OPERATIVO")}
-            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${clasificacion === "RESULTADO_OPERATIVO" ? "bg-byg-surface text-emerald-400 shadow-sm" : "text-byg-muted hover:text-byg-text"}`}
-          >
-            Resultado
           </button>
         </div>
       </div>

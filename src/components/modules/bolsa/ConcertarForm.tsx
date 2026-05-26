@@ -57,7 +57,7 @@ export function ConcertarForm({
   // Si hay algún campo avanzado cargado, expandir automáticamente
   const hasAdvancedData = comisionPct != null || derechosMercado != null || gastos != null || impuestos != null || tcMepDia != null;
 
-  const [expanded, setExpanded] = useState<boolean>(showAdv || hasAdvancedData);
+  const [expanded, setExpanded] = useState<boolean>(false);
 
   return (
     <section className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden">

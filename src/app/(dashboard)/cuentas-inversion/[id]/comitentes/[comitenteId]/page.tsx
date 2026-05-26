@@ -7,8 +7,11 @@ import { ComprarHoldingForm } from "@/components/modules/cuentas-inversion/Compr
 import { EditHoldingForm } from "@/components/modules/cuentas-inversion/EditHoldingForm";
 import { VenderHoldingForm } from "@/components/modules/cuentas-inversion/VenderHoldingForm";
 import { DeleteHoldingButton } from "@/components/modules/cuentas-inversion/DeleteHoldingButton";
+import { OpsBolsaTable } from "@/components/modules/cuentas-inversion/OpsBolsaTable";
+import type { OpsBolsaRow } from "@/components/modules/cuentas-inversion/OpsBolsaTable";
 import { setCarteraAction } from "./actions";
 import { canDoAction } from "@/lib/auth/permissions";
+import { getTCMep } from "@/lib/services/config.service";
 
 function fmt(n: number, dec = 2) {
   return n.toLocaleString("es-AR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
@@ -70,7 +73,7 @@ export default async function ComitenteDetailPage({
   const { id, comitenteId }           = await params;
   const { editId, venderId, comprar } = await searchParams;
 
-  const [comitente, auditLogs, canDeleteHolding] = await Promise.all([
+  const [comitente, auditLogs, canDeleteHolding, tcMepRow, opsBolsaRaw, canWriteBolsa] = await Promise.all([
   prisma.comitenteInversion.findUnique({
     where: { id: comitenteId },
     include: {
@@ -95,9 +98,35 @@ export default async function ComitenteDetailPage({
     include: { User: { select: { name: true } } },
   }),
   canDoAction("holdings:eliminar"),
+  getTCMep(),
+  prisma.operacionBolsa.findMany({
+    where:   { comitenteId },
+    orderBy: { fechaCarga: "desc" },
+    take:    100,
+    include: { OperadorCarga: { select: { name: true } } },
+  }),
+  canDoAction("bolsa:concertar"),
   ]);
 
   if (!comitente || comitente.cuentaInversionId !== id) notFound();
+
+  // Serialize ops for client component (dates → strings)
+  const opsBolsa: OpsBolsaRow[] = opsBolsaRaw.map((o) => ({
+    id:             o.id,
+    fechaOperativa: o.fechaOperativa ? o.fechaOperativa.toISOString() : null,
+    fechaCarga:     o.fechaCarga.toISOString(),
+    tipoOperacion:  o.tipoOperacion as string,
+    ticker:         o.ticker,
+    cantidad:       Number(o.cantidad),
+    precio:         Number(o.precio),
+    moneda:         o.moneda as string,
+    estado:         o.estado as string,
+    anulada:        o.anulada,
+    resultadoNeto:  o.resultadoNeto !== null ? Number(o.resultadoNeto) : null,
+    operadorNombre: o.OperadorCarga?.name ?? "—",
+  }));
+
+  const opsPendientes = opsBolsa.filter((o) => o.estado === "PENDIENTE_CONCERTACION").length;
 
   const isMirror = comitente.esPropioBYG && !!comitente.Cartera;
   // Ocultar "+ Comprar" en la cuenta Banco Industrial (operaciones propias de la firma)
@@ -159,7 +188,9 @@ export default async function ComitenteDetailPage({
   })();
 
   const totalHoldingsUSD = isMirror ? mirrorTotalUSD : Array.from(catValor.values()).reduce((s, v) => s + v, 0);
-  const totalCarteraUSD  = totalHoldingsUSD + saldoUSD;
+  const tcMep = tcMepRow ? Number(tcMepRow.valor) : null;
+  const saldoARSenUSD = tcMep && tcMep > 0 ? saldoARS / tcMep : 0;
+  const totalCarteraUSD  = totalHoldingsUSD + saldoUSD + saldoARSenUSD;
 
   type AllocRow = { label: string; badgeCls: string; barCls: string; valor: number; pct: number };
   const allocRows: AllocRow[] = [];
@@ -332,7 +363,11 @@ export default async function ComitenteDetailPage({
             USD {fmt(totalCarteraUSD)}
           </p>
           {saldoARS > 0 && (
-            <p className="text-xs font-bold text-slate-400 tabular-nums">+ $ {fmt(saldoARS)} ARS</p>
+            <p className="text-xs font-bold text-slate-400 tabular-nums">
+              {tcMep
+                ? `$ ${fmt(saldoARS)} ARS (TC MEP ${fmt(tcMep, 0)})`
+                : `+ $ ${fmt(saldoARS)} ARS`}
+            </p>
           )}
         </div>
 
@@ -507,7 +542,10 @@ export default async function ComitenteDetailPage({
       {!isMirror && (
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Holdings</h2>
+            <div>
+              <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Posiciones actuales</h2>
+              <p className="text-[10px] text-slate-400 mt-0.5">Tenencia actual del comitente.</p>
+            </div>
             {!hideComprar && (
               <Link
                 href={comprar ? baseUrl : `${baseUrl}?comprar=1`}
@@ -526,7 +564,7 @@ export default async function ComitenteDetailPage({
 
           {comitente.HoldingComitenteInversion.length === 0 ? (
             <div className="rounded-xl border border-slate-200 bg-white p-8 text-center">
-              <p className="text-sm text-slate-400 italic">Sin holdings. Usar "+ Comprar" para agregar.</p>
+              <p className="text-sm text-slate-400 italic">Sin activos.</p>
             </div>
           ) : (
             <div className="flex flex-col gap-4">
@@ -540,7 +578,7 @@ export default async function ComitenteDetailPage({
                         <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${CAT_CLS[cat]}`}>
                           {CAT_LABEL[cat]}
                         </span>
-                        <span className="text-xs text-slate-400">{holdings.length} holdings</span>
+                        <span className="text-xs text-slate-400">{holdings.length} activos</span>
                       </div>
                       <span className="text-xs font-bold text-slate-600 tabular-nums">
                         USD {fmt(catTotal)}
@@ -683,9 +721,12 @@ export default async function ComitenteDetailPage({
       {/* ── History (non-mirror only) ───────────────────────────────────────── */}
       {!isMirror && comitente.OperacionHoldingInversion.length > 0 && (
         <section className="flex flex-col gap-3">
-          <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">
-            Historial de operaciones
-          </h2>
+          <div>
+            <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">
+              Historial de movimientos en cartera
+            </h2>
+            <p className="text-[10px] text-slate-400 mt-0.5">Compras y ventas que impactaron posiciones.</p>
+          </div>
           <div className="rounded-xl border border-slate-200 overflow-hidden">
             <table className="w-full text-xs">
               <thead>
@@ -732,6 +773,38 @@ export default async function ComitenteDetailPage({
           </div>
         </section>
       )}
+
+      {/* ── Operaciones Bolsa ─────────────────────────────────────────────── */}
+      <section className="flex flex-col gap-3">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">
+              Operaciones Bolsa
+            </h2>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              Historial y pendientes de concertación. Las posiciones arriba reflejan tenencia actual.
+            </p>
+          </div>
+          <Link
+            href={`/bolsa`}
+            className="text-[10px] font-black px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors uppercase tracking-widest whitespace-nowrap shrink-0"
+          >
+            Mesa diaria →
+          </Link>
+        </div>
+
+        {/* Pending warning */}
+        {opsPendientes > 0 && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-center gap-3">
+            <span className="text-amber-500 text-base">⚠</span>
+            <p className="text-[11px] font-bold text-amber-800">
+              {opsPendientes} operación{opsPendientes !== 1 ? "es" : ""} pendiente{opsPendientes !== 1 ? "s" : ""} de concertación en este comitente.
+            </p>
+          </div>
+        )}
+
+        <OpsBolsaTable ops={opsBolsa} canWrite={canWriteBolsa ?? false} />
+      </section>
 
       {/* ── Audit — últimos movimientos ───────────────────────────────────── */}
       {auditLogs.length > 0 && (

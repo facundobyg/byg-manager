@@ -4,7 +4,8 @@ import Link from "next/link";
 import { Users } from "lucide-react";
 import { NuevoClienteForm } from "@/components/modules/clientes/NuevoClienteForm";
 import { ReactivarClienteButton } from "@/components/modules/clientes/ReactivarClienteButton";
-import { getTCBlue, getClienteDeMap } from "@/lib/services/config.service";
+import { ClickableRow } from "@/components/modules/clientes/ClickableRow";
+import { getTCBlue, getClienteDeMap, getSocios } from "@/lib/services/config.service";
 
 const SOCIOS = new Set(["Facu", "Fran", "Nanu"]);
 
@@ -30,7 +31,7 @@ function fmtPct(n: number) {
 
 export default async function ClientesCCPage() {
   await requirePermission("cuentas_corrientes:leer");
-  const [clientes, archivados, tcBlueRow, deMap] = await Promise.all([
+  const [clientes, archivados, tcBlueRow, deMap, socios] = await Promise.all([
     prisma.cliente.findMany({
       where: { activo: true },
       orderBy: { nombre: "asc" },
@@ -46,10 +47,16 @@ export default async function ClientesCCPage() {
     }),
     getTCBlue(),
     getClienteDeMap(),
+    getSocios(),
   ]);
 
   const tcBlue  = tcBlueRow ? parseFloat(tcBlueRow.valor) : null;
   const hasTCB  = tcBlue !== null && tcBlue > 0;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const in30Days = new Date(today);
+  in30Days.setDate(today.getDate() + 30);
 
   const rows = clientes.map((c) => {
     const ccUSD = c.CuentaCorriente
@@ -74,7 +81,12 @@ export default async function ClientesCCPage() {
     const de = deMap[c.nombre] ?? null;
     const isSocio = SOCIOS.has(c.nombre);
 
-    return { id: c.id, nombre: c.nombre, ccUSD, ccARS, pfTotal, totalUSD, tPond, pfCount, de, isSocio };
+    const pfVencido = c.PlazoFijo.some((pf) => new Date(pf.fechaVencimiento) < today);
+    const pfProximo = !pfVencido && c.PlazoFijo.some(
+      (pf) => new Date(pf.fechaVencimiento) >= today && new Date(pf.fechaVencimiento) <= in30Days
+    );
+
+    return { id: c.id, nombre: c.nombre, ccUSD, ccARS, pfTotal, totalUSD, tPond, pfCount, de, isSocio, pfVencido, pfProximo };
   });
 
   const totCCUSD   = rows.reduce((a, r) => a + r.ccUSD,    0);
@@ -103,7 +115,7 @@ export default async function ClientesCCPage() {
             <p className="text-byg-muted font-medium text-sm">Cuentas corrientes y plazos fijos</p>
           </div>
         </div>
-        <NuevoClienteForm />
+        <NuevoClienteForm socios={socios.map(s => s.nombre)} />
       </header>
 
       {/* Summary cards */}
@@ -168,12 +180,12 @@ export default async function ClientesCCPage() {
                 </tr>
               ) : (
                 rows.map((r) => (
-                  <tr key={r.id} className={`transition-colors ${r.isSocio ? (SOCIO_ROW_BG[r.nombre] ?? "") : "hover:bg-byg-surface-2"}`}>
+                  <ClickableRow key={r.id} href={`/clientes/${r.id}`} className={`transition-colors hover:bg-byg-accent/10 ${r.isSocio ? (SOCIO_ROW_BG[r.nombre] ?? "") : r.pfVencido ? "bg-red-500/5" : r.pfProximo ? "bg-amber-500/5" : ""}`}>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <Link
                           href={`/clientes/${r.id}`}
-                          className="text-sm font-semibold text-byg-text hover:text-byg-accent transition-colors truncate"
+                          className="text-sm font-semibold text-byg-text hover:text-byg-accent transition-colors"
                         >
                           {r.nombre}
                         </Link>
@@ -201,8 +213,14 @@ export default async function ClientesCCPage() {
                     </td>
                     <td className="px-4 py-3 text-center">
                       {r.pfCount > 0 ? (
-                        <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-                          {r.pfCount} PF
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                          r.pfVencido
+                            ? "bg-red-500/15 text-red-700 dark:text-red-400"
+                            : r.pfProximo
+                              ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                              : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                        }`}>
+                          {r.pfCount} PF{r.pfVencido ? " !" : r.pfProximo ? " ·" : ""}
                         </span>
                       ) : (
                         <span className="text-[10px] text-byg-muted">—</span>
@@ -225,7 +243,7 @@ export default async function ClientesCCPage() {
                         Ver
                       </Link>
                     </td>
-                  </tr>
+                  </ClickableRow>
                 ))
               )}
             </tbody>

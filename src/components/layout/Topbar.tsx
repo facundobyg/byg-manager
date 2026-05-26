@@ -23,9 +23,9 @@ export function Topbar({
 }) {
   return (
     <header className="sticky top-0 z-10 flex h-16 flex-row items-center justify-between border-b border-byg-border bg-byg-sidebar/95 backdrop-blur-[12px] px-6">
-      <div className="flex-1">
+      <div className="flex-1 flex items-center gap-4">
         {isAdmin && previewUsers && previewUsers.length > 0 && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <span className="text-[10px] font-black uppercase tracking-widest text-byg-muted whitespace-nowrap">
               Ver como
             </span>

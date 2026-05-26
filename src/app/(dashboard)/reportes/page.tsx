@@ -53,6 +53,24 @@ export default async function ReportesPage() {
         </p>
       </header>
 
+      {/* ── Accesos rápidos ─────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap gap-2">
+        {[
+          { label: "Rep. Mensual",      href: `/reportes/mensual?mes=${mes}` },
+          { label: "Comisiones",        href: `/comisiones?mes=${mes}` },
+          { label: "PDF Clientes",      href: "/clientes/cc" },
+          { label: "Rep. Productores",  href: "/comisiones" },
+        ].map((l) => (
+          <Link
+            key={l.href}
+            href={l.href}
+            className="px-4 py-2 rounded-lg bg-byg-surface border border-byg-border text-xs font-bold text-byg-muted hover:text-byg-text hover:bg-byg-surface-2 transition-colors"
+          >
+            {l.label} →
+          </Link>
+        ))}
+      </div>
+
       {/* ── KPIs Ejecutivos ─────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-3">
         <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">KPIs del mes — {mes}</h2>

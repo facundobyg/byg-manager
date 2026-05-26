@@ -1,5 +1,6 @@
 import { requirePermission } from "@/lib/auth/permissions";
 import { getMovimientosCuentaCorriente } from "@/lib/data/movimiento-cc";
+import { prisma } from "@/lib/prisma";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ChevronLeft, Landmark } from "lucide-react";
@@ -46,13 +47,18 @@ const HABER_TIPOS = new Set(["INGRESO", "INTERES", "TRANSFERENCIA", "AJUSTE"]);
 export default async function CCDetailPage({ params }: PageProps) {
   await requirePermission("cuentas_corrientes:leer");
   const { cuentaId } = await params;
-  const cuenta = await getMovimientosCuentaCorriente(cuentaId);
+  const [cuenta, cajas] = await Promise.all([
+    getMovimientosCuentaCorriente(cuentaId),
+    prisma.caja.findMany({ where: { activa: true }, select: { id: true, label: true }, orderBy: { orden: "asc" } }),
+  ]);
   if (!cuenta) notFound();
 
   const clienteId = cuenta.clienteId;
   const movimientos = cuenta.MovimientoCC;
   const saldoActual = toNum(cuenta.saldo);
-  const tasaCC = toNum(cuenta.Cliente.tasaCC);
+  const tasaCCRaw = toNum(cuenta.Cliente.tasaCC);
+  // Legacy data may store tasaCC as percent (4.5) instead of decimal (0.045)
+  const tasaCC = tasaCCRaw > 1 ? tasaCCRaw / 100 : tasaCCRaw;
   const vigenteDesde = cuenta.Cliente.updatedAt.toISOString().slice(0, 10);
 
   // Compute running balance per row (movements are newest-first)
@@ -113,7 +119,7 @@ export default async function CCDetailPage({ params }: PageProps) {
               {fmt(saldoActual)}
             </p>
           </div>
-          <MovimientoButton cuentaId={cuenta.id} clienteId={clienteId} />
+          <MovimientoButton cuentaId={cuenta.id} clienteId={clienteId} cajas={cajas} />
         </div>
       </header>
 

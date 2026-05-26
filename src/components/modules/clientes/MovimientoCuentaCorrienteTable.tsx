@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
-import { ArrowDownLeft, ArrowUpRight, CheckCircle2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
+import { RevertirMovCCButton } from "@/components/modules/clientes/RevertirMovCCButton";
 
 interface Movimiento {
   id: string;
@@ -61,6 +62,7 @@ export function MovimientoCuentaCorrienteTable({
               <th className="px-6 py-3.5 text-[10px] font-bold uppercase text-slate-500 tracking-widest">Descripción</th>
               <th className="px-6 py-3.5 text-[10px] font-bold uppercase text-slate-500 tracking-widest text-right">Monto</th>
               <th className="px-6 py-3.5 text-[10px] font-bold uppercase text-slate-500 tracking-widest text-right">Saldo Acumulado</th>
+              <th className="px-4 py-3.5 text-[10px] font-bold uppercase text-slate-500 tracking-widest"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -94,6 +96,11 @@ export function MovimientoCuentaCorrienteTable({
                   </td>
                   <td className="px-6 py-3.5 text-[15px] font-bold text-right text-slate-800 tracking-tight tabular-nums bg-slate-50/30 group-hover:bg-slate-100/50 transition-colors">
                     {formatCurrency(mov.saldoProgresivo)}
+                  </td>
+                  <td className="px-4 py-3.5 text-right">
+                    {!mov.descripcion?.includes("[REVERSO") && (
+                      <RevertirMovCCButton id={mov.id} />
+                    )}
                   </td>
                 </tr>
               );

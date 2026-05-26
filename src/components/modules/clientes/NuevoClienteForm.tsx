@@ -4,7 +4,7 @@ import { useState, useEffect, useActionState } from "react";
 import { PlusCircle, X } from "lucide-react";
 import { crearCliente } from "@/app/(dashboard)/clientes/actions";
 
-export function NuevoClienteForm() {
+export function NuevoClienteForm({ socios = [] }: { socios?: string[] }) {
   const [open, setOpen] = useState(false);
   const [state, action, pending] = useActionState(crearCliente, null);
 
@@ -59,6 +59,12 @@ export function NuevoClienteForm() {
               placeholder="Teléfono (opcional)"
               className={INPUT_CLS}
             />
+            {socios.length > 0 && (
+              <select name="socio" className={INPUT_CLS}>
+                <option value="">Socio responsable (opcional)</option>
+                {socios.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            )}
 
             {state?.error && (
               <p className="text-xs text-rose-400 font-semibold">{state.error}</p>

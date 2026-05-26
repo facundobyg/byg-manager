@@ -6,13 +6,14 @@ const bcrypt = require("bcryptjs") as {
 };
 import { prisma } from "@/lib/prisma";
 import { authConfig } from "@/auth.config";
+import { verifyTOTP } from "@/lib/auth/totp";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   ...authConfig,
   trustHost: true,
   providers: [
     Credentials({
-      credentials: { email: {}, password: {} },
+      credentials: { email: {}, password: {}, totpCode: {} },
       authorize: async (credentials) => {
         if (!credentials?.email || !credentials?.password) return null;
 
@@ -26,11 +27,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           credentials.password as string,
           user.passwordHash
         );
+        if (!passwordsMatch) return null;
 
-        if (passwordsMatch) {
-          return { id: user.id, email: user.email, name: user.name, role: user.role };
+        // 2FA check — enforced here regardless of pre-check in login action
+        if (user.twoFactorEnabled) {
+          const totpCode = ((credentials.totpCode as string) ?? "").trim();
+          if (!totpCode || !user.twoFactorSecret) return null;
+          if (!verifyTOTP(user.twoFactorSecret, totpCode)) return null;
         }
-        return null;
+
+        return { id: user.id, email: user.email, name: user.name, role: user.role };
       },
     }),
   ],

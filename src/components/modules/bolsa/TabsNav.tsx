@@ -1,11 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { LayoutGrid, History } from "lucide-react";
+import { LayoutGrid, History, GitMerge } from "lucide-react";
 
-type Props = { fecha: string; tab: string };
+type Props = { fecha: string; tab: string; isArbitrajes?: boolean };
 
-export function TabsNav({ fecha, tab }: Props) {
+export function TabsNav({ fecha, tab, isArbitrajes }: Props) {
   const router = useRouter();
 
   function goMesa(newFecha: string) {
@@ -16,7 +16,7 @@ export function TabsNav({ fecha, tab }: Props) {
     router.push("/bolsa?tab=historial");
   }
 
-  const isMesa = tab !== "historial";
+  const isMesa = !isArbitrajes && tab !== "historial";
 
   return (
     <div className="flex items-center gap-3 flex-wrap">
@@ -38,13 +38,25 @@ export function TabsNav({ fecha, tab }: Props) {
           type="button"
           onClick={goHistorial}
           className={`flex items-center gap-1.5 px-4 py-2 transition-colors ${
-            !isMesa
+            !isArbitrajes && !isMesa
               ? "bg-byg-accent text-white"
               : "bg-byg-surface text-byg-muted hover:bg-byg-surface-2"
           }`}
         >
           <History size={12} />
           Historial
+        </button>
+        <button
+          type="button"
+          onClick={() => router.push("/bolsa/arbitrajes")}
+          className={`flex items-center gap-1.5 px-4 py-2 transition-colors ${
+            isArbitrajes
+              ? "bg-byg-accent text-white"
+              : "bg-byg-surface text-byg-muted hover:bg-byg-surface-2"
+          }`}
+        >
+          <GitMerge size={12} />
+          Arbitrajes
         </button>
       </div>
 

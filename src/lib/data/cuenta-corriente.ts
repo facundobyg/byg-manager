@@ -18,16 +18,27 @@ export async function getClienteById(id: string) {
 
   if (!cliente) return null;
 
-  const operaciones = await prisma.operacionCambio.findMany({
-    where: {
-      OR: [
-        { clienteId: cliente.id },
-        { clienteNombre: { equals: cliente.nombre, mode: "insensitive" } },
-      ],
-    },
-    orderBy: { fecha: "desc" },
-    take: 50,
-  });
+  const [operaciones, transferencias] = await Promise.all([
+    prisma.operacionCambio.findMany({
+      where: {
+        OR: [
+          { clienteId: cliente.id },
+          { clienteNombre: { equals: cliente.nombre, mode: "insensitive" } },
+        ],
+      },
+      orderBy: { fecha: "desc" },
+      take: 50,
+    }),
+    prisma.transferenciaActivo.findMany({
+      where: { clienteDestinoId: id },
+      include: {
+        Activo: { select: { ticker: true, descripcion: true } },
+        Cartera: { select: { nombre: true } },
+        User: { select: { name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
 
   const pfCapitalMap: Record<string, number> = {};
   try {
@@ -48,5 +59,5 @@ export async function getClienteById(id: string) {
     // stale binary fallback — pages use pf.capital
   }
 
-  return { ...cliente, operaciones, pfCapitalMap };
+  return { ...cliente, operaciones, pfCapitalMap, transferencias };
 }

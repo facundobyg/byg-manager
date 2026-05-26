@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requirePermission } from "@/lib/auth/permissions";
 import { getTCBlue, getTCMep, getMesActivo, getSocios, getTCHistorial, getProductoresConfig, getAlycConfig } from "@/lib/services/config.service";
 import { TcBlueForm } from "@/components/modules/configuracion/TcBlueForm";
@@ -114,23 +115,59 @@ export default async function ConfiguracionPage() {
         </section>
       </div>
 
-      {/* Socios */}
-      <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100">
-          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Distribución de socios</p>
+      {/* Cajas */}
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-slate-50/30">
+          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">Cajas</h2>
+          <span className="text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md tabular-nums">
+            {cajas.length}
+          </span>
         </div>
-        {socios.length === 0 ? (
-          <p className="px-6 py-8 text-sm text-slate-400 italic">Sin socios cargados</p>
-        ) : (
-          <SociosForm
-            socios={socios.map((s) => ({
-              id: s.id,
-              nombre: s.nombre,
-              porcentaje: Number(s.porcentaje),
-              activo: s.activo,
-            }))}
-          />
-        )}
+        <div className="divide-y divide-slate-100">
+          {cajas.map((c) => (
+            <div key={c.id} className="px-6 py-3 flex flex-wrap items-center gap-4">
+              <div className="w-24 shrink-0">
+                <span className="text-[10px] font-black font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                  {c.slug}
+                </span>
+              </div>
+              <EditCajaForm
+                id={c.id}
+                label={c.label}
+                tipo={c.tipo}
+                activa={c.activa}
+                esPrincipal={c.esPrincipal}
+              />
+            </div>
+          ))}
+        </div>
+        <CreateCajaForm />
+      </section>
+
+      {/* ALYCs */}
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-slate-50/30">
+          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">ALYCs</h2>
+          <span className="text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md tabular-nums">
+            {alycs.length}
+          </span>
+        </div>
+        <div className="px-6 py-4">
+          <AlycForm alycs={alycs} />
+        </div>
+      </section>
+
+      {/* Productores */}
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-slate-50/30">
+          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">Productores</h2>
+          <span className="text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md tabular-nums">
+            {productores.length}
+          </span>
+        </div>
+        <div className="px-6 py-4">
+          <ProductoresForm productores={productores} />
+        </div>
       </section>
 
       {/* Carteras */}
@@ -168,59 +205,72 @@ export default async function ConfiguracionPage() {
         <CreateCarteraForm />
       </section>
 
-      {/* Productores */}
-      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-slate-50/30">
-          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">Productores</h2>
-          <span className="text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md tabular-nums">
-            {productores.length}
-          </span>
+      {/* Distribución de socios */}
+      <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100">
+          <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Distribución de socios</p>
         </div>
-        <div className="px-6 py-4">
-          <ProductoresForm productores={productores} />
-        </div>
+        {socios.length === 0 ? (
+          <p className="px-6 py-8 text-sm text-slate-400 italic">Sin socios cargados</p>
+        ) : (
+          <SociosForm
+            socios={socios.map((s) => ({
+              id: s.id,
+              nombre: s.nombre,
+              porcentaje: Number(s.porcentaje),
+              activo: s.activo,
+            }))}
+          />
+        )}
       </section>
 
-      {/* ALYCs */}
+      {/* Accesos administrativos */}
       <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-slate-50/30">
-          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">ALYCs</h2>
-          <span className="text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md tabular-nums">
-            {alycs.length}
-          </span>
+        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/30">
+          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">Administración</h2>
         </div>
-        <div className="px-6 py-4">
-          <AlycForm alycs={alycs} />
-        </div>
-      </section>
-
-      {/* Cajas */}
-      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-3 bg-slate-50/30">
-          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">Cajas</h2>
-          <span className="text-[11px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md tabular-nums">
-            {cajas.length}
-          </span>
-        </div>
-        <div className="divide-y divide-slate-100">
-          {cajas.map((c) => (
-            <div key={c.id} className="px-6 py-3 flex flex-wrap items-center gap-4">
-              <div className="w-24 shrink-0">
-                <span className="text-[10px] font-black font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
-                  {c.slug}
-                </span>
-              </div>
-              <EditCajaForm
-                id={c.id}
-                label={c.label}
-                tipo={c.tipo}
-                activa={c.activa}
-                esPrincipal={c.esPrincipal}
-              />
+        <div className="px-6 py-4 flex flex-wrap gap-4">
+          <Link
+            href="/permisos?role=SOCIO"
+            className="flex items-center gap-3 px-5 py-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 transition-all group"
+          >
+            <div className="flex flex-col">
+              <span className="text-[12px] font-bold text-slate-800 group-hover:text-slate-900">Perfiles de socios</span>
+              <span className="text-[11px] text-slate-400">Usuarios con rol Socio</span>
             </div>
-          ))}
+            <span className="text-slate-400 group-hover:translate-x-0.5 transition-transform">→</span>
+          </Link>
+          <Link
+            href="/configuracion/2fa"
+            className="flex items-center gap-3 px-5 py-3 rounded-xl border border-blue-200 bg-blue-50 hover:bg-blue-100 hover:border-blue-300 transition-all group"
+          >
+            <div className="flex flex-col">
+              <span className="text-[12px] font-bold text-blue-800 group-hover:text-blue-900">Autenticación 2FA</span>
+              <span className="text-[11px] text-blue-500">TOTP — Google Authenticator / Authy</span>
+            </div>
+            <span className="text-blue-400 group-hover:translate-x-0.5 transition-transform">→</span>
+          </Link>
+          <Link
+            href="/permisos"
+            className="flex items-center gap-3 px-5 py-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 transition-all group"
+          >
+            <div className="flex flex-col">
+              <span className="text-[12px] font-bold text-slate-800 group-hover:text-slate-900">Permisos de usuarios</span>
+              <span className="text-[11px] text-slate-400">Gestionar roles y permisos</span>
+            </div>
+            <span className="text-slate-400 group-hover:translate-x-0.5 transition-transform">→</span>
+          </Link>
+          <Link
+            href="/backup"
+            className="flex items-center gap-3 px-5 py-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 transition-all group"
+          >
+            <div className="flex flex-col">
+              <span className="text-[12px] font-bold text-slate-800 group-hover:text-slate-900">Backup</span>
+              <span className="text-[11px] text-slate-400">Exportar y respaldar datos</span>
+            </div>
+            <span className="text-slate-400 group-hover:translate-x-0.5 transition-transform">→</span>
+          </Link>
         </div>
-        <CreateCajaForm />
       </section>
 
     </div>

@@ -32,6 +32,7 @@ export default async function OperativaCajaPage({ params }: PageProps) {
     id: c.id,
     label: c.label,
     slug: c.slug,
+    tipo: c.tipo,
     esPrincipal: c.esPrincipal,
     saldoUSD: Number(await calcularSaldoCaja(c.id, "USD")),
     saldoARS: Number(await calcularSaldoCaja(c.id, "ARS"))

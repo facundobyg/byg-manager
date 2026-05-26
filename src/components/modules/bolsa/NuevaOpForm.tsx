@@ -43,6 +43,15 @@ const LABEL_CLS = "block text-[10px] font-black uppercase tracking-widest text-b
 export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
   const [sujetoTipo, setSujetoTipo] = useState<"comitente" | "cartera">("comitente");
   const [state, action, pending]   = useActionState(crearOperacionBolsa, null);
+  const [cantidad, setCantidad] = useState("");
+  const [precio,   setPrecio]   = useState("");
+  const netoDisplay = (() => {
+    const q = parseFloat(cantidad);
+    const p = parseFloat(precio);
+    if (!isNaN(q) && !isNaN(p) && q > 0 && p > 0)
+      return (q * p).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return null;
+  })();
 
   useEffect(() => {
     if (state && "ok" in state && state.ok && state.id) {
@@ -79,34 +88,31 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
           </div>
         </div>
 
-        {/* Sujeto select */}
-        <div>
-          <label className={LABEL_CLS}>
-            {sujetoTipo === "comitente" ? "Comitente / Cuenta de Inversión" : "Cartera"}
-          </label>
-          {sujetoTipo === "comitente" ? (
-            <select name="comitenteId" required className={INPUT_CLS}>
-              <option value="">— Seleccionar comitente —</option>
-              {comitentes.map((c) => (
-                <option key={c.id} value={c.id}>{c.nombre}</option>
-              ))}
-            </select>
-          ) : (
-            <select name="carteraId" required className={INPUT_CLS}>
-              <option value="">— Seleccionar cartera —</option>
-              {carteras.map((c) => (
-                <option key={c.id} value={c.id}>{c.nombre}</option>
-              ))}
-            </select>
-          )}
-          {/* Hidden so the action always receives the key */}
-          {sujetoTipo === "comitente"
-            ? <input type="hidden" name="carteraId" value="" />
-            : <input type="hidden" name="comitenteId" value="" />}
-        </div>
-
-        {/* Tipo + Ticker */}
+        {/* Comitente/Cartera + Tipo Operación */}
         <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={LABEL_CLS}>
+              {sujetoTipo === "comitente" ? "Comitente / Cuenta de Inversión" : "Cartera"}
+            </label>
+            {sujetoTipo === "comitente" ? (
+              <select name="comitenteId" required className={INPUT_CLS}>
+                <option value="">— Seleccionar comitente —</option>
+                {comitentes.map((c) => (
+                  <option key={c.id} value={c.id}>{c.nombre}</option>
+                ))}
+              </select>
+            ) : (
+              <select name="carteraId" required className={INPUT_CLS}>
+                <option value="">— Seleccionar cartera —</option>
+                {carteras.map((c) => (
+                  <option key={c.id} value={c.id}>{c.nombre}</option>
+                ))}
+              </select>
+            )}
+            {sujetoTipo === "comitente"
+              ? <input type="hidden" name="carteraId" value="" />
+              : <input type="hidden" name="comitenteId" value="" />}
+          </div>
           <div>
             <label className={LABEL_CLS}>Tipo Operación</label>
             <select name="tipoOperacion" required className={INPUT_CLS}>
@@ -116,6 +122,10 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
               ))}
             </select>
           </div>
+        </div>
+
+        {/* Ticker + Fecha Operativa */}
+        <div className="grid grid-cols-2 gap-3">
           <div>
             <label className={LABEL_CLS}>Ticker</label>
             <input
@@ -131,6 +141,14 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
               {tickers.map((t) => <option key={t} value={t} />)}
             </datalist>
           </div>
+          <div>
+            <label className={LABEL_CLS}>Fecha Operativa <span className="text-byg-muted/60 normal-case tracking-normal font-normal">(opcional)</span></label>
+            <input
+              type="date"
+              name="fechaOperativa"
+              className={INPUT_CLS}
+            />
+          </div>
         </div>
 
         {/* Cantidad + Precio */}
@@ -144,6 +162,8 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
               min="0"
               step="any"
               placeholder="0"
+              value={cantidad}
+              onChange={(e) => setCantidad(e.target.value)}
               className={INPUT_CLS}
             />
           </div>
@@ -156,10 +176,17 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
               min="0"
               step="any"
               placeholder="0.00"
+              value={precio}
+              onChange={(e) => setPrecio(e.target.value)}
               className={INPUT_CLS}
             />
           </div>
         </div>
+        {netoDisplay && (
+          <p className="text-[10px] text-byg-muted font-mono -mt-2">
+            Neto estimado: <strong className="text-byg-text">{netoDisplay}</strong>
+          </p>
+        )}
 
         {/* Moneda + Mercado */}
         <div className="grid grid-cols-2 gap-3">

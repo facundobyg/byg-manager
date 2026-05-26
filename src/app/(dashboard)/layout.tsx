@@ -2,7 +2,7 @@ import { ReactNode } from "react";
 import { DashboardShell } from "@/components/layout/DashboardShell";
 import { Topbar } from "@/components/layout/Topbar";
 import { auth } from "@/auth";
-import { readOnlyPreview } from "@/lib/config";
+import { readOnlyPreview, betaMode } from "@/lib/config";
 import { prisma } from "@/lib/prisma";
 import { cookies } from "next/headers";
 import { UserRole } from "@prisma/client";
@@ -95,6 +95,11 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       {previewUser && (
         <div className="bg-purple-600 text-white text-xs font-bold text-center py-1 tracking-wide uppercase sticky top-0 z-50">
           Vista previa como: {previewUser.name} ({previewUser.role})
+        </div>
+      )}
+      {betaMode && (
+        <div className="bg-blue-700 text-white text-[11px] font-bold text-center py-1 tracking-[0.2em] uppercase shrink-0">
+          BETA PRIVADA · v2.0 · acceso restringido
         </div>
       )}
       <main className="flex-1 overflow-y-auto p-8">

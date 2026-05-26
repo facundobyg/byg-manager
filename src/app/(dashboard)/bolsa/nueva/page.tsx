@@ -8,7 +8,7 @@ export default async function NuevaBolsaPage() {
     prisma.comitenteInversion.findMany({
       where:   { activo: true },
       select:  { id: true, nombre: true, nroComitente: true, productor: true },
-      orderBy: { nombre: "asc" },
+      orderBy: { nroComitente: "asc" },
     }),
     prisma.cartera.findMany({
       where: {

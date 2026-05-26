@@ -67,25 +67,37 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
   const [direccion,       setDireccion]       = useState("COMPRA");
   const [expanded,        setExpanded]        = useState(true);
   const [comitenteSearch, setComitenteSearch] = useState("");
-  const [cargaCompleta,   setCargaCompleta]   = useState(false);
   const [tcMep,           setTcMep]           = useState(tcMepDefault != null ? String(tcMepDefault) : "");
 
-  // Para el display calculado (no se envía como resultado)
-  const [cantidad,  setCantidad]  = useState("");
-  const [precio,    setPrecio]    = useState("");
-  const netoDisplay = (() => {
-    const q = parseFloat(cantidad);
-    const p = parseFloat(precio);
-    if (!isNaN(q) && !isNaN(p) && q > 0 && p > 0)
-      return (q * p).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return null;
-  })();
+  const [cantidad, setCantidad] = useState("");
+  const [precio,   setPrecio]   = useState("");
+  const [neto,     setNeto]     = useState("");
+
+  function handleCantidadChange(v: string) {
+    setCantidad(v);
+    const q = parseFloat(v), p = parseFloat(precio), n = parseFloat(neto);
+    if (!isNaN(q) && q > 0) {
+      if (!isNaN(p) && p > 0) setNeto((q * p).toFixed(2));
+      else if (!isNaN(n) && n > 0) setPrecio((n / q).toFixed(6));
+    }
+  }
+  function handlePrecioChange(v: string) {
+    setPrecio(v);
+    const q = parseFloat(cantidad), p = parseFloat(v);
+    if (!isNaN(q) && !isNaN(p) && q > 0 && p > 0) setNeto((q * p).toFixed(2));
+  }
+  function handleNetoChange(v: string) {
+    setNeto(v);
+    const q = parseFloat(cantidad), n = parseFloat(v);
+    if (!isNaN(q) && !isNaN(n) && q > 0 && n > 0) setPrecio((n / q).toFixed(6));
+  }
 
   useEffect(() => {
     if (state && "ok" in state && state.ok) {
       setFormKey((k) => k + 1);
       setCantidad("");
       setPrecio("");
+      setNeto("");
     }
   }, [state]);
 
@@ -139,17 +151,6 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
                 último: {tcMepDefault.toLocaleString("es-AR")}
               </span>
             )}
-            <label className="ml-auto flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={cargaCompleta}
-                onChange={(e) => setCargaCompleta(e.target.checked)}
-                className="w-4 h-4 rounded border-byg-border accent-byg-accent"
-              />
-              <span className="text-[10px] font-black uppercase tracking-widest text-byg-text whitespace-nowrap">
-                Carga completa
-              </span>
-            </label>
           </div>
 
           {/* Sujeto toggle */}
@@ -256,8 +257,8 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
             </div>
           </div>
 
-          {/* ── ROW 2: Ticker | Moneda | Cantidad | Precio ── */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-start">
+          {/* ── ROW 2: Ticker | Moneda | Cantidad | Precio | Neto ── */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-start">
             <div className="flex flex-col gap-1">
               <label className={lCls}>
                 Ticker{isCaucion ? " (opc.)" : ""}
@@ -285,7 +286,7 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
                 type="number"
                 name="cantidad"
                 value={cantidad}
-                onChange={(e) => setCantidad(e.target.value)}
+                onChange={(e) => handleCantidadChange(e.target.value)}
                 placeholder="0"
                 min="0.000001"
                 step="any"
@@ -300,7 +301,7 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
                 type="number"
                 name="precio"
                 value={precio}
-                onChange={(e) => setPrecio(e.target.value)}
+                onChange={(e) => handlePrecioChange(e.target.value)}
                 placeholder="0.00"
                 min="0.000001"
                 step="any"
@@ -308,38 +309,27 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
                 required
               />
             </div>
-          </div>
-
-          {/* Neto estimado (display, no se envía) */}
-          {netoDisplay && (
-            <p className="text-[10px] text-byg-muted font-mono -mt-2">
-              Neto estimado: <strong className="text-byg-text">{netoDisplay}</strong>
-            </p>
-          )}
-
-          <input type="hidden" name="mercado" value="BYMA" />
-
-          {/* ── ROW 3: Resultado operador (opc.) | Obs ── */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
             <div className="flex flex-col gap-1">
-              <label className={lCls}>
-                Resultado operador
-                <span className="ml-1 normal-case tracking-normal font-normal text-byg-muted/60">(solo rulos/arb)</span>
-              </label>
-              {/* Este campo es SOLO para resultados operativos reales (rulos, arbitraje) */}
+              <label className={lCls}>Neto / Resultado</label>
               <input
                 type="number"
-                name="resultadoBruto"
-                placeholder="No completar para compras/ventas normales"
+                name="resultadoNeto"
+                value={neto}
+                onChange={(e) => handleNetoChange(e.target.value)}
+                placeholder="0.00"
+                min="0"
                 step="any"
                 className={iCls}
               />
             </div>
+          </div>
 
-            <div className="flex flex-col gap-1">
-              <label className={lCls}>Observaciones</label>
-              <input type="text" name="observaciones" placeholder="—" className={iCls} />
-            </div>
+          <input type="hidden" name="mercado" value="BYMA" />
+
+          {/* ── ROW 3: Obs ── */}
+          <div className="flex flex-col gap-1">
+            <label className={lCls}>Observaciones</label>
+            <input type="text" name="observaciones" placeholder="—" className={iCls} />
           </div>
 
           {/* Caución */}
@@ -352,18 +342,6 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
               <div>
                 <label className={lCls}>Días caución</label>
                 <input type="number" name="diasCaucion" placeholder="—" min="1" step="1" className={iCls} />
-              </div>
-            </div>
-          )}
-
-          {/* Campos adicionales en carga completa */}
-          {cargaCompleta && (
-            <div className="flex flex-col gap-3 border-t border-byg-border/60 pt-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={lCls}>Resultado neto</label>
-                  <input type="number" name="resultadoNeto" placeholder="—" step="any" className={iCls} />
-                </div>
               </div>
             </div>
           )}

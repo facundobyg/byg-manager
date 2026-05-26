@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getMesOperativo } from "@/lib/services/config.service";
 import { getOperacionesMesaDiaria } from "@/lib/data/operacion-bolsa";
 import { getOperacionesBolsa } from "@/lib/data/operacion-bolsa";
+import { canDoAction } from "@/lib/auth/permissions";
 import { MesaDiariaForm } from "@/components/modules/bolsa/MesaDiariaForm";
 import { MesaDiariaTable } from "@/components/modules/bolsa/MesaDiariaTable";
 import { BolsaTabla } from "@/components/modules/bolsa/BolsaTabla";
@@ -43,7 +44,7 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
     .toLocaleDateString("es-AR", { month: "long", year: "numeric", timeZone: "UTC" });
 
   // Mesa Diaria data
-  const [mesaData, carteras, comitentes, lastTcMepRow] = tab !== "historial"
+  const [mesaData, carteras, comitentes, lastTcMepRow, canWrite] = tab !== "historial"
     ? await Promise.all([
         getOperacionesMesaDiaria(fecha),
         prisma.cartera.findMany({
@@ -54,15 +55,16 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
         prisma.comitenteInversion.findMany({
           where: { activo: true },
           select: { id: true, nombre: true, nroComitente: true },
-          orderBy: { nombre: "asc" },
+          orderBy: { nroComitente: "asc" },
         }),
         prisma.operacionBolsa.findFirst({
           where: { tcMepDia: { not: null } },
           orderBy: { createdAt: "desc" },
           select: { tcMepDia: true },
         }),
+        canDoAction("bolsa:concertar"),
       ])
-    : [null, [], [], null];
+    : [null, [], [], null, false];
 
   const tcMepDefault = lastTcMepRow?.tcMepDia != null ? Number(lastTcMepRow.tcMepDia) : null;
 
@@ -116,7 +118,7 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
             defaultFecha={fecha}
             tcMepDefault={tcMepDefault}
           />
-          <MesaDiariaTable data={mesaData} />
+          <MesaDiariaTable data={mesaData} canWrite={canWrite ?? false} />
         </>
       )}
 

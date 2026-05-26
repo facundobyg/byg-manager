@@ -4,6 +4,9 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { CategoriaActivo, Moneda } from "@prisma/client";
+import { auth } from "@/auth";
+import { requireActionPermission } from "@/lib/auth/permissions";
+import { writeAuditLog } from "@/lib/services/audit.service";
 
 export async function updateSaldosCartera(
   _prev: { error?: string; ok?: boolean },
@@ -155,7 +158,18 @@ export async function editarPosicion(
   if (Object.keys(data).length === 0) return { error: "Nada para actualizar" };
 
   try {
-    await prisma.posicionCartera.update({ where: { id: posicionId }, data });
+    const session = await auth();
+    const userId  = session?.user?.id as string | undefined;
+    const updated = await prisma.posicionCartera.update({ where: { id: posicionId }, data, include: { Activo: { select: { ticker: true } } } });
+    if (userId) {
+      await writeAuditLog({
+        userId,
+        accion:      "EDICION",
+        entidad:     "PosicionCartera",
+        entidadId:   posicionId,
+        description: `Edición posición ${updated.Activo.ticker}: ${Object.keys(data).join(", ")}`,
+      });
+    }
     revalidateCartera(carteraSlug);
     return { success: true };
   } catch (e) {
@@ -198,10 +212,18 @@ export async function asignarACustodia(
   _prev: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("bolsa:transferir_custodia");
+  if (denied) return { error: denied.error };
+
+  const session = await auth();
+  const userId  = session?.user?.id as string | undefined;
+  if (!userId) return { error: "Sin sesión activa" };
+
   const posicionId      = formData.get("posicionId")?.toString().trim();
   const clienteId       = formData.get("clienteId")?.toString().trim();
   const cantidadRaw     = formData.get("cantidad")?.toString().replace(",", ".");
   const carteraSlug     = formData.get("carteraSlug")?.toString();
+  const notas           = formData.get("notas")?.toString().trim() || null;
 
   if (!posicionId || !clienteId || !cantidadRaw) {
     return { error: "Faltan campos obligatorios" };
@@ -217,18 +239,21 @@ export async function asignarACustodia(
   if (cantidadAAsignar.lte(0)) return { error: "La cantidad debe ser mayor a cero" };
 
   try {
+    let tickerTransf = "";
     await prisma.$transaction(async (tx) => {
       const posicion = await tx.posicionCartera.findUnique({
         where: { id: posicionId },
+        include: { Activo: { select: { ticker: true } } },
       });
       if (!posicion) throw new Error("Posición no encontrada");
 
+      tickerTransf = posicion.Activo.ticker;
       const disponible = new Decimal(posicion.cantidad.toString());
       if (cantidadAAsignar.gt(disponible)) {
         throw new Error(`Cantidad insuficiente. Disponible: ${disponible.toFixed(6)}`);
       }
 
-      // a/b) Decrease or delete own position
+      // Decrease or delete own position
       const restante = disponible.minus(cantidadAAsignar);
       if (restante.eq(0)) {
         await tx.posicionCartera.delete({ where: { id: posicionId } });
@@ -239,13 +264,15 @@ export async function asignarACustodia(
         });
       }
 
-      // c/d) Create or accumulate CustodiaCliente with weighted average price
+      // Create or accumulate CustodiaCliente with weighted average price
       const precioCompra = new Decimal(posicion.precioCompra.toString());
       const custodia = await tx.custodiaCliente.findUnique({
         where: { clienteId_activoId: { clienteId, activoId: posicion.activoId } },
       });
 
+      let custodiaId: string;
       if (custodia) {
+        custodiaId = custodia.id;
         const cantExist = new Decimal(custodia.cantidadTotal.toString());
         const precExist = new Decimal(custodia.precioPromedio.toString());
         const totalQty  = cantExist.plus(cantidadAAsignar);
@@ -255,9 +282,10 @@ export async function asignarACustodia(
           data:  { cantidadTotal: totalQty, precioPromedio: totalCost.div(totalQty) },
         });
       } else {
+        custodiaId = crypto.randomUUID();
         await tx.custodiaCliente.create({
           data: {
-            id: crypto.randomUUID(),
+            id: custodiaId,
             clienteId,
             activoId:       posicion.activoId,
             cantidadTotal:  cantidadAAsignar,
@@ -266,6 +294,31 @@ export async function asignarACustodia(
           },
         });
       }
+
+      // Record TransferenciaActivo
+      await tx.transferenciaActivo.create({
+        data: {
+          id:                    crypto.randomUUID(),
+          fecha:                 new Date(),
+          carteraOrigenId:       posicion.carteraId,
+          custodiaDestinoId:     custodiaId,
+          clienteDestinoId:      clienteId,
+          activoId:              posicion.activoId,
+          cantidad:              cantidadAAsignar,
+          precioEnTransferencia: precioCompra,
+          tipo:                  "FIRMA_A_CLIENTE",
+          userId,
+          notas,
+        },
+      });
+    });
+
+    await writeAuditLog({
+      userId,
+      accion:      "TRANSFERIR",
+      entidad:     "PosicionCartera",
+      entidadId:   posicionId,
+      description: `${(session?.user as { name?: string })?.name ?? "Sistema"} transfirió ${cantidadAAsignar} ${tickerTransf} a custodia cliente ${clienteId.slice(0, 8)}`,
     });
 
     revalidatePath("/clientes");

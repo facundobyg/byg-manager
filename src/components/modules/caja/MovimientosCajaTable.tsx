@@ -27,6 +27,17 @@ function shortRef(ref: string | null) {
   return ref.slice(0, 8) + "…";
 }
 
+function parseDesc(d: string | null | undefined): { text: string; operador: string | null } {
+  if (!d) return { text: "—", operador: null };
+  const usrMatch = d.match(/\|\s*usr:([^|]+)/);
+  const operador = usrMatch?.[1]?.trim() ?? null;
+  const text = d
+    .replace(/\s*\|\s*op:[a-zA-Z0-9-]+/, "")
+    .replace(/\s*\|\s*usr:[^|]+/, "")
+    .trim() || "—";
+  return { text, operador };
+}
+
 function ConfirmarButton({ movimientoId }: { movimientoId: string }) {
   const [state, action, pending] = useActionState(confirmarMovimientoCajaPendiente, null);
 
@@ -117,7 +128,17 @@ export function MovimientosCajaTable({ rows }: { rows: MovimientoCajaLedgerRow[]
               }`}>
                 {r.tipo === "SALIDA" || r.tipo === "TRANSFERENCIA_OUT" ? "−" : "+"}{fmtMonto(r.monto)}
               </td>
-              <td className="px-4 py-3 text-xs text-slate-500 max-w-[220px] truncate">{r.descripcion ?? "—"}</td>
+              <td className="px-4 py-3 text-xs text-slate-500 max-w-[220px]">
+                {(() => {
+                  const { text, operador } = parseDesc(r.descripcion);
+                  return (
+                    <div className="flex flex-col gap-0.5">
+                      <span className="truncate">{text}</span>
+                      {operador && <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wide">por {operador}</span>}
+                    </div>
+                  );
+                })()}
+              </td>
               <td className="px-4 py-3 text-[10px] font-mono text-slate-400 whitespace-nowrap">{shortRef(r.transferenciaRef)}</td>
               <td className="px-4 py-3 whitespace-nowrap">
                 <div className="flex flex-col gap-1 items-start">

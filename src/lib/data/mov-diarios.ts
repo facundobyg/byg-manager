@@ -32,7 +32,17 @@ const TIPO_CAMBIO_MAP: Record<string, TipoMovDiario> = {
 
 function cleanDesc(d: string | null): string {
   if (!d) return "—";
-  return d.replace(/\[CC\]\s*/, "").replace(/\s*\|\s*op:[a-zA-Z0-9-]+/, "").trim() || "—";
+  return d
+    .replace(/\[CC\]\s*/, "")
+    .replace(/\s*\|\s*op:[a-zA-Z0-9-]+/, "")
+    .replace(/\s*\|\s*usr:[^|]+/, "")
+    .trim() || "—";
+}
+
+function extractOperador(d: string | null | undefined): string | undefined {
+  if (!d) return undefined;
+  const m = d.match(/\|\s*usr:([^|]+)/);
+  return m?.[1]?.trim() || undefined;
 }
 
 function inferOrigenCaja(tipo: string): OrigenMovDiario {
@@ -55,39 +65,93 @@ function inferOrigenCambio(tipo: string): OrigenMovDiario {
 export async function getMovimientosDiarios(slug?: string): Promise<MovDiarioRow[]> {
   // Determine which caja to filter for
   let cajaId: string | undefined = undefined;
+  let targetCajaLabel: string | undefined = undefined;
   if (slug) {
-    const caja = await prisma.caja.findUnique({ where: { slug }, select: { id: true } });
+    const caja = await prisma.caja.findUnique({ where: { slug }, select: { id: true, label: true } });
     cajaId = caja?.id;
+    targetCajaLabel = caja?.label;
   } else {
-    const principal = await prisma.caja.findFirst({ where: { esPrincipal: true }, select: { id: true } });
+    const principal = await prisma.caja.findFirst({ where: { esPrincipal: true }, select: { id: true, label: true } });
     cajaId = principal?.id;
+    targetCajaLabel = principal?.label;
   }
 
-  const [movCaja, opsCambio] = await Promise.all([
+  const isPrincipalView = !slug || slug === 'oficina';
+
+  const [movCaja, opsInitial] = await Promise.all([
     prisma.movimientoCaja.findMany({
       orderBy: { fecha: "desc" },
       take: 200,
       where: {
-        cajaId: cajaId, // Filter by specific box
+        cajaId: cajaId,
         descripcion: { not: { startsWith: "COBERTURA PARCIAL" } },
         tipo: { in: ["ENTRADA", "SALIDA"] },
       },
     }),
-    // Operations only appear in the principal/central view (Oficina)
-    // unless they were specifically recorded for another box (future feature)
-    !slug || slug === 'oficina' 
+    isPrincipalView
       ? prisma.operacionCambio.findMany({
           orderBy: { fecha: "desc" },
           take: 200,
+          where: { descripcion: { not: { startsWith: "[REVERTIDA" } } },
           include: { Cliente: { select: { nombre: true } } },
         })
-      : Promise.resolve([]),
+      : Promise.resolve([] as any[]),
   ]);
 
-  const allCoverage = await prisma.movimientoCaja.findMany({
-    where: { descripcion: { startsWith: "COBERTURA PARCIAL" }, confirmado: true },
-    select: { descripcion: true, monto: true },
-  });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let opsCambio: any[] = opsInitial;
+
+  // For non-principal cajas: show ops linked to this caja + pending Augusto/Nanu ops
+  if (!isPrincipalView && cajaId) {
+    const linkedMovDesc = await prisma.movimientoCaja.findMany({
+      where: { cajaId, descripcion: { contains: "Cambio " } },
+      select: { descripcion: true },
+    });
+
+    const linkedOpIds = Array.from(new Set(
+      linkedMovDesc
+        .map(m => m.descripcion?.match(/\[(?:(?:Cobro|REVERSO) )?Cambio ([a-zA-Z0-9-]+)\]/)?.[1])
+        .filter((id): id is string => !!id)
+    ));
+
+    // REGLA: Trenque muestra ops de Augusto/Nanu (cualquier estado) + ops liquidadas en Trenque
+    const orConditions: any[] = [
+      { descripcion: { contains: "| usr:Augusto", mode: "insensitive" } },
+      { descripcion: { contains: "| usr:Nanu", mode: "insensitive" } },
+    ];
+    if (linkedOpIds.length > 0) {
+      orConditions.unshift({ id: { in: linkedOpIds } });
+    }
+
+    const allOps = await prisma.operacionCambio.findMany({
+      where: {
+        OR: orConditions,
+        descripcion: { not: { startsWith: "[REVERTIDA" } },
+      },
+      orderBy: { fecha: "desc" },
+      take: 200,
+      include: { Cliente: { select: { nombre: true } } },
+    });
+
+    opsCambio = allOps.filter((op: any) => {
+      const desc = op.descripcion ?? "";
+      if (linkedOpIds.includes(op.id)) return true;
+      return /\| usr:(Augusto|Nanu)/i.test(desc);
+    });
+  }
+
+  const [allCoverage, linkedMovsForLabel] = await Promise.all([
+    prisma.movimientoCaja.findMany({
+      where: { descripcion: { startsWith: "COBERTURA PARCIAL" }, confirmado: true },
+      select: { descripcion: true, monto: true },
+    }),
+    isPrincipalView && opsCambio.length > 0
+      ? prisma.movimientoCaja.findMany({
+          where: { descripcion: { contains: "Cambio " } },
+          select: { descripcion: true, cajaId: true },
+        })
+      : Promise.resolve([] as { descripcion: string | null; cajaId: string }[]),
+  ]);
 
   const coverageMap = new Map<string, Decimal>();
   for (const c of allCoverage) {
@@ -98,18 +162,34 @@ export async function getMovimientosDiarios(slug?: string): Promise<MovDiarioRow
     }
   }
 
+  const cambioLiqCajaMap = new Map<string, string>();
+  if (linkedMovsForLabel.length > 0) {
+    const cajaIdSet = Array.from(new Set(linkedMovsForLabel.map(m => m.cajaId)));
+    const cajasInfo = await prisma.caja.findMany({
+      where: { id: { in: cajaIdSet } },
+      select: { id: true, label: true },
+    });
+    const cajaLblById = new Map(cajasInfo.map(c => [c.id, c.label]));
+    for (const m of linkedMovsForLabel) {
+      const match = m.descripcion?.match(/\[(?:(?:Cobro|REVERSO) )?Cambio ([a-zA-Z0-9-]+)\]/);
+      if (match?.[1] && !cambioLiqCajaMap.has(match[1])) {
+        cambioLiqCajaMap.set(match[1], cajaLblById.get(m.cajaId) ?? "—");
+      }
+    }
+  }
+
   const fromCaja: MovDiarioRow[] = movCaja.map((m) => {
     const monto = new Decimal(m.monto.toString());
     let estado: EstadoMovDiario;
 
     if (m.confirmado) {
-      estado = "COBRADO";
+      estado = "LIQUIDADA";
     } else {
       const cubierto = coverageMap.get(m.id) ?? new Decimal(0);
       if (cubierto.lte(0)) {
         estado = "PENDIENTE";
       } else if (cubierto.gte(monto)) {
-        estado = "COBRADO";
+        estado = "LIQUIDADA";
       } else {
         estado = "PARCIAL";
       }
@@ -131,6 +211,7 @@ export async function getMovimientosDiarios(slug?: string): Promise<MovDiarioRow
       subTipo: m.tipo,
       origen: inferOrigenCaja(m.tipo),
       descripcion: cleanDesc(cleanDescText),
+      operador: extractOperador(m.descripcion),
       monto: monto.toNumber(),
       moneda: m.moneda,
       estado,
@@ -138,27 +219,41 @@ export async function getMovimientosDiarios(slug?: string): Promise<MovDiarioRow
       clasificacionOperativa,
       subtipoOperativo,
       impactaResultado,
+      cajaLabel: targetCajaLabel,
     };
   });
 
-  const fromCambio: MovDiarioRow[] = opsCambio.map((op) => ({
-    id: op.id,
-    fecha: op.fecha,
-    cliente: op.clienteNombre ?? op.Cliente?.nombre ?? "—",
-    tipo: TIPO_CAMBIO_MAP[op.tipo] ?? "CAMBIO",
-    subTipo: op.tipo,
-    origen: inferOrigenCambio(op.tipo),
-    descripcion: cleanDesc(op.descripcion) || op.tipo.replace(/_/g, " "),
-    monto: Number(op.cantidad.toString()),
-    moneda: op.moneda,
-    tc: Number(op.tipoCambio.toString()),
-    totalARS: Number(op.totalARS.toString()),
-    estado: op.pendiente ? "PENDIENTE" : "COBRADO",
-    impactoCC: op.descripcion?.includes("[CC]") ?? false,
-    clasificacionOperativa: "CAMBIO",
-    subtipoOperativo: op.tipo,
-    impactaResultado: true, // El cambio siempre impacta utilidad del mes
-  }));
+  const fromCambio: MovDiarioRow[] = opsCambio.map((op) => {
+    const desc = op.descripcion ?? "";
+    const esRevertida = desc.startsWith("[REVERTIDA");
+    const esParcialTag = !esRevertida && !op.pendiente && desc.includes("[PARCIAL]");
+    let estado: EstadoMovDiario;
+    if (esRevertida) estado = "REVERTIDA";
+    else if (op.pendiente) estado = "PENDIENTE";
+    else if (esParcialTag) estado = "PARCIAL";
+    else estado = "LIQUIDADA";
+
+    return {
+      id: op.id,
+      fecha: op.fecha,
+      cliente: op.clienteNombre ?? op.Cliente?.nombre ?? "—",
+      tipo: TIPO_CAMBIO_MAP[op.tipo] ?? "CAMBIO",
+      subTipo: op.tipo,
+      origen: inferOrigenCambio(op.tipo),
+      descripcion: cleanDesc(op.descripcion) || op.tipo.replace(/_/g, " "),
+      operador: extractOperador(op.descripcion),
+      monto: Number(op.cantidad.toString()),
+      moneda: op.moneda,
+      tc: Number(op.tipoCambio.toString()),
+      totalARS: Number(op.totalARS.toString()),
+      estado,
+      impactoCC: desc.includes("[CC]"),
+      clasificacionOperativa: "CAMBIO",
+      subtipoOperativo: op.tipo,
+      impactaResultado: true,
+      cajaLabel: isPrincipalView ? cambioLiqCajaMap.get(op.id) : targetCajaLabel,
+    };
+  });
 
   const all = [...fromCaja, ...fromCambio];
 

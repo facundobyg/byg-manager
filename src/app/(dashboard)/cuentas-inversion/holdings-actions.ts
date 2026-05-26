@@ -126,30 +126,38 @@ export async function venderHolding(
   if (cantidad.lte(0)) return { error: "La cantidad debe ser mayor a cero" };
   if (precio.lte(0))   return { error: "El precio debe ser mayor a cero" };
 
-  const holding = await prisma.holdingComitenteInversion.findUnique({ where: { id: holdingId } });
-  if (!holding) return { error: "Holding no encontrado" };
-  if (cantidad.gt(holding.cantidad))
-    return { error: `Cantidad insuficiente. Disponible: ${holding.cantidad.toFixed(6)}` };
+  // Holding se lee DENTRO de la transacción para evitar TOCTOU (overselling bajo concurrencia).
+  let tickerVenta = "";
+  try {
+    await prisma.$transaction(async (tx) => {
+      const holding = await tx.holdingComitenteInversion.findUnique({ where: { id: holdingId } });
+      if (!holding) throw new Error("Holding no encontrado");
+      if (cantidad.gt(holding.cantidad))
+        throw new Error(`Cantidad insuficiente. Disponible: ${holding.cantidad.toFixed(6)}`);
 
-  await prisma.$transaction(async (tx) => {
-    await tx.operacionHoldingInversion.create({
-      data: {
-        id: crypto.randomUUID(),
-        comitenteId, holdingId, tipo: "VENTA",
-        ticker: holding.ticker, categoria: holding.categoria,
-        cantidad, precio,
-        precioPromedio: holding.precioPromedio,
-        fecha, notas,
-      },
+      tickerVenta = holding.ticker;
+
+      await tx.operacionHoldingInversion.create({
+        data: {
+          id: crypto.randomUUID(),
+          comitenteId, holdingId, tipo: "VENTA",
+          ticker: holding.ticker, categoria: holding.categoria,
+          cantidad, precio,
+          precioPromedio: holding.precioPromedio,
+          fecha, notas,
+        },
+      });
+
+      const newQty = holding.cantidad.sub(cantidad);
+      if (newQty.eq(0)) {
+        await tx.holdingComitenteInversion.delete({ where: { id: holdingId } });
+      } else {
+        await tx.holdingComitenteInversion.update({ where: { id: holdingId }, data: { cantidad: newQty } });
+      }
     });
-
-    const newQty = holding.cantidad.sub(cantidad);
-    if (newQty.eq(0)) {
-      await tx.holdingComitenteInversion.delete({ where: { id: holdingId } });
-    } else {
-      await tx.holdingComitenteInversion.update({ where: { id: holdingId }, data: { cantidad: newQty } });
-    }
-  });
+  } catch (e: unknown) {
+    return { error: (e instanceof Error ? e.message : null) || "Error al registrar venta" };
+  }
 
   const session  = await auth();
   const userId   = session?.user?.id as string | undefined;
@@ -159,7 +167,7 @@ export async function venderHolding(
     accion:     "VENTA_HOLDING",
     entidad:    "ComitenteInversion",
     entidadId:  comitenteId,
-    description: `${userName} registró venta ${holding.ticker} ${cantidad.toFixed(4)} @ ${precio.toFixed(4)}`,
+    description: `${userName} registró venta ${tickerVenta} ${cantidad.toFixed(4)} @ ${precio.toFixed(4)}`,
   });
 
   revalidate(cuentaId, comitenteId);
@@ -263,6 +271,7 @@ export async function deleteHolding(
   if (!holdingId || !comitenteId || !cuentaId) return { error: "ID requerido" };
 
   const holding = await prisma.holdingComitenteInversion.findUnique({ where: { id: holdingId }, select: { ticker: true, cantidad: true } });
+  if (!holding) return { error: "Holding no encontrado" };
   await prisma.holdingComitenteInversion.delete({ where: { id: holdingId } });
 
   const session  = await auth();

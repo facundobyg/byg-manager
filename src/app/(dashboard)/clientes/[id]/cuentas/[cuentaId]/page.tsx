@@ -3,10 +3,13 @@ import { MovimientoCuentaCorrienteTable } from "@/components/modules/clientes/Mo
 import { NuevoMovimientoCCForm } from "@/components/modules/clientes/NuevoMovimientoCCForm";
 import { InteresCCForm } from "@/components/modules/clientes/InteresCCForm";
 import { InteresesTable } from "@/components/modules/clientes/InteresesTable";
+import { ReconcileSaldoCCButton } from "@/components/modules/clientes/ReconcileSaldoCCButton";
 import { calcularInteresCCRealista } from "@/lib/services/intereses.service";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ChevronLeft, Landmark } from "lucide-react";
+import { ChevronLeft, Landmark, Lock } from "lucide-react";
+import { canDoAction } from "@/lib/auth/permissions";
+import { auth } from "@/auth";
 
 type PageProps = {
   params: Promise<{ id: string; cuentaId: string }>;
@@ -25,21 +28,30 @@ function fmt(v: { toString(): string } | null | undefined) {
 export default async function CuentaCorrienteDetailPage({ params }: PageProps) {
   const { id, cuentaId } = await params;
 
-  const cuenta = await getMovimientosCuentaCorriente(cuentaId);
+  const [cuenta, canWrite, session] = await Promise.all([
+    getMovimientosCuentaCorriente(cuentaId),
+    canDoAction("cc:crear_movimiento"),
+    auth(),
+  ]);
+  const isAdmin = (session?.user as { role?: string })?.role === "ADMIN";
 
   if (!cuenta || cuenta.clienteId !== id) notFound();
 
   const hoy = new Date();
   const inicioMes = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), 1));
 
-  // Use the client's real CC rate — no Decimal import needed
+  // tasaCC stored as decimal (0.045); legacy data may have percent (4.5)
+  const tasaCCNum = toNum(cuenta.Cliente.tasaCC);
+  const tasaCC = tasaCCNum > 1 ? cuenta.Cliente.tasaCC.div(100) : cuenta.Cliente.tasaCC;
+  const tasaCCPct = Number(tasaCC.toString()) * 100;
+
   const interesesPreview = calcularInteresCCRealista({
     movimientos: cuenta.MovimientoCC.map((m) => ({
       fecha: m.fecha,
       tipo: m.tipo,
       monto: m.monto,
     })),
-    tasa: cuenta.Cliente.tasaCC,
+    tasa: tasaCC,
     fechaInicio: inicioMes,
     fechaFin: hoy,
     saldoInicial: cuenta.saldo,
@@ -49,7 +61,7 @@ export default async function CuentaCorrienteDetailPage({ params }: PageProps) {
     cliente: cuenta.Cliente.nombre,
     tipo: "CC" as const,
     base: p.saldo.toFixed(2),
-    tasa: fmt(cuenta.Cliente.tasaCC) + "%",
+    tasa: tasaCCPct.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%",
     dias: p.dias,
     calculado: p.interes.toFixed(2),
     aplicado: p.interes.toFixed(2),
@@ -133,8 +145,15 @@ export default async function CuentaCorrienteDetailPage({ params }: PageProps) {
       {/* Main content */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-1 flex flex-col gap-6">
-          <NuevoMovimientoCCForm cuentaId={cuenta.id} clienteId={id} />
-          <InteresCCForm cuentaId={cuenta.id} clienteId={id} />
+          {!canWrite && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-black uppercase tracking-widest">
+              <Lock size={11} />
+              Solo lectura
+            </div>
+          )}
+          {canWrite && <NuevoMovimientoCCForm cuentaId={cuenta.id} clienteId={id} />}
+          {canWrite && <InteresCCForm cuentaId={cuenta.id} clienteId={id} />}
+          {isAdmin && <ReconcileSaldoCCButton cuentaId={cuenta.id} clienteId={id} />}
           <div>
             <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-3">
               Vista previa de intereses

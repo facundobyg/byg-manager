@@ -179,8 +179,8 @@ export async function getAperturaMoneda() {
     }),
     prisma.cuentaCorriente.findMany({ select: { moneda: true, saldo: true } }),
     prisma.plazoFijo.findMany({ where: { estado: "ACTIVO" }, select: { moneda: true, capital: true } }),
-    prisma.posicionCartera.findMany({ include: { Activo: { select: { precioActual: true } } } }),
-    prisma.custodiaCliente.findMany({ include: { Activo: { select: { precioActual: true } } } }),
+    prisma.posicionCartera.findMany({ include: { Activo: { select: { precioActual: true, monedaPrecio: true } } } }),
+    prisma.custodiaCliente.findMany({ include: { Activo: { select: { precioActual: true, monedaPrecio: true } } } }),
     prisma.config.findUnique({ where: { clave: "tc_blue" } }),
   ]);
 
@@ -213,18 +213,25 @@ export async function getAperturaMoneda() {
     else if (pf.moneda === "ARS") pfARS = pfARS.plus(cap);
   }
 
+  // Convert ARS-priced positions to USD using TC before aggregating
   const carteraUSD = cartera.reduce((acc, p) => {
-    const precio = p.Activo?.precioActual != null
+    const rawPrecio = p.Activo?.precioActual != null
       ? new Decimal(p.Activo.precioActual.toString())
       : new Decimal(p.precioCompra.toString());
-    return acc.plus(new Decimal(p.cantidad.toString()).mul(precio));
+    const precioUSD = p.Activo?.monedaPrecio === "ARS"
+      ? (tc.gt(0) ? rawPrecio.div(tc) : rawPrecio)
+      : rawPrecio;
+    return acc.plus(new Decimal(p.cantidad.toString()).mul(precioUSD));
   }, new Decimal(0));
 
   const custodiaUSD = custodia.reduce((acc, p) => {
-    const precio = p.Activo?.precioActual != null
+    const rawPrecio = p.Activo?.precioActual != null
       ? new Decimal(p.Activo.precioActual.toString())
       : new Decimal(p.precioPromedio.toString());
-    return acc.plus(new Decimal(p.cantidadTotal.toString()).mul(precio));
+    const precioUSD = p.Activo?.monedaPrecio === "ARS"
+      ? (tc.gt(0) ? rawPrecio.div(tc) : rawPrecio)
+      : rawPrecio;
+    return acc.plus(new Decimal(p.cantidadTotal.toString()).mul(precioUSD));
   }, new Decimal(0));
 
   // Activos BYG USD: caja propia + cartera propia + recobros (CC neg = clientes deben a BYG)

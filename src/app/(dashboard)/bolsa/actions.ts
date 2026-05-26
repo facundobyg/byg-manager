@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache";
 import { readOnlyPreview } from "@/lib/config";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
-import type { TipoOpBolsa, MercadoBolsa, Moneda, CategoriaHoldingInversion } from "@prisma/client";
+import type { TipoOpBolsa, MercadoBolsa, Moneda, CategoriaHoldingInversion, CategoriaActivo } from "@prisma/client";
 
 const VENTA_TIPOS = new Set<string>(["VENTA_BONO", "VENTA_ACCION", "VENTA_CEDEAR", "CAUCION_COLOCADORA"]);
 const COMPRA_ACTIVO = new Set<string>(["COMPRA_BONO", "COMPRA_ACCION", "COMPRA_CEDEAR"]);
@@ -22,6 +22,13 @@ const TIPO_TO_HOLDING: Record<string, CategoriaHoldingInversion> = {
   CAUCION_COLOCADORA: "CAUCION",
   CAUCION_TOMADORA:   "CAUCION",
 };
+
+function inferCategoriaActivo(tipo: string, moneda: string): CategoriaActivo {
+  if (tipo === "COMPRA_CEDEAR" || tipo === "VENTA_CEDEAR") return "CEDEAR";
+  if (tipo === "COMPRA_ACCION" || tipo === "VENTA_ACCION") return "ACCION_USD";
+  if (tipo === "COMPRA_BONO"   || tipo === "VENTA_BONO")   return moneda === "ARS" ? "BONO_ARS" : "BONO_USD";
+  return "BONO_USD";
+}
 
 function toN(v: FormDataEntryValue | null): number | null {
   if (!v) return null;
@@ -95,6 +102,14 @@ export async function crearOperacionBolsa(prevState: unknown, formData: FormData
           snapshot:    { ticker, cantidad, precio, moneda, mercado, tipoOperacion: tipoRaw },
         },
       });
+    });
+
+    await writeAuditLog({
+      userId,
+      accion:      "CREAR",
+      entidad:     "OperacionBolsa",
+      entidadId:   id,
+      description: `${(session?.user as { name?: string })?.name ?? "Sistema"} creó op bolsa ${tipoRaw} ${ticker} x${cantidad}`,
     });
 
     revalidatePath("/bolsa");
@@ -302,6 +317,72 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
           }
         }
       }
+
+      // ── Impacto en cartera propia (solo primera concertación, solo compra/venta activos) ──
+      if (isNewConcertation && op.carteraId) {
+        const isCompra = COMPRA_ACTIVO.has(op.tipoOperacion as string);
+        const isVenta  = VENTA_ACTIVO.has(op.tipoOperacion as string);
+
+        if (isCompra || isVenta) {
+          const categoria = inferCategoriaActivo(op.tipoOperacion as string, op.moneda as string);
+          const activo = await tx.activo.upsert({
+            where:  { ticker: op.ticker },
+            update: {},
+            create: {
+              id:           crypto.randomUUID(),
+              ticker:       op.ticker,
+              categoria,
+              monedaPrecio: op.moneda as Moneda,
+              updatedAt:    new Date(),
+            },
+          });
+
+          const posExisting = await tx.posicionCartera.findUnique({
+            where: { carteraId_activoId: { carteraId: op.carteraId, activoId: activo.id } },
+          });
+
+          if (isCompra) {
+            const precioReal = precioPromedioReal ?? precio;
+            if (posExisting) {
+              const existQty   = Number(posExisting.cantidad);
+              const newQty     = existQty + cantidad;
+              const newPrecioC = (existQty * Number(posExisting.precioCompra) + cantidad * precioReal) / newQty;
+              await tx.posicionCartera.update({
+                where: { id: posExisting.id },
+                data:  { cantidad: newQty, precioCompra: newPrecioC, updatedAt: new Date() },
+              });
+            } else {
+              await tx.posicionCartera.create({
+                data: {
+                  id:          crypto.randomUUID(),
+                  carteraId:   op.carteraId,
+                  activoId:    activo.id,
+                  cantidad,
+                  precioCompra: precioReal,
+                  fecha:       new Date(),
+                  updatedAt:   new Date(),
+                },
+              });
+            }
+          } else {
+            const existQty = Number(posExisting?.cantidad ?? 0);
+            if (!posExisting || existQty < cantidad) {
+              throw new Error(
+                `Stock insuficiente para ${op.ticker}. Disponible: ${existQty.toLocaleString("es-AR", { maximumFractionDigits: 6 })}, solicitado: ${cantidad.toLocaleString("es-AR", { maximumFractionDigits: 6 })}.`,
+              );
+            }
+            const newQty   = Math.max(0, existQty - cantidad);
+            if (newQty === 0) {
+              await tx.posicionCartera.delete({ where: { id: posExisting.id } });
+            } else {
+              await tx.posicionCartera.update({
+                where: { id: posExisting.id },
+                data:  { cantidad: newQty, updatedAt: new Date() },
+              });
+            }
+          }
+        }
+      }
     });
 
     const session = await auth();
@@ -481,8 +562,14 @@ export async function anularOperacion(prevState: unknown, formData: FormData) {
   if (!op)        return { error: "Operación no encontrada" };
   if (op.anulada) return { error: "Operación ya anulada" };
 
+  const wasConcertada  = op.estado === "CONCERTADA";
+  const isCompraActivo = COMPRA_ACTIVO.has(op.tipoOperacion as string);
+  const isVentaActivo  = VENTA_ACTIVO.has(op.tipoOperacion as string);
+
   try {
     const now = new Date();
+    const reversalDesc: string[] = [];
+
     await prisma.$transaction(async (tx) => {
       await tx.operacionBolsa.update({
         where: { id: operacionId },
@@ -490,19 +577,129 @@ export async function anularOperacion(prevState: unknown, formData: FormData) {
       });
       await tx.operacionBolsaLog.create({
         data: {
-          id:            crypto.randomUUID(),
+          id:             crypto.randomUUID(),
           operacionId,
           userId,
-          accion:        "ANULACION",
+          accion:         "ANULACION",
           estadoAnterior: op.estado,
-          estadoNuevo:   "ANULADA",
-          snapshot:      { motivoAnulacion },
+          estadoNuevo:    "ANULADA",
+          snapshot:       { motivoAnulacion, wasConcertada },
         },
       });
+
+      // ── Revertir PosicionCartera (cartera propia) ──────────────────────
+      if (wasConcertada && op.carteraId && (isCompraActivo || isVentaActivo)) {
+        const activo = await tx.activo.findUnique({ where: { ticker: op.ticker } });
+        if (activo) {
+          const posicion = await tx.posicionCartera.findUnique({
+            where: { carteraId_activoId: { carteraId: op.carteraId, activoId: activo.id } },
+          });
+          const cantidad = Number(op.cantidad);
+
+          if (isCompraActivo) {
+            // Reversar compra: reducir / eliminar posición
+            if (posicion) {
+              const nuevaCant = Math.max(0, Number(posicion.cantidad) - cantidad);
+              if (nuevaCant === 0) {
+                await tx.posicionCartera.delete({ where: { id: posicion.id } });
+                reversalDesc.push(`eliminó posición ${op.ticker} en cartera`);
+              } else {
+                await tx.posicionCartera.update({
+                  where: { id: posicion.id },
+                  data:  { cantidad: nuevaCant, updatedAt: new Date() },
+                });
+                reversalDesc.push(`redujo ${op.ticker} en cartera por ${cantidad}`);
+              }
+            }
+          } else {
+            // Reversar venta: reponer posición
+            if (posicion) {
+              await tx.posicionCartera.update({
+                where: { id: posicion.id },
+                data:  { cantidad: Number(posicion.cantidad) + cantidad, updatedAt: new Date() },
+              });
+            } else {
+              await tx.posicionCartera.create({
+                data: {
+                  id:           crypto.randomUUID(),
+                  carteraId:    op.carteraId,
+                  activoId:     activo.id,
+                  cantidad,
+                  precioCompra: Number(op.precio),
+                  fecha:        new Date(),
+                  updatedAt:    new Date(),
+                },
+              });
+            }
+            reversalDesc.push(`repuso ${op.ticker} en cartera por ${cantidad}`);
+          }
+        }
+      }
+
+      // ── Revertir HoldingComitenteInversion (cliente) ───────────────────
+      if (wasConcertada && op.comitenteId && (isCompraActivo || isVentaActivo)) {
+        const cantidad = Number(op.cantidad);
+        const existing = await tx.holdingComitenteInversion.findUnique({
+          where: { comitenteId_ticker: { comitenteId: op.comitenteId, ticker: op.ticker } },
+        });
+
+        if (isCompraActivo) {
+          // Reversar compra: reducir / eliminar holding
+          if (existing) {
+            const nuevaCant = Math.max(0, Number(existing.cantidad) - cantidad);
+            if (nuevaCant === 0) {
+              await tx.holdingComitenteInversion.delete({ where: { id: existing.id } });
+              reversalDesc.push(`eliminó holding ${op.ticker} del comitente`);
+            } else {
+              await tx.holdingComitenteInversion.update({
+                where: { id: existing.id },
+                data:  { cantidad: nuevaCant, updatedAt: new Date() },
+              });
+              reversalDesc.push(`redujo holding ${op.ticker} del comitente por ${cantidad}`);
+            }
+          }
+        } else {
+          // Reversar venta: reponer holding
+          const holdingCat = TIPO_TO_HOLDING[op.tipoOperacion as string];
+          if (existing) {
+            await tx.holdingComitenteInversion.update({
+              where: { id: existing.id },
+              data:  { cantidad: Number(existing.cantidad) + cantidad, updatedAt: new Date() },
+            });
+          } else if (holdingCat) {
+            await tx.holdingComitenteInversion.create({
+              data: {
+                id:             crypto.randomUUID(),
+                comitenteId:    op.comitenteId,
+                ticker:         op.ticker,
+                categoria:      holdingCat,
+                cantidad,
+                precioPromedio: Number(op.precio),
+                updatedAt:      new Date(),
+              },
+            });
+          }
+          reversalDesc.push(`repuso holding ${op.ticker} del comitente por ${cantidad}`);
+        }
+      }
+    });
+
+    const userName       = (session?.user as { name?: string })?.name ?? "Sistema";
+    const reversalSuffix = reversalDesc.length > 0 ? ` | ${reversalDesc.join(", ")}` : "";
+    await writeAuditLog({
+      userId,
+      accion:      "ANULAR",
+      entidad:     "OperacionBolsa",
+      entidadId:   operacionId,
+      description: `${userName} anuló ${op.tipoOperacion} ${op.ticker}: ${motivoAnulacion}${reversalSuffix}`,
     });
 
     revalidatePath("/bolsa");
     revalidatePath(`/bolsa/${operacionId}`);
+    if (wasConcertada && (op.carteraId || op.comitenteId)) {
+      revalidatePath("/carteras", "layout");
+      revalidatePath("/cuentas-inversion", "layout");
+    }
     return { ok: true as const };
   } catch (e: unknown) {
     return { error: (e as Error).message || "Error al anular operación" };

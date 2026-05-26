@@ -5,7 +5,7 @@ export function normalizarNombreCliente(nombre: string): string {
 }
 
 export type TipoMovDiario = "INGRESO" | "EGRESO" | "CAMBIO";
-export type EstadoMovDiario = "COBRADO" | "PENDIENTE" | "PARCIAL";
+export type EstadoMovDiario = "LIQUIDADA" | "PENDIENTE" | "PARCIAL" | "REVERTIDA";
 export type OrigenMovDiario = "CAMBIO" | "MOV_MANUAL" | "INGRESO_EXTRA" | "EGRESO_EXTRA";
 
 export interface MovDiarioRow {
@@ -16,6 +16,7 @@ export interface MovDiarioRow {
   subTipo?: string;
   origen: OrigenMovDiario;
   descripcion: string;
+  operador?: string;
   monto: number;
   moneda: string;
   tc?: number;
@@ -25,6 +26,7 @@ export interface MovDiarioRow {
   clasificacionOperativa: "RESULTADO_OPERATIVO" | "MOVIMIENTO_CAJA" | "CAMBIO";
   subtipoOperativo?: string;
   impactaResultado: boolean;
+  cajaLabel?: string;
 }
 
 export function agruparPorCliente(rows: MovDiarioRow[]) {

@@ -197,7 +197,7 @@ export async function getBalanceGeneral() {
       select: { moneda: true, capital: true },
     }),
     prisma.posicionCartera.findMany({
-      include: { Activo: { select: { precioActual: true } } },
+      include: { Activo: { select: { precioActual: true, monedaPrecio: true } } },
     }),
     prisma.custodiaCliente.findMany({
       include: { Activo: { select: { precioActual: true } } },
@@ -225,24 +225,27 @@ export async function getBalanceGeneral() {
     cajasUSD = cajasUSD.plus(toUSD(cajaByMoneda.get(moneda)!, moneda));
   }
 
-  // CC: split positive (activo) vs negative (pasivo)
-  let ccActivoUSD = new Decimal(0);
-  let ccPasivoUSD = new Decimal(0);
+  // CC: positive saldo = BYG owes client → PASIVO. Negative saldo = client owes BYG → ACTIVO.
+  let ccActivoUSD = new Decimal(0);   // abs(negative saldos) = deudas de clientes a BYG
+  let ccPasivoUSD = new Decimal(0);   // positive saldos = BYG debe a clientes
   for (const c of cuentasCorrientes) {
     const saldoUSD = toUSD(new Decimal(c.saldo.toString()), c.moneda);
-    if (saldoUSD.gte(0)) {
-      ccActivoUSD = ccActivoUSD.plus(saldoUSD);
+    if (saldoUSD.lt(0)) {
+      ccActivoUSD = ccActivoUSD.plus(saldoUSD.abs());   // client owes BYG → asset
     } else {
-      ccPasivoUSD = ccPasivoUSD.plus(saldoUSD.abs());
+      ccPasivoUSD = ccPasivoUSD.plus(saldoUSD);         // BYG owes client → liability
     }
   }
 
-  // Cartera propia (USD-priced)
+  // Cartera propia: convert ARS-priced positions to USD using TC
   const carteraUSD = posicionesCartera.reduce((acc, p) => {
-    const precio = p.Activo?.precioActual != null
+    const rawPrecio = p.Activo?.precioActual != null
       ? new Decimal(p.Activo.precioActual.toString())
       : new Decimal(p.precioCompra.toString());
-    return acc.plus(new Decimal(p.cantidad.toString()).mul(precio));
+    const precioUSD = p.Activo?.monedaPrecio === "ARS"
+      ? (tc.gt(0) ? rawPrecio.div(tc) : rawPrecio.div(TC_FALLBACK))
+      : rawPrecio;
+    return acc.plus(new Decimal(p.cantidad.toString()).mul(precioUSD));
   }, new Decimal(0));
 
   // Custodia: informational only

@@ -9,13 +9,22 @@ export default async function MovDiariosPage() {
   await requirePermission("mov_diarios:leer");
   const mesActual = new Date().toISOString().slice(0, 7); // YYYY-MM
 
-  const [rows, cajasBase, resultadoCambio] = await Promise.all([
+  const [rows, cajasBase, resultadoCambio, clientesBase] = await Promise.all([
     getMovimientosDiarios(),
-    prisma.caja.findMany({ 
-      where: { activa: true },
+    prisma.caja.findMany({
+      where: { activa: true, tipo: { in: ["CENTRAL_CONTABLE", "SUCURSAL_OPERATIVA"] } },
       orderBy: { orden: "asc" }
     }),
-    getResultadoCambioMensual(mesActual)
+    getResultadoCambioMensual(mesActual),
+    prisma.cliente.findMany({
+      where: { activo: true },
+      orderBy: { nombre: "asc" },
+      select: {
+        id: true,
+        nombre: true,
+        CuentaCorriente: { select: { moneda: true, saldo: true } }
+      }
+    }),
   ]);
 
   // Enriquecer cajas con saldos actuales
@@ -23,6 +32,7 @@ export default async function MovDiariosPage() {
     id: c.id,
     label: c.label,
     slug: c.slug,
+    tipo: c.tipo,
     esPrincipal: c.esPrincipal,
     saldoUSD: Number(await calcularSaldoCaja(c.id, "USD")),
     saldoARS: Number(await calcularSaldoCaja(c.id, "ARS"))
@@ -57,6 +67,13 @@ export default async function MovDiariosPage() {
     tcBlue: Number(resultadoCambio.tcBlue),
   };
 
+  const clientes = clientesBase.map((c) => ({
+    id: c.id,
+    nombre: c.nombre,
+    ccUSD: Number(c.CuentaCorriente.find((cc) => cc.moneda === "USD")?.saldo ?? 0),
+    ccARS: Number(c.CuentaCorriente.find((cc) => cc.moneda === "ARS")?.saldo ?? 0),
+  }));
+
   const principal = cajas.find(c => c.esPrincipal);
   const canWrite  = await hasPermission("mov_diarios:escribir");
 
@@ -70,7 +87,7 @@ export default async function MovDiariosPage() {
         activeCajaId={principal?.id}
         canWrite={canWrite}
       >
-        {canWrite && <OperativaFormToggle cajas={cajas} defaultCajaId={principal?.id} />}
+        {canWrite && <OperativaFormToggle cajas={cajas} clientes={clientes} defaultCajaId={principal?.id} />}
       </MovDiariosTable>
     </div>
   );

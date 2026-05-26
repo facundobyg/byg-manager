@@ -40,8 +40,8 @@ export function NuevoPlazoFijoForm({ clienteId }: { clienteId: string }) {
                 <X size={14} />
               </button>
             </div>
-            <p className="text-[10px] text-byg-muted font-medium -mt-2">
-              Solo registra el PF. No mueve saldo de CC.
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold -mt-2 bg-amber-500/10 rounded-lg px-3 py-1.5">
+              El capital se descontará de la CC del cliente en esa moneda. Si no hay saldo, la CC quedará negativa.
             </p>
 
             <input type="hidden" name="clienteId" value={clienteId} />

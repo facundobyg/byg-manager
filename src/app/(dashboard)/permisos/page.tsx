@@ -1,6 +1,7 @@
 import { requirePermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { UserRole } from "@prisma/client";
+import { UserPermisosManager } from "@/components/modules/permisos/UserPermisosManager";
 
 const ROLE_LABEL: Record<UserRole, string> = {
   ADMIN:    "Admin",
@@ -43,10 +44,27 @@ const MATRIZ: { modulo: string; facu: Cell; francisco: Cell; augusto: Cell; empl
 
 export default async function PermisosPage() {
   await requirePermission("usuarios:leer");
-  const users = await prisma.user.findMany({
-    orderBy: { name: "asc" },
-    select: { id: true, name: true, email: true, role: true, activo: true },
-  });
+  const [users, usersWithOverrides] = await Promise.all([
+    prisma.user.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, email: true, role: true, activo: true },
+    }),
+    prisma.user.findMany({
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        UserPermiso: {
+          select: {
+            id: true,
+            concedido: true,
+            Permiso: { select: { modulo: true, accion: true } },
+          },
+        },
+      },
+    }),
+  ]);
 
   return (
     <div className="flex flex-col gap-8">
@@ -137,8 +155,32 @@ export default async function PermisosPage() {
           </table>
         </div>
         <p className="text-[10px] text-slate-400 font-medium text-right">
-          Esta matriz es indicativa. Los permisos reales se configuran en la tabla Permiso/RolPermiso.
+          Los permisos base vienen del rol. Los overrides por usuario se gestionan abajo.
         </p>
+      </section>
+
+      {/* Per-user permission overrides */}
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Overrides por usuario</h2>
+          <span className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">Activo</span>
+        </div>
+        <p className="text-[11px] text-slate-400 font-medium">
+          Los overrides se aplican sobre el rol base. Un override con "Revocar" bloquea aunque el rol lo permita (excepto ADMIN).
+        </p>
+        <UserPermisosManager
+          users={usersWithOverrides.map((u) => ({
+            id:   u.id,
+            name: u.name,
+            role: u.role,
+            overrides: u.UserPermiso.map((up) => ({
+              id:       up.id,
+              concedido: up.concedido,
+              modulo:   up.Permiso.modulo,
+              accion:   up.Permiso.accion,
+            })),
+          }))}
+        />
       </section>
     </div>
   );

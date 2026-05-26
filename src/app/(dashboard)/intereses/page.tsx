@@ -15,8 +15,14 @@ export default async function InteresesPage() {
   const hoy = new Date();
   const inicioMes = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), 1));
 
-  const ccItems = clientes.flatMap((cliente) =>
-    (cliente.CuentaCorriente ?? []).flatMap((cuenta) => {
+  const ccItems = clientes.flatMap((cliente) => {
+    // tasaCC is stored as decimal (0.045 for 4.5%). Legacy data may have it as percent (4.5).
+    const tasaCC = Number(cliente.tasaCC.toString()) > 1
+      ? cliente.tasaCC.div(100)
+      : cliente.tasaCC;
+    const tasaCCPct = Number(tasaCC.toString()) * 100;
+
+    return (cliente.CuentaCorriente ?? []).flatMap((cuenta) => {
       const movimientos = cuenta.MovimientoCC ?? [];
       if (movimientos.length === 0) return [];
 
@@ -26,7 +32,7 @@ export default async function InteresesPage() {
           tipo: m.tipo,
           monto: m.monto,
         })),
-        tasa: cliente.tasaCC,
+        tasa: tasaCC,
         fechaInicio: inicioMes,
         fechaFin: hoy,
         saldoInicial: cuenta.saldo,
@@ -41,7 +47,7 @@ export default async function InteresesPage() {
           cliente: cliente.nombre,
           tipo: "CC" as const,
           base: periodo.saldo.toFixed(2),
-          tasa: Number(cliente.tasaCC.toString()).toLocaleString("es-AR", {
+          tasa: tasaCCPct.toLocaleString("es-AR", {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
           }) + "%",
@@ -53,15 +59,16 @@ export default async function InteresesPage() {
           puedeAplicar: true,
         },
       ];
-    })
-  );
+    });
+  });
 
   const pfItems = clientes.flatMap((cliente) =>
     (cliente.PlazoFijo ?? []).map((pf) => {
       const dias = calcularDiasEntreFechas(pf.fechaInicio, pf.fechaVencimiento);
+      // tasaAnual stored as percent (4.5 for 4.5%); formula expects decimal
       const interes = calcularInteresPF({
         capital: pf.capital,
-        tasa: pf.tasaAnual,
+        tasa: pf.tasaAnual.div(100),
         fechaInicio: pf.fechaInicio,
         fechaVencimiento: pf.fechaVencimiento,
       });
@@ -70,7 +77,7 @@ export default async function InteresesPage() {
         cliente: cliente.nombre,
         tipo: "PF" as const,
         base: pf.capital.toString(),
-        tasa: pf.tasaAnual.toString(),
+        tasa: Number(pf.tasaAnual.toString()).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%",
         dias,
         calculado: interes.toFixed(2),
         aplicado: interes.toFixed(2),
