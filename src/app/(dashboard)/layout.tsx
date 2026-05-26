@@ -15,6 +15,7 @@ const PREVIEW_COOKIE = "byg_preview_user";
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   let carteras: { nombre: string; slug: string }[] = [];
   let cuentasInversion: { id: string; nombre: string }[] = [];
+  let cajasSucursal: { label: string; slug: string }[] = [];
   let session = null;
   let previewUsers: { id: string; name: string; role: string }[] = [];
   let currentPreviewId: string | null = null;
@@ -35,11 +36,17 @@ export default async function DashboardLayout({ children }: { children: ReactNod
         select: { id: true, nombre: true },
         orderBy: { nombre: "asc" },
       }),
+      prisma.caja.findMany({
+        where: { activa: true, tipo: "SUCURSAL_OPERATIVA" },
+        select: { label: true, slug: true },
+        orderBy: { label: "asc" },
+      }),
     ]);
 
     if (results[0].status === "fulfilled") session = results[0].value;
     if (results[1].status === "fulfilled") carteras = results[1].value;
     if (results[2].status === "fulfilled") cuentasInversion = results[2].value;
+    if (results[3].status === "fulfilled") cajasSucursal = results[3].value as { label: string; slug: string }[];
 
     if (session?.user?.role === "ADMIN") {
       const store = await cookies();
@@ -89,6 +96,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     <DashboardShell
       carteras={carteras}
       cuentasInversion={cuentasInversion}
+      cajasSucursal={cajasSucursal}
       allowedPermissions={allowedPermissions}
     >
       <Topbar

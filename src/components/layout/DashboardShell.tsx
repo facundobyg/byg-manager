@@ -6,16 +6,19 @@ import { CommandPaletteRoot } from "@/components/layout/CommandPaletteRoot";
 
 type CarteraLink = { nombre: string; slug: string };
 type CuentaInversionLink = { id: string; nombre: string };
+type CajaLink = { label: string; slug: string };
 
 export function DashboardShell({
   children,
   carteras,
   cuentasInversion,
+  cajasSucursal,
   allowedPermissions,
 }: {
   children: ReactNode;
   carteras: CarteraLink[];
   cuentasInversion: CuentaInversionLink[];
+  cajasSucursal: CajaLink[];
   allowedPermissions: string[] | null;
 }) {
   return (
@@ -23,6 +26,7 @@ export function DashboardShell({
       <Sidebar
         carteras={carteras}
         cuentasInversion={cuentasInversion}
+        cajasSucursal={cajasSucursal}
         allowedPermissions={allowedPermissions}
       />
       <div className="ml-64 flex min-w-0 flex-1 flex-col">

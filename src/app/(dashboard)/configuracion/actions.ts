@@ -497,9 +497,9 @@ export async function createCaja(
       },
     });
     const session = await auth();
-    await writeAuditLog({ userId: session?.user?.id, accion: "ALTA_CAJA", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} creó caja "${label}" (${slug})` });
+    await writeAuditLog({ userId: session?.user?.id, accion: "CREATE_CAJA", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} creó caja "${label}" (${slug})` });
     revalidatePath("/configuracion");
-    revalidatePath("/caja");
+    revalidatePath("/", "layout");
     return { ok: true };
   } catch (error) {
     return { error: "Error al crear la caja" };
@@ -540,8 +540,10 @@ export async function updateCaja(
       where: { id },
       data: { label, tipo, activa },
     });
+    const session = await auth();
+    await writeAuditLog({ userId: session?.user?.id, accion: "UPDATE_CAJA", entidad: "Config", description: `${(session?.user as any)?.name ?? "Usuario"} actualizó caja "${label}" → tipo: ${tipo}, activa: ${activa}` });
     revalidatePath("/configuracion");
-    revalidatePath("/caja");
+    revalidatePath("/", "layout");
     return { ok: true };
   } catch (error) {
     return { error: "Error al actualizar la caja" };
@@ -573,13 +575,13 @@ export async function deleteCaja(
   const session = await auth();
   await writeAuditLog({
     userId: session?.user?.id,
-    accion: "BAJA_CAJA",
+    accion: "DELETE_CAJA",
     entidad: "Config",
     description: `${(session?.user as any)?.name ?? "Usuario"} eliminó caja "${caja.label}"`,
   });
 
   revalidatePath("/configuracion");
-  revalidatePath("/caja");
+  revalidatePath("/", "layout");
   return { ok: true };
 }
 

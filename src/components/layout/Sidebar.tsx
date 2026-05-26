@@ -44,7 +44,6 @@ const NAV_STATIC: NavGroup[] = [
     items: [
       { label: "Op. Bolsa",    href: "/bolsa",                  icon: CandlestickChart },
       { label: "Caja Oficina", href: "/operativa/mov-diarios",  icon: ArrowLeftRight },
-      { label: "Caja Trenque", href: "/operativa/nanu_trenque",      icon: ArrowLeftRight },
       { label: "Rulos Bolsa",  href: "/operativa/rulos-bolsa",  icon: RefreshCw },
       { label: "Div. e Intereses", href: "/operativa/div-intereses", icon: Coins },
       { label: "Largo Plazo",  href: "/operativa/largo-plazo",  icon: Timer },
@@ -101,9 +100,12 @@ const NAV_ITEM_PERMISSIONS: Record<string, string> = {
   "/configuracion":             "configuracion:leer",
 };
 
+type CajaLink = { label: string; slug: string };
+
 type SidebarProps = {
   carteras: CarteraLink[];
   cuentasInversion: CuentaInversionLink[];
+  cajasSucursal: CajaLink[];
   allowedPermissions: string[] | null;
 };
 
@@ -142,7 +144,7 @@ function buildOpen(active: SectionKey): Record<SectionKey, boolean> {
   return Object.fromEntries(ALL_SECTIONS.map((s) => [s, s === active])) as Record<SectionKey, boolean>;
 }
 
-export function Sidebar({ carteras, cuentasInversion, allowedPermissions }: SidebarProps) {
+export function Sidebar({ carteras, cuentasInversion, cajasSucursal, allowedPermissions }: SidebarProps) {
   const permSet = allowedPermissions !== null ? new Set(allowedPermissions) : null;
 
   function canSee(href: string): boolean {
@@ -196,15 +198,21 @@ export function Sidebar({ carteras, cuentasInversion, allowedPermissions }: Side
         {NAV_STATIC
           .map((s) => ({ ...s, items: s.items.filter((item) => canSee(item.href)) }))
           .filter((s) => s.items.length > 0)
-          .map((section) => (
-            <NavSection
-              key={section.group}
-              section={section}
-              pathname={pathname}
-              isOpen={open[section.group as SectionKey]}
-              onToggle={() => toggle(section.group as SectionKey)}
-            />
-          ))}
+          .map((section) => {
+            const extraItems: NavItem[] = section.group === "Operativa" && canSee("/operativa/mov-diarios")
+              ? cajasSucursal.map((c) => ({ label: c.label, href: `/operativa/${c.slug}`, icon: ArrowLeftRight }))
+              : [];
+            return (
+              <NavSection
+                key={section.group}
+                section={section}
+                pathname={pathname}
+                isOpen={open[section.group as SectionKey]}
+                onToggle={() => toggle(section.group as SectionKey)}
+                extraItems={extraItems}
+              />
+            );
+          })}
 
         {/* Dynamic Carteras group */}
         {canSeeCarteras && (
@@ -332,20 +340,22 @@ function SectionHeader({ label, isOpen, onToggle }: { label: string; isOpen: boo
 }
 
 function NavSection({
-  section, pathname, isOpen, onToggle,
+  section, pathname, isOpen, onToggle, extraItems = [],
 }: {
   section: NavGroup; pathname: string; isOpen: boolean; onToggle: () => void;
+  extraItems?: NavItem[];
 }) {
   return (
     <div>
       <SectionHeader label={section.group} isOpen={isOpen} onToggle={onToggle} />
       {isOpen && (
         <div className="flex flex-col gap-0.5">
-          {section.items.map((item) => {
+          {[...section.items, ...extraItems].map((item) => {
             const Icon        = item.icon;
             const isExact     = pathname === item.href;
             const isPrefix    = pathname.startsWith(item.href + "/");
-            const betterMatch = isPrefix && section.items.some(
+            const allItems = [...section.items, ...extraItems];
+            const betterMatch = isPrefix && allItems.some(
               (other) =>
                 other.href !== item.href &&
                 other.href.length > item.href.length &&
