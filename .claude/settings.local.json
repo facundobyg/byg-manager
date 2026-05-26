@@ -246,7 +246,9 @@
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:2023/permisos)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:2023/configuracion)",
       "PowerShell(cd \"C:\\\\Users\\\\Facundo Giovini\\\\OneDrive\\\\Desktop\\\\IA\\\\Antigravity\\\\Proyecto BYG\"; $proc = Start-Process -FilePath \"npm\" -ArgumentList \"run\",\"dev\",\"--\",\"--port\",\"2023\" -PassThru -NoNewWindow; Start-Sleep -Seconds 8; $proc.Id)",
-      "PowerShell(cd \"C:\\\\Users\\\\Facundo Giovini\\\\OneDrive\\\\Desktop\\\\IA\\\\Antigravity\\\\Proyecto BYG\"; Start-Process powershell -ArgumentList \"-NoExit\",\"-Command\",\"npm run dev -- --port 2023\" -WindowStyle Normal)"
+      "PowerShell(cd \"C:\\\\Users\\\\Facundo Giovini\\\\OneDrive\\\\Desktop\\\\IA\\\\Antigravity\\\\Proyecto BYG\"; Start-Process powershell -ArgumentList \"-NoExit\",\"-Command\",\"npm run dev -- --port 2023\" -WindowStyle Normal)",
+      "Bash(git config *)",
+      "PowerShell(cd \"c:\\\\Users\\\\Facundo Giovini\\\\OneDrive\\\\Desktop\\\\IA\\\\Antigravity\\\\Proyecto BYG\"; npm run build 2>&1 | Where-Object { $_ -notmatch \"DashboardLayout|DYNAMIC_SERVER|NativeCommand\" } | Select-Object -Last 60)"
     ],
     "additionalDirectories": [
       "c:\\Users\\Facundo Giovini\\OneDrive\\Desktop\\IA\\Antigravity\\Proyecto BYG\\src\\app\\(print)\\print\\clientes",

@@ -5,6 +5,7 @@ import { UpdatePrecioActivoForm } from "@/components/modules/configuracion/Updat
 import { PreciosBatchTextareaForm } from "@/components/modules/configuracion/PreciosBatchTextareaForm";
 import { DownloadPricesCSV } from "@/components/modules/configuracion/DownloadPricesCSV";
 import { CreateActivoForm } from "@/components/modules/configuracion/CreateActivoForm";
+import Link from "next/link";
 
 // ─── Section config ───────────────────────────────────────────────────────────
 
@@ -38,10 +39,12 @@ function PreciosSection({
   label,
   accent,
   rows,
+  selectedHistorialId,
 }: {
   label: string;
   accent: string;
   rows: Row[];
+  selectedHistorialId: string | null;
 }) {
   const sinPrecio = rows.filter((r) => r.precioActual === null).length;
 
@@ -70,6 +73,7 @@ function PreciosSection({
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted w-[70px]">Estado</th>
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted">Origen</th>
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted text-right">Actualizar</th>
+              <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted text-right">Hist.</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-byg-border/40">
@@ -127,6 +131,23 @@ function PreciosSection({
                     moneda={row.monedaPrecio}
                   />
                 </td>
+                <td className="px-4 py-2.5 text-right">
+                  {selectedHistorialId === row.id ? (
+                    <Link
+                      href="/precios"
+                      className="text-[10px] font-bold text-byg-accent underline"
+                    >
+                      ✕
+                    </Link>
+                  ) : (
+                    <Link
+                      href={`/precios?historialId=${row.id}`}
+                      className="text-[10px] font-bold text-byg-muted hover:text-byg-accent transition-colors"
+                    >
+                      Ver
+                    </Link>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -136,17 +157,61 @@ function PreciosSection({
   );
 }
 
+// ─── Historial panel ─────────────────────────────────────────────────────────
+
+type HistorialRow = {
+  mes:       string;
+  fechaUTC:  string;
+  precio:    number;
+  variacion: number | null;
+  userId:    string | null;
+};
+
+async function buildHistorial(activoId: string): Promise<{ ticker: string; rows: HistorialRow[] } | null> {
+  const activo = await prisma.activo.findUnique({ where: { id: activoId }, select: { ticker: true } });
+  if (!activo) return null;
+
+  const since = new Date();
+  since.setUTCMonth(since.getUTCMonth() - 12);
+  since.setUTCDate(1);
+
+  const rows = await prisma.precioHistorico.findMany({
+    where: { activoId, fecha: { gte: since } },
+    orderBy: { fecha: "asc" },
+  });
+
+  const histRows: HistorialRow[] = rows.map((r, i) => {
+    const prev = i > 0 ? Number(rows[i - 1].precio) : null;
+    const cur  = Number(r.precio);
+    return {
+      mes:       r.fecha.toISOString().slice(0, 7),
+      fechaUTC:  r.fecha.toISOString().slice(0, 10),
+      precio:    cur,
+      variacion: prev !== null ? ((cur - prev) / prev) * 100 : null,
+      userId:    r.userId,
+    };
+  });
+
+  return { ticker: activo.ticker, rows: histRows.reverse() };
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default async function PreciosPage() {
+export default async function PreciosPage({ searchParams }: { searchParams: Promise<{ historialId?: string }> }) {
   await requirePermission("activos:leer");
-  const activosRaw = await prisma.activo.findMany({
-    include: {
-      PosicionCartera: { select: { id: true } },
-      CustodiaCliente: { select: { id: true } },
-    },
-    orderBy: [{ categoria: "asc" }, { ticker: "asc" }],
-  });
+  const params = await searchParams;
+  const historialActivoId = params.historialId ?? null;
+
+  const [activosRaw, historialData] = await Promise.all([
+    prisma.activo.findMany({
+      include: {
+        PosicionCartera: { select: { id: true } },
+        CustodiaCliente: { select: { id: true } },
+      },
+      orderBy: [{ categoria: "asc" }, { ticker: "asc" }],
+    }),
+    historialActivoId ? buildHistorial(historialActivoId) : Promise.resolve(null),
+  ]);
 
   // Build plain rows — no Decimal
   const rows: Row[] = activosRaw.map((a) => {
@@ -220,6 +285,53 @@ export default async function PreciosPage() {
         </div>
       </div>
 
+      {/* Historial panel */}
+      {historialData && (
+        <div className="bg-byg-surface rounded-2xl border border-byg-border border-l-[5px] border-l-violet-500 overflow-hidden">
+          <div className="px-5 py-3 border-b border-byg-border bg-byg-bg flex items-center justify-between">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Historial de precios</p>
+              <p className="text-sm font-black text-byg-text font-mono">{historialData.ticker}</p>
+            </div>
+            <Link href="/precios" className="text-xs font-bold text-byg-muted hover:text-byg-accent transition-colors">
+              ✕ Cerrar
+            </Link>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[400px]">
+              <thead>
+                <tr className="bg-byg-bg border-b border-byg-border">
+                  {["Fecha", "Precio", "Var. %"].map((h, i) => (
+                    <th key={i} className={`px-4 py-2.5 text-[9px] font-black uppercase tracking-widest text-byg-muted ${i === 0 ? "text-left" : "text-right"}`}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {historialData.rows.length === 0 ? (
+                  <tr><td colSpan={3} className="px-4 py-4 text-center text-byg-muted italic text-xs">Sin datos en los últimos 12 meses</td></tr>
+                ) : historialData.rows.map((r) => (
+                  <tr key={r.fechaUTC} className="border-b border-byg-border/40 last:border-0 hover:bg-byg-surface-2 transition-colors">
+                    <td className="px-4 py-2 text-byg-muted font-mono">{r.fechaUTC}</td>
+                    <td className="px-4 py-2 text-right tabular-nums font-mono font-bold text-byg-text">
+                      {r.precio.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}
+                    </td>
+                    <td className={`px-4 py-2 text-right tabular-nums font-mono font-bold ${
+                      r.variacion === null ? "text-byg-muted"
+                      : r.variacion > 0 ? "text-emerald-400"
+                      : r.variacion < 0 ? "text-red-400"
+                      : "text-byg-muted"
+                    }`}>
+                      {r.variacion === null ? "—"
+                        : `${r.variacion > 0 ? "+" : ""}${r.variacion.toFixed(2)}%`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Batch */}
       <details className="bg-byg-surface rounded-2xl border border-byg-border border-l-[5px] border-l-violet-500">
         <summary className="px-6 py-4 cursor-pointer select-none flex items-center justify-between hover:bg-byg-surface-2 transition-colors rounded-2xl">
@@ -239,7 +351,7 @@ export default async function PreciosPage() {
         const sectionRows = bycat.get(cat);
         if (!sectionRows || sectionRows.length === 0) return null;
         return (
-          <PreciosSection key={cat} label={label} accent={accent} rows={sectionRows} />
+          <PreciosSection key={cat} label={label} accent={accent} rows={sectionRows} selectedHistorialId={historialActivoId} />
         );
       })}
     </div>

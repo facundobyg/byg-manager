@@ -259,7 +259,11 @@ export async function adminUpdateUserProfile(
 
   if (!targetUserId || !name || !email) return { error: "Faltan datos obligatorios" };
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: "Email inválido" };
-  if (image && !/^https?:\/\/.+/.test(image)) return { error: "URL de avatar inválida" };
+  if (image) {
+    const isDataUrl = /^data:image\/(jpeg|png|webp);base64,/.test(image);
+    const isHttpUrl = /^https?:\/\/.+/.test(image);
+    if (!isDataUrl && !isHttpUrl) return { error: "URL de avatar inválida (usá https:// o subí una imagen)" };
+  }
 
   const target = await prisma.user.findUnique({ where: { id: targetUserId } });
   if (!target) return { error: "Usuario no encontrado" };

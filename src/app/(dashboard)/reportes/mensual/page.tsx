@@ -2,8 +2,10 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { UserRole } from "@prisma/client";
 import { getUtilidadMes } from "@/lib/data/reportes-ejecutivo";
-import { getResumenComisiones } from "@/lib/data/comisiones";
+import { getResumenComisiones, type ProductorMesData } from "@/lib/data/comisiones";
 import { getMesOperativo } from "@/lib/services/config.service";
+import { prisma } from "@/lib/prisma";
+import type { SnapshotData } from "@/lib/data/cierres";
 import Link from "next/link";
 
 function fmt(n: number, dec = 2) {
@@ -78,10 +80,30 @@ export default async function ReporteMensualPage({
   const resolvedParams = await searchParams;
   const mes = resolvedParams.mes ?? (await getMesOperativo());
 
-  const [utilidad, comisiones] = await Promise.all([
-    getUtilidadMes(mes),
-    getResumenComisiones(mes),
-  ]);
+  // Check if month is frozen
+  const cierre = await prisma.cierreMensual.findUnique({ where: { mes } }).catch(() => null);
+  const isClosed = cierre?.estado === "CERRADO" && cierre?.snapshotData != null;
+
+  let utilidad: Awaited<ReturnType<typeof getUtilidadMes>>;
+  let comisiones: Pick<ProductorMesData, "productor" | "estado" | "totalBaseUSD" | "totalComisionUSD"> & { lineas: { length: number }[] }[] | ProductorMesData[];
+
+  if (isClosed) {
+    const snap = cierre!.snapshotData as unknown as SnapshotData;
+    utilidad = snap.utilidad;
+    comisiones = snap.comisiones.map((c) => ({
+      productor:        { id: c.productor.id, nombre: c.productor.nombre, porcentaje: c.productor.porcentaje },
+      comisionMesId:    c.comisionMesId,
+      estado:           c.estado as ProductorMesData["estado"],
+      lineas:           Array(c.lineasCount) as ProductorMesData["lineas"],
+      totalBaseUSD:     c.totalBaseUSD,
+      totalComisionUSD: c.totalComisionUSD,
+    }));
+  } else {
+    [utilidad, comisiones] = await Promise.all([
+      getUtilidadMes(mes),
+      getResumenComisiones(mes),
+    ]);
+  }
 
   const [mesY, mesM] = mes.split("-").map(Number);
   const mesLabel = new Date(mesY, mesM - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" });
@@ -97,9 +119,19 @@ export default async function ReporteMensualPage({
     <div className="flex flex-col gap-8 pb-20">
       <header>
         <p className="text-[10px] font-black text-byg-accent uppercase tracking-[0.3em]">Reportes</p>
-        <h1 className="text-4xl font-black text-byg-text tracking-tight">Reporte Mensual</h1>
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-4xl font-black text-byg-text tracking-tight">Reporte Mensual</h1>
+          {isClosed && (
+            <span className="text-[11px] font-black uppercase px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-700 tracking-wider">
+              SNAPSHOT CONGELADO
+            </span>
+          )}
+        </div>
         <p className="text-sm text-byg-muted font-medium mt-1">
           {mesLabel.charAt(0).toUpperCase() + mesLabel.slice(1)} · TC Blue ${fmt(tc, 0)}
+          {isClosed && cierre?.fechaCierre && (
+            <> · Cerrado el {new Date(cierre.fechaCierre).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" })}</>
+          )}
         </p>
       </header>
 

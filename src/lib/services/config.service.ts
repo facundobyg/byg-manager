@@ -92,31 +92,77 @@ export async function getActivosPrecios() {
   });
 }
 
-export async function updatePrecioActivo(activoId: string, precio: number) {
+export async function updatePrecioActivo(activoId: string, precio: number, userId?: string) {
   const dec = new Decimal(precio).toDecimalPlaces(6);
   const now = new Date();
   const fecha = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-  
+
   await prisma.$transaction([
     prisma.activo.update({
       where: { id: activoId },
-      data: { 
+      data: {
         precioActual: dec,
         updatedAt: now
       },
     }),
     prisma.precioHistorico.upsert({
       where: { activoId_fecha: { activoId, fecha } },
-      update: { precio: dec },
-      create: { id: crypto.randomUUID(), activoId, fecha, precio: dec },
+      update: { precio: dec, ...(userId ? { userId } : {}) },
+      create: { id: crypto.randomUUID(), activoId, fecha, precio: dec, userId: userId ?? null },
     }),
   ]);
 }
 
+// ── TC MEP histórico ──────────────────────────────────────────────────────────
+
+export async function getTcMepHoy(): Promise<{ valor: number; fecha: string } | null> {
+  const hoy = new Date();
+  const fecha = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
+  const row = await prisma.tcMepHistorial.findUnique({ where: { fecha } });
+  if (!row) return null;
+  return { valor: Number(row.valor), fecha: fecha.toISOString().slice(0, 10) };
+}
+
+export async function getLastTcMep(): Promise<{ valor: number; fecha: string } | null> {
+  const row = await prisma.tcMepHistorial.findFirst({ orderBy: { fecha: "desc" } });
+  if (!row) return null;
+  return { valor: Number(row.valor), fecha: row.fecha.toISOString().slice(0, 10) };
+}
+
+export async function getTcMepForDate(fecha: Date): Promise<number | null> {
+  const fechaUTC = new Date(Date.UTC(fecha.getFullYear(), fecha.getMonth(), fecha.getDate()));
+  // Exact match first, then last available before that date
+  const row = await prisma.tcMepHistorial.findFirst({
+    where: { fecha: { lte: fechaUTC } },
+    orderBy: { fecha: "desc" },
+  });
+  return row ? Number(row.valor) : null;
+}
+
+export async function setTcMepDia(valor: number, userId?: string) {
+  const dec = new Decimal(valor).toDecimalPlaces(4);
+  const hoy = new Date();
+  const fecha = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
+  await prisma.tcMepHistorial.upsert({
+    where:  { fecha },
+    update: { valor: dec, userId: userId ?? null, updatedAt: new Date() },
+    create: { id: crypto.randomUUID(), fecha, valor: dec, userId: userId ?? null, updatedAt: new Date() },
+  });
+}
+
+export async function getTcMepHistorial(limit = 30) {
+  return prisma.tcMepHistorial.findMany({
+    orderBy: { fecha: "desc" },
+    take: limit,
+  });
+}
+
+/** Kept for backward compat — delegates to new historial */
 export async function getTCMep() {
   return prisma.config.findUnique({ where: { clave: "tc_mep" } });
 }
 
+/** Kept for backward compat */
 export async function setTCMep(value: number) {
   const dec = new Decimal(value).toDecimalPlaces(4);
   await prisma.config.upsert({
@@ -166,7 +212,7 @@ export async function updateAlycConfig(alycs: AlycOption[]): Promise<void> {
   });
 }
 
-export async function updatePreciosActivosBatch(items: { id: string; precio: number }[]) {
+export async function updatePreciosActivosBatch(items: { id: string; precio: number }[], userId?: string) {
   const now = new Date();
   const fecha = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
 
@@ -175,15 +221,12 @@ export async function updatePreciosActivosBatch(items: { id: string; precio: num
     return [
       prisma.activo.update({
         where: { id: item.id },
-        data: { 
-          precioActual: dec,
-          updatedAt: now
-        },
+        data: { precioActual: dec, updatedAt: now },
       }),
       prisma.precioHistorico.upsert({
         where: { activoId_fecha: { activoId: item.id, fecha } },
-        update: { precio: dec },
-        create: { id: crypto.randomUUID(), activoId: item.id, fecha, precio: dec },
+        update: { precio: dec, ...(userId ? { userId } : {}) },
+        create: { id: crypto.randomUUID(), activoId: item.id, fecha, precio: dec, userId: userId ?? null },
       }),
     ];
   });

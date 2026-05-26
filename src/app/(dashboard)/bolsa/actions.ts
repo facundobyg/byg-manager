@@ -6,7 +6,30 @@ import { revalidatePath } from "next/cache";
 import { readOnlyPreview } from "@/lib/config";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
+import { setTcMepDia } from "@/lib/services/config.service";
 import type { TipoOpBolsa, MercadoBolsa, Moneda, CategoriaHoldingInversion, CategoriaActivo } from "@prisma/client";
+
+export async function actualizarTcMepDia(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("bolsa:crear");
+  if (denied) return denied;
+  const raw = formData.get("valor")?.toString().trim().replace(",", ".");
+  if (!raw) return { error: "Valor requerido" };
+  const valor = parseFloat(raw);
+  if (isNaN(valor) || valor <= 0) return { error: "Valor inválido" };
+  const session = await auth();
+  await setTcMepDia(valor, session?.user?.id);
+  await writeAuditLog({
+    userId:      session?.user?.id,
+    accion:      "SET_TC_MEP",
+    entidad:     "TcMepHistorial",
+    description: `TC MEP del día cargado: ${valor}`,
+  });
+  revalidatePath("/bolsa");
+  return { ok: true };
+}
 
 const VENTA_TIPOS = new Set<string>(["VENTA_BONO", "VENTA_ACCION", "VENTA_CEDEAR", "CAUCION_COLOCADORA"]);
 const COMPRA_ACTIVO = new Set<string>(["COMPRA_BONO", "COMPRA_ACCION", "COMPRA_CEDEAR"]);

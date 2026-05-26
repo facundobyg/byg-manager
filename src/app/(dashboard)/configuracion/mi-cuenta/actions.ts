@@ -67,17 +67,31 @@ export async function updateOwnProfile(
   if (!session?.user?.id) redirect("/login");
 
   const name      = formData.get("name")?.toString().trim();
-  const image     = formData.get("image")?.toString().trim() || null;
+  const rawImage  = formData.get("image")?.toString() ?? "";
   const phone     = formData.get("phone")?.toString().trim() || null;
   const cargo     = formData.get("cargo")?.toString().trim() || null;
   const ubicacion = formData.get("ubicacion")?.toString().trim() || null;
 
   if (!name) return { error: "El nombre no puede estar vacío" };
-  if (image && !/^https?:\/\/.+/.test(image)) return { error: "La URL de avatar debe comenzar con http:// o https://" };
+
+  let imageValue: string | null;
+  if (rawImage === "") {
+    imageValue = null;
+  } else if (/^data:image\/(jpeg|png|webp);base64,/.test(rawImage)) {
+    const b64Chars      = rawImage.split(",")[1]?.length ?? 0;
+    const estimatedBytes = Math.ceil(b64Chars * 0.75);
+    if (estimatedBytes > 500 * 1024)
+      return { error: "La imagen supera el límite de 500 KB." };
+    imageValue = rawImage;
+  } else if (/^https?:\/\/.+/.test(rawImage)) {
+    imageValue = rawImage; // compatibilidad con URLs existentes
+  } else {
+    return { error: "Formato de imagen no permitido. Usá JPG, PNG o WebP." };
+  }
 
   await prisma.user.update({
     where: { id: session.user.id },
-    data:  { name, image, phone, cargo, ubicacion, updatedAt: new Date() },
+    data:  { name, image: imageValue, phone, cargo, ubicacion, updatedAt: new Date() },
   });
 
   await writeAuditLog({

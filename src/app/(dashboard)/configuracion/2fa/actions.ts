@@ -15,7 +15,7 @@ async function getAdminUser() {
   if (!session.user?.id) redirect("/login");
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { id: true, email: true, twoFactorEnabled: true, twoFactorSecret: true },
+    select: { id: true, email: true, twoFactorEnabled: true, twoFactorSecret: true, twoFactorLastUsedAt: true },
   });
   if (!user) redirect("/");
   return user;
@@ -40,7 +40,7 @@ export async function confirmEnable2FA(_prev: unknown, formData: FormData): Prom
     where: { id: user.id },
     data: { twoFactorEnabled: true },
   });
-  await writeAuditLog({ accion: "ENABLE_2FA", entidad: "Auth", userId: user.id, description: `2FA activado: ${user.email}` });
+  await writeAuditLog({ accion: "ENABLE_2FA_CONFIRMED", entidad: "Auth", userId: user.id, description: `2FA activado y confirmado: ${user.email}` });
   revalidatePath("/configuracion/2fa");
   return { success: true };
 }
@@ -57,7 +57,7 @@ export async function disable2FA(_prev: unknown, formData: FormData): Promise<Ac
     where: { id: user.id },
     data: { twoFactorEnabled: false, twoFactorSecret: null },
   });
-  await writeAuditLog({ accion: "DISABLE_2FA", entidad: "Auth", userId: user.id, description: `2FA desactivado: ${user.email}` });
+  await writeAuditLog({ accion: "DISABLE_2FA_CONFIRMED", entidad: "Auth", userId: user.id, description: `2FA desactivado con código verificado: ${user.email}` });
   revalidatePath("/configuracion/2fa");
   return { success: true };
 }

@@ -64,8 +64,10 @@ const NAV_SISTEMA: NavGroup[] = [
   {
     group: "Sistema",
     items: [
+      { label: "Honorarios",    href: "/honorarios",    icon: DollarSign    },
       { label: "Pendientes",    href: "/pendientes",    icon: Clock         },
       { label: "Precios",       href: "/precios",       icon: Tag           },
+      { label: "Cierres",       href: "/cierres",       icon: CalendarClock },
       { label: "Auditoría",     href: "/auditoria",     icon: ClipboardList },
       { label: "Configuración", href: "/configuracion", icon: Settings      },
     ],
@@ -91,8 +93,10 @@ const NAV_ITEM_PERMISSIONS: Record<string, string> = {
   "/clientes/cc":               "clientes:leer",
   "/clientes/vencimientos-pf":  "plazos_fijos:leer",
   "/comisiones":                "configuracion:leer",
+  "/honorarios":                "configuracion:leer",
   "/pendientes":                "recordatorios:leer",
   "/precios":                   "activos:leer",
+  "/cierres":                   "configuracion:leer",
   "/auditoria":                 "auditoria:leer",
   "/configuracion":             "configuracion:leer",
 };
@@ -126,6 +130,8 @@ function getActiveSection(pathname: string | null): SectionKey {
     pathname.startsWith("/pendientes")    ||
     pathname.startsWith("/precios")       ||
     pathname.startsWith("/configuracion") ||
+    pathname.startsWith("/honorarios")    ||
+    pathname.startsWith("/cierres")       ||
     pathname.startsWith("/estado")        ||
     pathname.startsWith("/deploy")
   )                                                                           return "Sistema";

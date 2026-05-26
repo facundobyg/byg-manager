@@ -7,6 +7,7 @@ import { getMesOperativo } from "@/lib/services/config.service";
 import { prisma } from "@/lib/prisma";
 import { marcarEstadoComision } from "./actions";
 import { CrearProductorForm } from "@/components/modules/comisiones/CrearProductorForm";
+import { ComisionConfigForm } from "@/components/modules/comisiones/ComisionConfigForm";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -248,9 +249,10 @@ export default async function ComisionesPage({
   const resolvedParams = await searchParams;
   const mes = resolvedParams.mes ?? (await getMesOperativo());
 
-  const [data, productores] = await Promise.all([
+  const [data, productores, comisionConfigs] = await Promise.all([
     getResumenComisiones(mes),
     prisma.productor.findMany({ where: { activo: true }, orderBy: { nombre: "asc" } }),
+    isAdmin ? prisma.comisionConfig.findMany({ orderBy: [{ productorId: "asc" }, { vigenciaDesde: "desc" }] }) : Promise.resolve([]),
   ]);
 
   const [mesY, mesM] = mes.split("-").map(Number);
@@ -307,7 +309,7 @@ export default async function ComisionesPage({
           <div className="bg-byg-surface rounded-2xl border border-byg-border p-5 flex flex-col gap-1">
             <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Pendientes de pago</p>
             <p className="text-2xl font-black tabular-nums font-mono text-red-400">
-              {data.filter((d) => d.estado !== "PAGADO").length}
+              {data.filter((d) => d.totalComisionUSD > 0 && d.estado !== "PAGADO").length}
             </p>
           </div>
           <div className="bg-byg-surface rounded-2xl border border-byg-border p-5 flex flex-col gap-1">
@@ -371,6 +373,29 @@ export default async function ComisionesPage({
           )}
 
           <CrearProductorForm />
+
+          {/* Configuración de cálculo */}
+          <div className="flex flex-col gap-3 pt-4 border-t border-byg-border/50">
+            <SectionTitle>Configuración de cálculo de comisiones</SectionTitle>
+            <p className="text-[10px] text-byg-muted">
+              Define porcentajes IIBB, SENEBI y split productor/BYG con vigencia desde una fecha.
+              El sistema usa la config vigente para cada mes calculado.
+            </p>
+            <ComisionConfigForm
+              productores={productores.map((p) => ({ id: p.id, nombre: p.nombre }))}
+              configs={comisionConfigs.map((c) => ({
+                id:             c.id,
+                productorId:    c.productorId,
+                pctProductor:   Number(c.pctProductor),
+                pctBYG:         Number(c.pctBYG),
+                pctIIBB:        Number(c.pctIIBB),
+                aplicaSenebi:   c.aplicaSenebi,
+                otrosImpuestos: Number(c.otrosImpuestos),
+                vigenciaDesde:  c.vigenciaDesde.toISOString().slice(0, 10),
+                notas:          c.notas,
+              }))}
+            />
+          </div>
         </div>
       )}
     </div>

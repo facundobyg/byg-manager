@@ -12,7 +12,7 @@ export default async function TwoFactorSetupPage() {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user!.id },
-    select: { email: true, twoFactorEnabled: true, twoFactorSecret: true },
+    select: { email: true, twoFactorEnabled: true, twoFactorSecret: true, twoFactorLastUsedAt: true },
   });
   if (!user) redirect("/configuracion");
 
@@ -32,19 +32,32 @@ export default async function TwoFactorSetupPage() {
       </header>
 
       <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/30 flex items-center gap-3">
-          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">
-            Estado actual
-          </h2>
-          <span
-            className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${
-              user.twoFactorEnabled
-                ? "bg-emerald-100 text-emerald-700"
-                : "bg-amber-100 text-amber-700"
-            }`}
-          >
-            {user.twoFactorEnabled ? "ACTIVADO" : "DESACTIVADO"}
-          </span>
+        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/30 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">
+              Estado actual
+            </h2>
+            <span
+              className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${
+                user.twoFactorEnabled
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-amber-100 text-amber-700"
+              }`}
+            >
+              {user.twoFactorEnabled ? "ACTIVADO" : "DESACTIVADO"}
+            </span>
+          </div>
+          {user.twoFactorLastUsedAt && (
+            <p className="text-[11px] text-slate-400 font-medium">
+              Último uso:{" "}
+              <span className="font-semibold text-slate-600">
+                {new Date(user.twoFactorLastUsedAt).toLocaleString("es-AR", {
+                  day: "2-digit", month: "2-digit", year: "numeric",
+                  hour: "2-digit", minute: "2-digit",
+                })}
+              </span>
+            </p>
+          )}
         </div>
 
         <div className="px-6 py-6">

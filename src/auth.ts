@@ -35,6 +35,17 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           const totpCode = ((credentials.totpCode as string) ?? "").trim();
           if (!totpCode || !user.twoFactorSecret) return null;
           if (!verifyTOTP(user.twoFactorSecret, totpCode)) return null;
+          // Record last TOTP use (fire-and-forget, non-blocking)
+          prisma.user.update({
+            where: { id: user.id },
+            data:  { twoFactorLastUsedAt: new Date() },
+          }).catch(() => {});
+          writeAuditLog({
+            userId:      user.id,
+            accion:      "TOTP_LOGIN_OK",
+            entidad:     "Auth",
+            description: `Login 2FA exitoso: ${user.email}`,
+          }).catch(() => {});
         }
 
         return { id: user.id, email: user.email, name: user.name, role: user.role };

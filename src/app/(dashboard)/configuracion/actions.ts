@@ -218,7 +218,8 @@ export async function updatePrecioActivo(
   if (isNaN(precio) || precio < 0) return { error: "Precio inválido" };
 
   try {
-    await updatePrecioActivoService(activoId, precio);
+    const session = await auth();
+    await updatePrecioActivoService(activoId, precio, session?.user?.id);
     revalidatePath("/configuracion");
     revalidatePath("/precios");
     revalidatePath("/carteras", "layout");
@@ -255,7 +256,8 @@ export async function updatePreciosActivosBatch(
   if (updates.length === 0) return { error: "No se ingresaron cambios válidos" };
 
   try {
-    await updatePreciosActivosBatchService(updates);
+    const session = await auth();
+    await updatePreciosActivosBatchService(updates, session?.user?.id);
     revalidatePath("/configuracion");
     revalidatePath("/precios");
     revalidatePath("/carteras", "layout");

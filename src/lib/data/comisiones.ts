@@ -175,6 +175,7 @@ export async function getResumenComisiones(mes: string): Promise<ProductorMesDat
 
     lineas.sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
     const totalBaseUSD = lineas.reduce((s, l) => s + l.baseTotalUSD, 0);
+    const totalComisionUSD = totalBaseUSD * pct / 100;
     const estadoRec = estadoMap.get(prod.id);
 
     results.push({
@@ -183,7 +184,7 @@ export async function getResumenComisiones(mes: string): Promise<ProductorMesDat
       estado: estadoRec?.estado ?? EstadoComision.PENDIENTE,
       lineas,
       totalBaseUSD,
-      totalComisionUSD: totalBaseUSD * pct / 100,
+      totalComisionUSD,
     });
   }
 

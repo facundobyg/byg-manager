@@ -1,12 +1,13 @@
 import { CandlestickChart } from "lucide-react";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { getMesOperativo } from "@/lib/services/config.service";
+import { getMesOperativo, getTcMepHoy, getLastTcMep } from "@/lib/services/config.service";
 import { getOperacionesMesaDiaria } from "@/lib/data/operacion-bolsa";
 import { getOperacionesBolsa } from "@/lib/data/operacion-bolsa";
 import { canDoAction } from "@/lib/auth/permissions";
 import { MesaDiariaForm } from "@/components/modules/bolsa/MesaDiariaForm";
 import { MesaDiariaTable } from "@/components/modules/bolsa/MesaDiariaTable";
+import { TcMepDiaForm } from "@/components/modules/bolsa/TcMepDiaForm";
 import { BolsaTabla } from "@/components/modules/bolsa/BolsaTabla";
 import type { BolsaRow } from "@/components/modules/bolsa/BolsaTabla";
 import { TabsNav } from "@/components/modules/bolsa/TabsNav";
@@ -44,7 +45,7 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
     .toLocaleDateString("es-AR", { month: "long", year: "numeric", timeZone: "UTC" });
 
   // Mesa Diaria data
-  const [mesaData, carteras, comitentes, lastTcMepRow, canWrite] = tab !== "historial"
+  const [mesaData, carteras, comitentes, tcMepHoyData, tcMepUltimoData, canWrite] = tab !== "historial"
     ? await Promise.all([
         getOperacionesMesaDiaria(fecha),
         prisma.cartera.findMany({
@@ -57,16 +58,13 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
           select: { id: true, nombre: true, nroComitente: true },
           orderBy: { nroComitente: "asc" },
         }),
-        prisma.operacionBolsa.findFirst({
-          where: { tcMepDia: { not: null } },
-          orderBy: { createdAt: "desc" },
-          select: { tcMepDia: true },
-        }),
+        getTcMepHoy(),
+        getLastTcMep(),
         canDoAction("bolsa:concertar"),
       ])
-    : [null, [], [], null, false];
+    : [null, [], [], null, null, false];
 
-  const tcMepDefault = lastTcMepRow?.tcMepDia != null ? Number(lastTcMepRow.tcMepDia) : null;
+  const tcMepDefault = tcMepHoyData?.valor ?? tcMepUltimoData?.valor ?? null;
 
   // Historial data (filtered by active month)
   const historialOps = tab === "historial" ? await getOperacionesBolsa(historialMes) : null;
@@ -112,6 +110,11 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
       {/* Mesa Diaria */}
       {tab !== "historial" && mesaData && (
         <>
+          <TcMepDiaForm
+            valorHoy={tcMepHoyData?.valor ?? null}
+            valorUltimo={tcMepUltimoData?.valor ?? null}
+            fechaUltima={tcMepUltimoData?.fecha ?? null}
+          />
           <MesaDiariaForm
             comitentes={comitentes}
             carteras={carteras}

@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { requirePermission } from "@/lib/auth/permissions";
-import { getTCBlue, getTCMep, getMesActivo, getSocios, getTCHistorial, getProductoresConfig, getAlycConfig } from "@/lib/services/config.service";
+import { getTCBlue, getMesActivo, getSocios, getTCHistorial, getProductoresConfig, getAlycConfig, getLastTcMep } from "@/lib/services/config.service";
 import { TcBlueForm } from "@/components/modules/configuracion/TcBlueForm";
-import { TcMepForm } from "@/components/modules/configuracion/TcMepForm";
 import { MesActivoForm } from "@/components/modules/configuracion/MesActivoForm";
 import { SociosForm } from "@/components/modules/configuracion/SociosForm";
 import { EditCarteraForm } from "@/components/modules/configuracion/EditCarteraForm";
@@ -28,9 +27,8 @@ function fmtMes(mes: string) {
 
 export default async function ConfiguracionPage() {
   await requirePermission("configuracion:leer");
-  const [tcBlueConfig, tcMepConfig, mesActivo, socios, tcHistorial, carteras, productores, cajas, alycs] = await Promise.all([
+  const [tcBlueConfig, mesActivo, socios, tcHistorial, carteras, productores, cajas, alycs, lastTcMep] = await Promise.all([
     getTCBlue(),
-    getTCMep(),
     getMesActivo(),
     getSocios(),
     getTCHistorial(),
@@ -38,6 +36,7 @@ export default async function ConfiguracionPage() {
     getProductoresConfig(),
     prisma.caja.findMany({ orderBy: { orden: "asc" } }),
     getAlycConfig(),
+    getLastTcMep(),
   ]);
 
   return (
@@ -80,17 +79,23 @@ export default async function ConfiguracionPage() {
           )}
         </section>
 
-        {/* TC MEP */}
+        {/* TC MEP — solo lectura, se carga desde Bolsa */}
         <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex flex-col gap-5">
           <div>
             <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tipo de cambio MEP</p>
             <p className="text-3xl font-black text-slate-900 tabular-nums mt-1">
-              {fmt(tcMepConfig?.valor ?? null)}
+              {lastTcMep ? lastTcMep.valor.toFixed(2) : "—"}
               <span className="text-sm font-medium text-slate-400 ml-2">ARS/USD</span>
             </p>
-            <p className="text-[10px] text-slate-400 mt-1">Usado para conversión Banco Industrial</p>
+            {lastTcMep && (
+              <p className="text-[10px] text-slate-400 mt-1">Último: {lastTcMep.fecha}</p>
+            )}
+            <p className="text-[10px] text-slate-400 mt-2">
+              El TC MEP se carga diariamente desde{" "}
+              <a href="/bolsa" className="underline text-blue-500 hover:text-blue-700">Operaciones Bolsa</a>
+              .
+            </p>
           </div>
-          <TcMepForm valorActual={tcMepConfig?.valor ?? null} />
         </section>
 
         {/* Mes operativo */}

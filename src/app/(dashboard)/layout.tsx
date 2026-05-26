@@ -1,6 +1,7 @@
 import { ReactNode } from "react";
 import { DashboardShell } from "@/components/layout/DashboardShell";
 import { Topbar } from "@/components/layout/Topbar";
+import { SessionIdleWatcher } from "@/components/layout/SessionIdleWatcher";
 import { auth } from "@/auth";
 import { readOnlyPreview, betaMode } from "@/lib/config";
 import { prisma } from "@/lib/prisma";
@@ -125,6 +126,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <main className="flex-1 overflow-y-auto p-8">
         {children}
       </main>
+      <SessionIdleWatcher />
     </DashboardShell>
   );
 }
