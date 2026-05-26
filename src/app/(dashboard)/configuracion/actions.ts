@@ -546,6 +546,41 @@ export async function updateCaja(
   }
 }
 
+export async function deleteCaja(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:cajas");
+  if (denied) return denied;
+
+  const id = formData.get("id")?.toString();
+  if (!id) return { error: "ID requerido" };
+
+  const caja = await prisma.caja.findUnique({
+    where: { id },
+    include: { _count: { select: { MovimientoCaja: true } } },
+  });
+  if (!caja) return { error: "Caja no encontrada" };
+  if (caja.esPrincipal) return { error: "La caja principal no puede ser eliminada" };
+  if (caja._count.MovimientoCaja > 0) {
+    return { error: `Tiene ${caja._count.MovimientoCaja} movimientos. Marcala como inactiva en lugar de eliminarla.` };
+  }
+
+  await prisma.caja.delete({ where: { id } });
+
+  const session = await auth();
+  await writeAuditLog({
+    userId: session?.user?.id,
+    accion: "BAJA_CAJA",
+    entidad: "Config",
+    description: `${(session?.user as any)?.name ?? "Usuario"} eliminó caja "${caja.label}"`,
+  });
+
+  revalidatePath("/configuracion");
+  revalidatePath("/caja");
+  return { ok: true };
+}
+
 // ─── Activos ──────────────────────────────────────────────────────────────────
 
 export async function createActivo(

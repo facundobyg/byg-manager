@@ -1,14 +1,17 @@
 "use client";
 
 import { useActionState, useState } from "react";
-import { setUserPermissionOverride, applyRolePreset, PERMISSION_KEYS } from "@/app/(dashboard)/permisos/actions";
-import { Shield, ShieldOff, Trash2 } from "lucide-react";
+import { setUserPermissionOverride, applyRolePreset } from "@/app/(dashboard)/permisos/actions";
+import { PERMISSION_KEYS } from "@/lib/permissions-config";
+import { Clock, Shield, ShieldOff, Trash2 } from "lucide-react";
 
 type OverrideRow = {
   id: string;
   concedido: boolean;
   modulo: string;
   accion: string;
+  temporal?: boolean;
+  fechaExpiracion?: string | null;
 };
 
 type UserRow = {
@@ -50,26 +53,34 @@ function UserCard({ user }: { user: UserRow }) {
         <div className="flex items-center gap-2">
           {user.role !== "ADMIN" && (
             <>
-              {(user.role === "SOCIO") && (
+              {user.role === "SOCIO" && (
                 <form action={presetAction}>
                   <input type="hidden" name="userId" value={user.id} />
                   <input type="hidden" name="preset" value="francisco_socio" />
                   <button type="submit" disabled={presetPending}
                     className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-50">
-                    Aplicar perfil Francisco
+                    Perfil Francisco
                   </button>
                 </form>
               )}
-              {(user.role === "EMPLEADO") && (
+              {user.role === "EMPLEADO" && (
                 <form action={presetAction}>
                   <input type="hidden" name="userId" value={user.id} />
                   <input type="hidden" name="preset" value="augusto_empleado" />
                   <button type="submit" disabled={presetPending}
                     className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors disabled:opacity-50">
-                    Aplicar perfil Augusto/Nanu
+                    Perfil Augusto/Nanu
                   </button>
                 </form>
               )}
+              <form action={presetAction}>
+                <input type="hidden" name="userId" value={user.id} />
+                <input type="hidden" name="preset" value="solo_lectura" />
+                <button type="submit" disabled={presetPending}
+                  className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-slate-50 text-slate-600 hover:bg-slate-100 border border-slate-200 transition-colors disabled:opacity-50">
+                  Solo lectura
+                </button>
+              </form>
               <form action={presetAction}>
                 <input type="hidden" name="userId" value={user.id} />
                 <input type="hidden" name="preset" value="clear" />
@@ -102,6 +113,12 @@ function UserCard({ user }: { user: UserRow }) {
                   }`}>
                     {o.concedido ? <Shield size={10} /> : <ShieldOff size={10} />}
                     {o.modulo}:{o.accion}
+                    {o.temporal && (
+                      <span className="flex items-center gap-0.5 text-amber-600">
+                        <Clock size={9} />
+                        {o.fechaExpiracion ? new Date(o.fechaExpiracion).toLocaleDateString("es-AR", { day:"2-digit", month:"2-digit" }) : "temp"}
+                      </span>
+                    )}
                     <form action={overrideAction} className="inline">
                       <input type="hidden" name="userId"  value={user.id} />
                       <input type="hidden" name="modulo"  value={o.modulo} />

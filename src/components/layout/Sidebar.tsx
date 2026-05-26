@@ -336,8 +336,16 @@ function NavSection({
       {isOpen && (
         <div className="flex flex-col gap-0.5">
           {section.items.map((item) => {
-            const Icon   = item.icon;
-            const active = pathname === item.href || pathname.startsWith(item.href + "/");
+            const Icon        = item.icon;
+            const isExact     = pathname === item.href;
+            const isPrefix    = pathname.startsWith(item.href + "/");
+            const betterMatch = isPrefix && section.items.some(
+              (other) =>
+                other.href !== item.href &&
+                other.href.length > item.href.length &&
+                (pathname === other.href || pathname.startsWith(other.href + "/")),
+            );
+            const active = isExact || (isPrefix && !betterMatch);
             return (
               <Link
                 key={item.href}

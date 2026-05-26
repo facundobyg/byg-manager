@@ -1,0 +1,28 @@
+export const PERMISSION_KEYS = [
+  { key: "bolsa:crear",               label: "Bolsa — crear op" },
+  { key: "bolsa:concertar",           label: "Bolsa — concertar" },
+  { key: "bolsa:anular",              label: "Bolsa — anular op" },
+  { key: "bolsa:transferir_custodia", label: "Bolsa — transferir a custodia" },
+  { key: "holdings:comprar",          label: "Holdings — comprar" },
+  { key: "holdings:vender",           label: "Holdings — vender" },
+  { key: "holdings:editar",           label: "Holdings — editar" },
+  { key: "caja:operar_oficina",       label: "Caja — operar Oficina" },
+  { key: "caja:operar_trenque",       label: "Caja — operar Trenque" },
+  { key: "caja:editar_movimiento",    label: "Caja — editar movimiento" },
+  { key: "caja:eliminar_movimiento",  label: "Caja — eliminar movimiento" },
+  { key: "caja:transferir",           label: "Caja — transferir entre cajas" },
+  { key: "operativa:crear",           label: "Operativa — crear" },
+  { key: "operativa:eliminar",        label: "Operativa — eliminar" },
+  { key: "cc:crear_movimiento",       label: "CC — crear movimiento" },
+  { key: "cc:intereses",              label: "CC — aplicar intereses" },
+  { key: "cc:eliminar_movimiento",    label: "CC — eliminar movimiento" },
+  { key: "clientes:crear",            label: "Clientes — crear" },
+  { key: "clientes:editar",           label: "Clientes — editar" },
+  { key: "clientes:eliminar",         label: "Clientes — eliminar" },
+  { key: "pf:crear",                  label: "PF — crear" },
+  { key: "pf:editar",                 label: "PF — editar" },
+  { key: "configuracion:editar",      label: "Configuración — editar" },
+  { key: "saldos:editar",             label: "Saldos — editar" },
+] as const;
+
+export type PermissionKey = typeof PERMISSION_KEYS[number]["key"];

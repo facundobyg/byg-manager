@@ -3,48 +3,58 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { Moneda } from "@prisma/client";
 
 export async function getExposicionPorCliente() {
-  const clientes = await prisma.cliente.findMany({
-    where: { activo: true },
-    orderBy: { nombre: "asc" },
-    select: {
-      id: true,
-      nombre: true,
-      CuentaCorriente: { select: { saldo: true } },
-      PlazoFijo: { where: { estado: "ACTIVO" }, select: { capital: true } },
-      CustodiaCliente: { select: { cantidadTotal: true, precioPromedio: true, Activo: { select: { precioActual: true } } } },
-    },
-  });
+  const [clientes, tcConfig] = await Promise.all([
+    prisma.cliente.findMany({
+      where: { activo: true },
+      orderBy: { nombre: "asc" },
+      select: {
+        id: true,
+        nombre: true,
+        CuentaCorriente: { select: { saldo: true, moneda: true } },
+        PlazoFijo: { where: { estado: "ACTIVO" }, select: { capital: true, moneda: true } },
+        CustodiaCliente: { select: { cantidadTotal: true, precioPromedio: true, Activo: { select: { precioActual: true } } } },
+      },
+    }),
+    prisma.config.findUnique({ where: { clave: "tc_blue" } }),
+  ]);
+
+  const tcBlue = tcConfig?.valor ? Number(tcConfig.valor) : 1;
 
   const rows = clientes.map((c) => {
-    const ccSaldo = c.CuentaCorriente.reduce(
-      (acc, cc) => acc.plus(new Decimal(cc.saldo.toString())),
-      new Decimal(0),
-    );
-    const plazosFijos = c.PlazoFijo.reduce(
-      (acc, pf) => acc.plus(new Decimal(pf.capital.toString())),
-      new Decimal(0),
-    );
-    const custodia = c.CustodiaCliente.reduce((acc, cu) => {
-      const precio = cu.Activo.precioActual != null
-        ? new Decimal(cu.Activo.precioActual.toString())
-        : new Decimal(cu.precioPromedio.toString());
-      return acc.plus(new Decimal(cu.cantidadTotal.toString()).mul(precio));
-    }, new Decimal(0));
+    // Convert each CC balance to USD eq — ARS / tcBlue, USD as-is
+    const ccSaldoUSD = c.CuentaCorriente.reduce((acc, cc) => {
+      const saldo = Number(cc.saldo);
+      return acc + (cc.moneda === "ARS" ? saldo / tcBlue : saldo);
+    }, 0);
 
-    const exposicionTotal = ccSaldo.abs().plus(plazosFijos).plus(custodia);
+    // Same for PF capital
+    const plazosFijosUSD = c.PlazoFijo.reduce((acc, pf) => {
+      const capital = Number(pf.capital);
+      return acc + (pf.moneda === "ARS" ? capital / tcBlue : capital);
+    }, 0);
+
+    // Custodia always in USD (activo prices are USD)
+    const custodiaUSD = c.CustodiaCliente.reduce((acc, cu) => {
+      const precio = cu.Activo.precioActual != null
+        ? Number(cu.Activo.precioActual)
+        : Number(cu.precioPromedio);
+      return acc + Number(cu.cantidadTotal) * precio;
+    }, 0);
+
+    const exposicionTotal = Math.abs(ccSaldoUSD) + plazosFijosUSD + custodiaUSD;
 
     const estado: "NORMAL" | "ATENCION" | "RIESGO" =
-      ccSaldo.lt(0) ? "RIESGO" :
-      plazosFijos.gt(0) ? "ATENCION" :
+      ccSaldoUSD < 0 ? "RIESGO" :
+      plazosFijosUSD > 0 ? "ATENCION" :
       "NORMAL";
 
     return {
       clienteId:       c.id,
       clienteNombre:   c.nombre,
-      ccSaldo:         Number(ccSaldo),
-      plazosFijos:     Number(plazosFijos),
-      custodia:        Number(custodia),
-      exposicionTotal: Number(exposicionTotal),
+      ccSaldo:         ccSaldoUSD,
+      plazosFijos:     plazosFijosUSD,
+      custodia:        custodiaUSD,
+      exposicionTotal,
       estado,
     };
   });

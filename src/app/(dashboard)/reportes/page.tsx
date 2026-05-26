@@ -531,7 +531,7 @@ export default async function ReportesPage() {
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
-                {["Cliente", "CC", "PF", "Custodia", "Exposición", ""].map((h, i) => (
+                {["Cliente", "CC (USD eq.)", "PF (USD eq.)", "Custodia", "Total USD eq.", ""].map((h, i) => (
                   <th
                     key={`ec-${i}`}
                     className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 ${i === 0 || i === 5 ? "text-left" : "text-right"}`}

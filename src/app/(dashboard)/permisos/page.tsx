@@ -2,6 +2,8 @@ import { requirePermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { UserRole } from "@prisma/client";
 import { UserPermisosManager } from "@/components/modules/permisos/UserPermisosManager";
+import { CrearUsuarioForm } from "@/components/modules/permisos/CrearUsuarioForm";
+import { TemporalPermisoForm } from "@/components/modules/permisos/TemporalPermisoForm";
 
 const ROLE_LABEL: Record<UserRole, string> = {
   ADMIN:    "Admin",
@@ -59,6 +61,8 @@ export default async function PermisosPage() {
           select: {
             id: true,
             concedido: true,
+            temporal: true,
+            fechaExpiracion: true,
             Permiso: { select: { modulo: true, accion: true } },
           },
         },
@@ -159,6 +163,22 @@ export default async function PermisosPage() {
         </p>
       </section>
 
+      {/* Crear usuario */}
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Gestión de usuarios</h2>
+        </div>
+        <CrearUsuarioForm />
+      </section>
+
+      {/* Permiso temporal */}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Permisos temporales</h2>
+        <TemporalPermisoForm
+          users={usersWithOverrides.map((u) => ({ id: u.id, name: u.name ?? "—", role: u.role }))}
+        />
+      </section>
+
       {/* Per-user permission overrides */}
       <section className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
@@ -174,10 +194,12 @@ export default async function PermisosPage() {
             name: u.name,
             role: u.role,
             overrides: u.UserPermiso.map((up) => ({
-              id:       up.id,
-              concedido: up.concedido,
-              modulo:   up.Permiso.modulo,
-              accion:   up.Permiso.accion,
+              id:              up.id,
+              concedido:       up.concedido,
+              modulo:          up.Permiso.modulo,
+              accion:          up.Permiso.accion,
+              temporal:        up.temporal,
+              fechaExpiracion: up.fechaExpiracion?.toISOString() ?? null,
             })),
           }))}
         />
