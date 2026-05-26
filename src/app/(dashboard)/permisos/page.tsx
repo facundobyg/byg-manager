@@ -5,6 +5,7 @@ import { UserPermisosManager } from "@/components/modules/permisos/UserPermisosM
 import { CrearUsuarioForm } from "@/components/modules/permisos/CrearUsuarioForm";
 import { TemporalPermisoForm } from "@/components/modules/permisos/TemporalPermisoForm";
 import { AdminResetPasswordForm } from "@/components/modules/permisos/AdminResetPasswordForm";
+import { AdminEditUserForm } from "@/components/modules/permisos/AdminEditUserForm";
 
 const ROLE_LABEL: Record<UserRole, string> = {
   ADMIN:    "Admin",
@@ -50,7 +51,7 @@ export default async function PermisosPage() {
   const [users, usersWithOverrides] = await Promise.all([
     prisma.user.findMany({
       orderBy: { name: "asc" },
-      select: { id: true, name: true, email: true, role: true, activo: true },
+      select: { id: true, name: true, email: true, role: true, activo: true, image: true },
     }),
     prisma.user.findMany({
       orderBy: { name: "asc" },
@@ -170,6 +171,14 @@ export default async function PermisosPage() {
           <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Gestión de usuarios</h2>
         </div>
         <CrearUsuarioForm />
+      </section>
+
+      {/* Editar datos de usuario */}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Editar usuario</h2>
+        <AdminEditUserForm
+          users={users.map((u) => ({ id: u.id, name: u.name, email: u.email, activo: u.activo, image: u.image }))}
+        />
       </section>
 
       {/* Reset contraseña */}

@@ -244,6 +244,51 @@ export async function createUser(
   return { ok: true };
 }
 
+export async function adminUpdateUserProfile(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
+  const targetUserId = formData.get("userId")?.toString();
+  const name         = formData.get("name")?.toString().trim();
+  const email        = formData.get("email")?.toString().trim().toLowerCase();
+  const activoStr    = formData.get("activo")?.toString();
+  const image        = formData.get("image")?.toString().trim() || null;
+
+  if (!targetUserId || !name || !email) return { error: "Faltan datos obligatorios" };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: "Email inválido" };
+  if (image && !/^https?:\/\/.+/.test(image)) return { error: "URL de avatar inválida" };
+
+  const target = await prisma.user.findUnique({ where: { id: targetUserId } });
+  if (!target) return { error: "Usuario no encontrado" };
+
+  if (email !== target.email) {
+    const exists = await prisma.user.findUnique({ where: { email } });
+    if (exists) return { error: "Ese email ya está en uso" };
+  }
+
+  const activo = activoStr === "true";
+
+  await prisma.user.update({
+    where: { id: targetUserId },
+    data:  { name, email, activo, image, updatedAt: new Date() },
+  });
+
+  const session = await auth();
+  await writeAuditLog({
+    userId:      session?.user?.id,
+    accion:      "UPDATE_USER_PROFILE",
+    entidad:     "User",
+    entidadId:   targetUserId,
+    description: `${(session?.user as any)?.name ?? "Admin"} editó perfil de ${target.name} (${target.email})`,
+  });
+
+  revalidatePath("/permisos");
+  return { ok: true };
+}
+
 export async function adminResetPassword(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,

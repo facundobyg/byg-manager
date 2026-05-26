@@ -20,6 +20,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   let allowedPermissions: string[] | null = null;
   let notifications: AppNotification[] = [];
   let mustChangePassword = false;
+  let userImage: string | null = null;
 
   try {
     const results = await Promise.allSettled([
@@ -69,9 +70,10 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     if (session?.user?.id) {
       const u = await prisma.user.findUnique({
         where:  { id: session.user.id },
-        select: { mustChangePassword: true },
+        select: { mustChangePassword: true, image: true },
       });
       mustChangePassword = u?.mustChangePassword ?? false;
+      userImage = u?.image ?? null;
     }
   } catch (error) {
     console.error("DashboardLayout: Error loading sidebar data", error);
@@ -91,6 +93,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <Topbar
         userName={session?.user?.name}
         userRole={session?.user?.role}
+        userImage={userImage}
         isAdmin={isAdmin}
         previewUsers={previewUsers}
         currentPreviewId={currentPreviewId}

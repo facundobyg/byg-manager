@@ -1,15 +1,17 @@
 import { signOut } from "@/auth";
-import { LogOut, User } from "lucide-react";
+import { LogOut } from "lucide-react";
 import Link from "next/link";
 import { VerComoSelector } from "./VerComoSelector";
 import { CommandPaletteTrigger } from "./CommandPaletteTrigger";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationsDropdown } from "./NotificationsDropdown";
+import { UserAvatar } from "@/components/modules/cuenta/UserAvatar";
 import type { AppNotification } from "@/lib/data/notifications";
 
 export function Topbar({
   userName,
   userRole,
+  userImage,
   isAdmin,
   previewUsers,
   currentPreviewId,
@@ -17,6 +19,7 @@ export function Topbar({
 }: {
   userName?: string | null;
   userRole?: string | null;
+  userImage?: string | null;
   isAdmin?: boolean;
   previewUsers?: { id: string; name: string }[];
   currentPreviewId?: string | null;
@@ -51,9 +54,9 @@ export function Topbar({
         <Link
           href="/configuracion/mi-cuenta"
           title="Mi cuenta"
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-byg-accent/10 text-byg-accent transition-colors hover:bg-byg-accent/20"
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-byg-accent/10 text-byg-accent transition-colors hover:bg-byg-accent/20 overflow-hidden"
         >
-          <User size={18} />
+          <UserAvatar image={userImage} name={userName} iconSize={18} />
         </Link>
 
         <NotificationsDropdown notifications={notifications} />
