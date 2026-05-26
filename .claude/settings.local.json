@@ -238,7 +238,15 @@
       "Read(//c/Users/Facundo Giovini/AppData/Local/**)",
       "Bash(curl -s http://localhost:2023/login)",
       "Bash(curl -sI --max-time 8 http://localhost:2023__TRACKED_VAR__)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(git push *)",
+      "Bash(echo \"Dev server PID: $!\")",
+      "Bash(echo \"started pid=$!\")",
+      "Bash(tail -20 /tmp/dev2.log)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:2023/permisos)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:2023/configuracion)",
+      "PowerShell(cd \"C:\\\\Users\\\\Facundo Giovini\\\\OneDrive\\\\Desktop\\\\IA\\\\Antigravity\\\\Proyecto BYG\"; $proc = Start-Process -FilePath \"npm\" -ArgumentList \"run\",\"dev\",\"--\",\"--port\",\"2023\" -PassThru -NoNewWindow; Start-Sleep -Seconds 8; $proc.Id)",
+      "PowerShell(cd \"C:\\\\Users\\\\Facundo Giovini\\\\OneDrive\\\\Desktop\\\\IA\\\\Antigravity\\\\Proyecto BYG\"; Start-Process powershell -ArgumentList \"-NoExit\",\"-Command\",\"npm run dev -- --port 2023\" -WindowStyle Normal)"
     ],
     "additionalDirectories": [
       "c:\\Users\\Facundo Giovini\\OneDrive\\Desktop\\IA\\Antigravity\\Proyecto BYG\\src\\app\\(print)\\print\\clientes",

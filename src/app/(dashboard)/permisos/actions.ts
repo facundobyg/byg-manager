@@ -244,6 +244,46 @@ export async function createUser(
   return { ok: true };
 }
 
+export async function adminResetPassword(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
+  const targetUserId    = formData.get("userId")?.toString();
+  const newPassword     = formData.get("newPassword")?.toString();
+  const confirmPassword = formData.get("confirmPassword")?.toString();
+
+  if (!targetUserId || !newPassword || !confirmPassword) return { error: "Faltan datos" };
+  if (newPassword.length < 8) return { error: "Mínimo 8 caracteres" };
+  if (newPassword !== confirmPassword) return { error: "Las contraseñas no coinciden" };
+
+  const target = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { id: true, name: true, email: true },
+  });
+  if (!target) return { error: "Usuario no encontrado" };
+
+  const passwordHash = await bcrypt.hash(newPassword, 12);
+  await prisma.user.update({
+    where: { id: targetUserId },
+    data: { passwordHash, mustChangePassword: true, updatedAt: new Date() },
+  });
+
+  const session = await auth();
+  await writeAuditLog({
+    userId:      session?.user?.id,
+    accion:      "RESET_PASSWORD",
+    entidad:     "User",
+    entidadId:   targetUserId,
+    description: `${(session?.user as any)?.name ?? "Admin"} reseteó contraseña de ${target.name} (${target.email})`,
+  });
+
+  revalidatePath("/permisos");
+  return { ok: true };
+}
+
 export async function updateUserRole(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,

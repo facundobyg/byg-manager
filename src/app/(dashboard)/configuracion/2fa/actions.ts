@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { generateTOTPSecret, verifyTOTP } from "@/lib/auth/totp";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { writeAuditLog } from "@/lib/services/audit.service";
 
 type ActionResult = { success: true } | { error: string };
 
@@ -39,6 +40,7 @@ export async function confirmEnable2FA(_prev: unknown, formData: FormData): Prom
     where: { id: user.id },
     data: { twoFactorEnabled: true },
   });
+  await writeAuditLog({ accion: "ENABLE_2FA", entidad: "Auth", userId: user.id, description: `2FA activado: ${user.email}` });
   revalidatePath("/configuracion/2fa");
   return { success: true };
 }
@@ -55,6 +57,7 @@ export async function disable2FA(_prev: unknown, formData: FormData): Promise<Ac
     where: { id: user.id },
     data: { twoFactorEnabled: false, twoFactorSecret: null },
   });
+  await writeAuditLog({ accion: "DISABLE_2FA", entidad: "Auth", userId: user.id, description: `2FA desactivado: ${user.email}` });
   revalidatePath("/configuracion/2fa");
   return { success: true };
 }

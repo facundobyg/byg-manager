@@ -19,6 +19,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   let currentPreviewId: string | null = null;
   let allowedPermissions: string[] | null = null;
   let notifications: AppNotification[] = [];
+  let mustChangePassword = false;
 
   try {
     const results = await Promise.allSettled([
@@ -64,6 +65,14 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       }
     }
     notifications = await getNotifications(allowedPermissions);
+
+    if (session?.user?.id) {
+      const u = await prisma.user.findUnique({
+        where:  { id: session.user.id },
+        select: { mustChangePassword: true },
+      });
+      mustChangePassword = u?.mustChangePassword ?? false;
+    }
   } catch (error) {
     console.error("DashboardLayout: Error loading sidebar data", error);
   }
@@ -100,6 +109,14 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       {betaMode && (
         <div className="bg-blue-700 text-white text-[11px] font-bold text-center py-1 tracking-[0.2em] uppercase shrink-0">
           BETA PRIVADA · v2.0 · acceso restringido
+        </div>
+      )}
+      {mustChangePassword && (
+        <div className="bg-red-600 text-white text-[11px] font-bold text-center py-1 tracking-[0.15em] uppercase shrink-0">
+          Debés cambiar tu contraseña —{" "}
+          <a href="/configuracion/mi-cuenta" className="underline hover:opacity-80">
+            Cambiar ahora
+          </a>
         </div>
       )}
       <main className="flex-1 overflow-y-auto p-8">

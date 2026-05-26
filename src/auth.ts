@@ -7,6 +7,7 @@ const bcrypt = require("bcryptjs") as {
 import { prisma } from "@/lib/prisma";
 import { authConfig } from "@/auth.config";
 import { verifyTOTP } from "@/lib/auth/totp";
+import { writeAuditLog } from "@/lib/services/audit.service";
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
   ...authConfig,
@@ -56,5 +57,36 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       return session;
     }
   },
-  session: { strategy: "jwt" }
+  session: {
+    strategy:   "jwt",
+    maxAge:     8 * 60 * 60,  // 8 hours
+    updateAge:  1 * 60 * 60,  // refresh token every 1 hour
+  },
+  cookies: {
+    sessionToken: {
+      options: {
+        httpOnly: true,
+        sameSite: "lax",
+        path:     "/",
+        secure:   process.env.NODE_ENV === "production",
+      },
+    },
+  },
+  events: {
+    async signIn({ user }) {
+      await writeAuditLog({
+        accion:      "LOGIN_OK",
+        entidad:     "Auth",
+        userId:      user.id,
+        description: `Login exitoso: ${user.email}`,
+      });
+    },
+    async signOut() {
+      await writeAuditLog({
+        accion:      "LOGOUT",
+        entidad:     "Auth",
+        description: "Sesión cerrada",
+      });
+    },
+  },
 });

@@ -4,6 +4,7 @@ import { UserRole } from "@prisma/client";
 import { UserPermisosManager } from "@/components/modules/permisos/UserPermisosManager";
 import { CrearUsuarioForm } from "@/components/modules/permisos/CrearUsuarioForm";
 import { TemporalPermisoForm } from "@/components/modules/permisos/TemporalPermisoForm";
+import { AdminResetPasswordForm } from "@/components/modules/permisos/AdminResetPasswordForm";
 
 const ROLE_LABEL: Record<UserRole, string> = {
   ADMIN:    "Admin",
@@ -169,6 +170,14 @@ export default async function PermisosPage() {
           <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Gestión de usuarios</h2>
         </div>
         <CrearUsuarioForm />
+      </section>
+
+      {/* Reset contraseña */}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Reset contraseña</h2>
+        <AdminResetPasswordForm
+          users={users.map((u) => ({ id: u.id, name: u.name }))}
+        />
       </section>
 
       {/* Permiso temporal */}

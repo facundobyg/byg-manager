@@ -1,5 +1,6 @@
 import { signOut } from "@/auth";
 import { LogOut, User } from "lucide-react";
+import Link from "next/link";
 import { VerComoSelector } from "./VerComoSelector";
 import { CommandPaletteTrigger } from "./CommandPaletteTrigger";
 import { ThemeToggle } from "./ThemeToggle";
@@ -47,9 +48,13 @@ export function Topbar({
           <span className="text-xs font-medium text-byg-muted">{userRole}</span>
         </div>
 
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-byg-accent/10 text-byg-accent">
+        <Link
+          href="/configuracion/mi-cuenta"
+          title="Mi cuenta"
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-byg-accent/10 text-byg-accent transition-colors hover:bg-byg-accent/20"
+        >
           <User size={18} />
-        </div>
+        </Link>
 
         <NotificationsDropdown notifications={notifications} />
         <ThemeToggle />
