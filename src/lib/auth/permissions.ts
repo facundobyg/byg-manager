@@ -109,12 +109,19 @@ export async function requireActionPermission(
 
 /**
  * For server components — returns boolean to conditionally render UI.
- * Fast: only checks static matrix, no DB hit.
+ * Checks the same user-level DB override as requireActionPermission (no audit log),
+ * so buttons stay consistent with what the server action will actually allow.
  */
 export async function canDoAction(permissionKey: string): Promise<boolean> {
   const session = await auth();
   if (!session?.user?.id) return false;
   const role = (session.user as { role?: UserRole }).role ?? "CLIENTE";
+
+  if (role === "ADMIN") return true;
+
+  const userOverride = await checkUserLevelOverride(session.user.id, permissionKey);
+  if (userOverride !== null) return userOverride;
+
   return checkActionRole(role, permissionKey);
 }
 

@@ -10,12 +10,14 @@ interface Movimiento {
   descripcion?: string | null;
 }
 
-export function MovimientoCuentaCorrienteTable({ 
-  movimientos, 
-  saldoActual 
-}: { 
-  movimientos: Movimiento[], 
-  saldoActual: Decimal | number 
+export function MovimientoCuentaCorrienteTable({
+  movimientos,
+  saldoActual,
+  canRevertir = true,
+}: {
+  movimientos: Movimiento[],
+  saldoActual: Decimal | number,
+  canRevertir?: boolean,
 }) {
   const formatCurrency = (val: Decimal | number) =>
     Number(val).toLocaleString("es-AR", {
@@ -98,7 +100,7 @@ export function MovimientoCuentaCorrienteTable({
                     {formatCurrency(mov.saldoProgresivo)}
                   </td>
                   <td className="px-4 py-3.5 text-right">
-                    {!mov.descripcion?.includes("[REVERSO") && (
+                    {canRevertir && !mov.descripcion?.includes("[REVERSO") && (
                       <RevertirMovCCButton id={mov.id} />
                     )}
                   </td>

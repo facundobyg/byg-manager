@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { Archive, Trash2, AlertTriangle } from "lucide-react";
 import { darDeBajaCliente, eliminarCliente, eliminarClienteConDatos } from "@/app/(dashboard)/clientes/actions";
 
-export function ClienteAdminActions({ clienteId }: { clienteId: string }) {
+export function ClienteAdminActions({
+  clienteId, canEditar, canEliminar,
+}: { clienteId: string; canEditar: boolean; canEliminar: boolean }) {
   const router = useRouter();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmForce,  setConfirmForce]  = useState(false);
@@ -17,22 +19,26 @@ export function ClienteAdminActions({ clienteId }: { clienteId: string }) {
   useEffect(() => { if (deleteState?.ok)  { window.location.href = "/clientes/cc"; } }, [deleteState]);
   useEffect(() => { if (forceState?.ok)   { window.location.href = "/clientes/cc"; } }, [forceState]);
 
+  if (!canEditar && !canEliminar) return null;
+
   return (
     <div className="flex flex-col items-end gap-2 shrink-0">
       <div className="flex items-center gap-2">
-        <form action={archiveAction}>
-          <input type="hidden" name="id" value={clienteId} />
-          <button
-            type="submit"
-            disabled={archivePending}
-            className="inline-flex items-center gap-1.5 text-[10px] font-black px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors uppercase tracking-wider border border-amber-200 disabled:opacity-50"
-          >
-            <Archive size={11} />
-            {archivePending ? "Archivando…" : "Archivar"}
-          </button>
-        </form>
+        {canEditar && (
+          <form action={archiveAction}>
+            <input type="hidden" name="id" value={clienteId} />
+            <button
+              type="submit"
+              disabled={archivePending}
+              className="inline-flex items-center gap-1.5 text-[10px] font-black px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors uppercase tracking-wider border border-amber-200 disabled:opacity-50"
+            >
+              <Archive size={11} />
+              {archivePending ? "Archivando…" : "Archivar"}
+            </button>
+          </form>
+        )}
 
-        {!confirmDelete ? (
+        {!canEliminar ? null : !confirmDelete ? (
           <button
             onClick={() => setConfirmDelete(true)}
             className="inline-flex items-center gap-1.5 text-[10px] font-black px-3 py-1.5 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors uppercase tracking-wider border border-red-200"

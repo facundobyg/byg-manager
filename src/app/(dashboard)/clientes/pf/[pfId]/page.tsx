@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ChevronLeft, TrendingUp, Calendar, Target, Clock } from "lucide-react";
 import { EditarPFForm } from "@/components/modules/clientes/EditarPFForm";
+import { canDoAction } from "@/lib/auth/permissions";
 
 type PageProps = { params: Promise<{ pfId: string }> };
 
@@ -50,7 +51,10 @@ const TIPO_BADGE: Record<string, string> = {
 
 export default async function PFDetailPage({ params }: PageProps) {
   const { pfId } = await params;
-  const pf = await getPlazoFijoById(pfId);
+  const [pf, canEditarPF] = await Promise.all([
+    getPlazoFijoById(pfId),
+    canDoAction("pf:editar"),
+  ]);
   if (!pf) notFound();
 
   const clienteId    = pf.clienteId;
@@ -246,16 +250,18 @@ export default async function PFDetailPage({ params }: PageProps) {
       </section>
 
       {/* Edit PF */}
-      <EditarPFForm
-        pfId={pfId}
-        clienteId={clienteId}
-        capital={capital}
-        tasaAnual={tasa}
-        fechaInicio={fechaInicioISO}
-        fechaVencimiento={fechaVencimientoISO}
-        saldoActual={saldoActual}
-        estado={pf.estado}
-      />
+      {canEditarPF && (
+        <EditarPFForm
+          pfId={pfId}
+          clienteId={clienteId}
+          capital={capital}
+          tasaAnual={tasa}
+          fechaInicio={fechaInicioISO}
+          fechaVencimiento={fechaVencimientoISO}
+          saldoActual={saldoActual}
+          estado={pf.estado}
+        />
+      )}
 
     </div>
   );

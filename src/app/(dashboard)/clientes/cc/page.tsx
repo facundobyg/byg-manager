@@ -1,4 +1,4 @@
-import { requirePermission } from "@/lib/auth/permissions";
+import { requirePermission, canDoAction } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import { Users } from "lucide-react";
@@ -31,7 +31,7 @@ function fmtPct(n: number) {
 
 export default async function ClientesCCPage() {
   await requirePermission("cuentas_corrientes:leer");
-  const [clientes, archivados, tcBlueRow, deMap, socios] = await Promise.all([
+  const [clientes, archivados, tcBlueRow, deMap, socios, canCrear, canEditar] = await Promise.all([
     prisma.cliente.findMany({
       where: { activo: true },
       orderBy: { nombre: "asc" },
@@ -48,6 +48,8 @@ export default async function ClientesCCPage() {
     getTCBlue(),
     getClienteDeMap(),
     getSocios(),
+    canDoAction("clientes:crear"),
+    canDoAction("clientes:editar"),
   ]);
 
   const tcBlue  = tcBlueRow ? parseFloat(tcBlueRow.valor) : null;
@@ -115,7 +117,7 @@ export default async function ClientesCCPage() {
             <p className="text-byg-muted font-medium text-sm">Cuentas corrientes y plazos fijos</p>
           </div>
         </div>
-        <NuevoClienteForm socios={socios.map(s => s.nombre)} />
+        {canCrear && <NuevoClienteForm socios={socios.map(s => s.nombre)} />}
       </header>
 
       {/* Summary cards */}
@@ -309,7 +311,7 @@ export default async function ClientesCCPage() {
                         >
                           Ver historial
                         </Link>
-                        <ReactivarClienteButton clienteId={c.id} />
+                        {canEditar && <ReactivarClienteButton clienteId={c.id} />}
                       </div>
                     </td>
                   </tr>

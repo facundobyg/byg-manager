@@ -87,11 +87,13 @@ function SectionHeader({ label, count, right }: { label: string; count?: number;
 export default async function ClienteDetailPage({ params }: PageProps) {
   await requirePermission("clientes:leer");
   const { id } = await params;
-  const [cliente, deMap, canWriteCC, canWritePF, productores] = await Promise.all([
+  const [cliente, deMap, canWriteCC, canWritePF, canEditarCliente, canEliminarCliente, productores] = await Promise.all([
     getClienteById(id),
     getClienteDeMap(),
     canDoAction("cc:crear_movimiento"),
     canDoAction("pf:crear"),
+    canDoAction("clientes:editar"),
+    canDoAction("clientes:eliminar"),
     prisma.productor.findMany({ where: { activo: true }, orderBy: { nombre: "asc" } }),
   ]);
   if (!cliente) notFound();
@@ -190,7 +192,7 @@ export default async function ClienteDetailPage({ params }: PageProps) {
             <FileText size={11} />
             PDF
           </Link>
-          <ClienteAdminActions clienteId={cliente.id} />
+          <ClienteAdminActions clienteId={cliente.id} canEditar={canEditarCliente} canEliminar={canEliminarCliente} />
           {productores.length > 0 && (
             <div className="flex flex-col items-end gap-1">
               <p className="text-[9px] font-black uppercase tracking-widest text-byg-muted">Productor</p>

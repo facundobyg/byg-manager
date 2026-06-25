@@ -28,9 +28,10 @@ function fmt(v: { toString(): string } | null | undefined) {
 export default async function CuentaCorrienteDetailPage({ params }: PageProps) {
   const { id, cuentaId } = await params;
 
-  const [cuenta, canWrite, session] = await Promise.all([
+  const [cuenta, canWrite, canRevertir, session] = await Promise.all([
     getMovimientosCuentaCorriente(cuentaId),
     canDoAction("cc:crear_movimiento"),
+    canDoAction("cc:eliminar_movimiento"),
     auth(),
   ]);
   const isAdmin = (session?.user as { role?: string })?.role === "ADMIN";
@@ -171,6 +172,7 @@ export default async function CuentaCorrienteDetailPage({ params }: PageProps) {
           <MovimientoCuentaCorrienteTable
             movimientos={cuenta.MovimientoCC}
             saldoActual={cuenta.saldo}
+            canRevertir={canRevertir}
           />
         </section>
       </div>
