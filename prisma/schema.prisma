@@ -177,6 +177,24 @@ model Config {
   updatedAt DateTime
 }
 
+// Overrides manuales de ticker BYG -> símbolo real de Data912, para los
+// casos donde las reglas automáticas no alcanzan o son ambiguas (Módulo 4.1).
+model PriceTickerAlias {
+  id              String           @id
+  bygTicker       String
+  bygCategory     CategoriaActivo?
+  data912Endpoint String
+  data912Symbol   String
+  enabled         Boolean          @default(true)
+  note            String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([bygTicker, data912Endpoint])
+  @@index([bygTicker])
+  @@index([data912Endpoint, data912Symbol])
+}
+
 model CuentaCorriente {
   id           String         @id
   clienteId    String
