@@ -20,10 +20,10 @@ export function NuevoDivInteresForm() {
   const cuentas = CUENTAS_OPERATIVAS_ACTUALES;
 
   return (
-    <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col relative">
+    <section className="bg-byg-surface rounded-2xl border border-byg-border shadow-sm overflow-hidden flex flex-col relative">
       <div className="absolute top-0 left-0 w-1 h-full bg-amber-500"></div>
-      <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/30">
-        <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800 flex items-center gap-2">
+      <div className="px-6 py-4 border-b border-byg-border bg-byg-bg/50">
+        <h2 className="text-[12px] font-bold uppercase tracking-widest text-byg-text flex items-center gap-2">
           <Coins size={14} className="text-amber-500" />
           Registrar Dividendo / Interés
         </h2>
@@ -33,37 +33,37 @@ export function NuevoDivInteresForm() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           {/* Fecha */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Fecha</label>
+            <label className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Fecha</label>
             <input
               name="fecha"
               type="date"
               required
               defaultValue={new Date().toISOString().split("T")[0]}
-              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-100"
+              className="bg-byg-bg border border-byg-border rounded-xl px-3 py-2 text-sm text-byg-text focus:outline-none focus:ring-2 focus:ring-amber-100"
             />
           </div>
 
           {/* Ticker */}
           <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Ticker</label>
+            <label className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Ticker</label>
             <input
               name="ticker"
               type="text"
               required
               placeholder="Ej: AL30, AAPL, AMZ"
-              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-100 uppercase font-black"
+              className="bg-byg-bg border border-byg-border rounded-xl px-3 py-2 text-sm text-byg-text focus:outline-none focus:ring-2 focus:ring-amber-100 uppercase font-black"
             />
           </div>
 
           {/* Descripción */}
           <div className="flex flex-col gap-1.5 md:col-span-2">
-            <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Descripción</label>
+            <label className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Descripción</label>
             <input
               name="descripcion"
               type="text"
               required
               placeholder="Ej: Cobro Cupón AL30..."
-              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-100"
+              className="bg-byg-bg border border-byg-border rounded-xl px-3 py-2 text-sm text-byg-text focus:outline-none focus:ring-2 focus:ring-amber-100"
             />
           </div>
         </div>
@@ -71,27 +71,27 @@ export function NuevoDivInteresForm() {
         {/* Cuentas Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {cuentas.map((cuenta) => (
-            <div key={cuenta} className="bg-amber-50/20 border border-amber-100/50 rounded-2xl p-4 flex flex-col gap-4">
-              <p className="text-[11px] font-black uppercase tracking-widest text-slate-900 border-b border-amber-200 pb-2">{cuenta}</p>
+            <div key={cuenta} className="bg-amber-500/5 border border-amber-500/20 rounded-2xl p-4 flex flex-col gap-4">
+              <p className="text-[11px] font-black uppercase tracking-widest text-byg-text border-b border-amber-500/20 pb-2">{cuenta}</p>
               <div className="flex flex-col gap-3">
                 <div className="flex flex-col gap-1">
-                  <label className="text-[9px] font-bold text-slate-400 uppercase">USD</label>
+                  <label className="text-[9px] font-bold text-byg-muted uppercase">USD</label>
                   <input
                     name={`usd_${cuenta}`}
                     type="number"
                     step="0.01"
                     placeholder="0.00"
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold tabular-nums focus:ring-2 focus:ring-amber-100 outline-none"
+                    className="bg-byg-surface border border-byg-border rounded-lg px-2 py-1.5 text-xs font-bold tabular-nums text-byg-text focus:ring-2 focus:ring-amber-100 outline-none"
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-[9px] font-bold text-slate-400 uppercase">ARS</label>
+                  <label className="text-[9px] font-bold text-byg-muted uppercase">ARS</label>
                   <input
                     name={`ars_${cuenta}`}
                     type="number"
                     step="0.01"
                     placeholder="0.00"
-                    className="bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold tabular-nums focus:ring-2 focus:ring-amber-100 outline-none"
+                    className="bg-byg-surface border border-byg-border rounded-lg px-2 py-1.5 text-xs font-bold tabular-nums text-byg-text focus:ring-2 focus:ring-amber-100 outline-none"
                   />
                 </div>
               </div>

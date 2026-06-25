@@ -49,14 +49,14 @@ export function DivInteresesTable({ rows }: Props) {
   return (
     <div className="flex flex-col gap-6">
       {/* Filtro por Cuenta */}
-      <div className="flex items-center gap-4 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm overflow-x-auto whitespace-nowrap">
-        <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 px-2">Filtrar Cuenta:</p>
+      <div className="flex items-center gap-4 bg-byg-surface p-4 rounded-2xl border border-byg-border shadow-sm overflow-x-auto whitespace-nowrap">
+        <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted px-2">Filtrar Cuenta:</p>
         {cuentas.map((c) => (
           <button
             key={c}
             onClick={() => setFiltroCuenta(c)}
             className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${
-              filtroCuenta === c ? "bg-amber-500 text-white shadow-md" : "bg-slate-50 text-slate-500 hover:bg-slate-200"
+              filtroCuenta === c ? "bg-amber-500 text-white shadow-md" : "bg-byg-bg text-byg-muted hover:bg-byg-border"
             }`}
           >
             {c}
@@ -64,43 +64,43 @@ export function DivInteresesTable({ rows }: Props) {
         ))}
       </div>
 
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden">
+      <div className="bg-byg-surface rounded-3xl border border-byg-border shadow-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                <th className="px-6 py-5 text-[10px] font-black uppercase text-slate-500 tracking-widest">Cuenta</th>
-                <th className="px-6 py-5 text-[10px] font-black uppercase text-slate-500 tracking-widest text-center">Ticker</th>
-                <th className="px-6 py-5 text-[10px] font-black uppercase text-slate-500 tracking-widest">Descripción</th>
-                <th className="px-6 py-5 text-[10px] font-black uppercase text-slate-500 tracking-widest text-right">USD</th>
-                <th className="px-6 py-5 text-[10px] font-black uppercase text-slate-500 tracking-widest text-right">ARS</th>
-                <th className="px-6 py-5 text-[10px] font-black uppercase text-slate-500 tracking-widest text-center">Acciones</th>
+              <tr className="bg-byg-bg border-b border-byg-border">
+                <th className="px-6 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest">Cuenta</th>
+                <th className="px-6 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest text-center">Ticker</th>
+                <th className="px-6 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest">Descripción</th>
+                <th className="px-6 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest text-right">USD</th>
+                <th className="px-6 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest text-right">ARS</th>
+                <th className="px-6 py-5 text-[10px] font-black uppercase text-byg-muted tracking-widest text-center">Acciones</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-byg-border">
               {groups.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-20 text-center text-slate-400 font-medium italic">No se registraron dividendos para esta selección.</td>
+                  <td colSpan={6} className="py-20 text-center text-byg-muted font-medium italic">No se registraron dividendos para esta selección.</td>
                 </tr>
               ) : (
                 groups.map(([day, dayRows]) => {
                   const { dateStr, fullDate } = fmtFecha(new Date(day));
                   return (
                     <Fragment key={day}>
-                      <tr className="bg-amber-50/30">
+                      <tr className="bg-amber-500/10">
                         <td colSpan={6} className="px-6 py-3">
                           <div className="flex items-center gap-2">
                             <CalendarDays size={14} className="text-amber-500" />
-                            <span className="text-[11px] font-black text-slate-600 uppercase tracking-widest">
+                            <span className="text-[11px] font-black text-byg-text uppercase tracking-widest">
                               {dateStr} — {fullDate}
                             </span>
                           </div>
                         </td>
                       </tr>
                       {dayRows.map((row) => (
-                        <tr key={row.id} className="hover:bg-slate-50/50 transition-colors group">
+                        <tr key={row.id} className="hover:bg-byg-surface-2 transition-colors group">
                           <td className="px-6 py-4">
-                            <span className="text-[11px] font-black bg-slate-100 text-slate-800 px-3 py-1 rounded-full uppercase tracking-tighter">
+                            <span className="text-[11px] font-black bg-byg-surface-2 text-byg-text px-3 py-1 rounded-full uppercase tracking-tighter">
                               {row.cuenta}
                             </span>
                           </td>
@@ -109,7 +109,7 @@ export function DivInteresesTable({ rows }: Props) {
                               {row.ticker}
                             </span>
                           </td>
-                          <td className="px-6 py-4 text-[13px] font-bold text-slate-700">{row.descripcion}</td>
+                          <td className="px-6 py-4 text-[13px] font-bold text-byg-text">{row.descripcion}</td>
                           <td className={`px-6 py-4 text-right tabular-nums font-black text-[15px] ${row.usd >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
                             {formatMoney(row.usd, "USD")}
                           </td>
@@ -117,7 +117,7 @@ export function DivInteresesTable({ rows }: Props) {
                             {formatMoney(row.ars, "ARS")}
                           </td>
                           <td className="px-6 py-4 text-center">
-                            <button disabled className="p-2 text-slate-400 hover:text-red-500 transition-colors">
+                            <button disabled className="p-2 text-byg-muted hover:text-red-500 transition-colors">
                               <Trash2 size={14} />
                             </button>
                           </td>

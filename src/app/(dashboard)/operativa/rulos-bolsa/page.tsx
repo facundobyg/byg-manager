@@ -24,12 +24,12 @@ export default async function RulosBolsaPage() {
 
   return (
     <div className="flex flex-col gap-10">
-      <header className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm flex items-center justify-between relative overflow-hidden">
+      <header className="bg-byg-surface p-8 rounded-3xl border border-byg-border shadow-sm flex items-center justify-between relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-blue-600"></div>
         <div className="flex flex-col gap-2">
           <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.4em]">Módulo Operativa</p>
-          <h1 className="text-4xl font-black text-slate-900 tracking-tight">Rulos Bolsa</h1>
-          <p className="text-[13px] font-medium text-slate-500 mt-1 max-w-2xl">
+          <h1 className="text-4xl font-black text-byg-text tracking-tight">Rulos Bolsa</h1>
+          <p className="text-[13px] font-medium text-byg-muted mt-1 max-w-2xl">
             Operaciones de arbitraje/bolsa diarias. Suma a la utilidad del mes.
           </p>
         </div>
@@ -37,7 +37,7 @@ export default async function RulosBolsaPage() {
         {/* Totales Resumen */}
         <div className="flex gap-8">
           <div className="flex flex-col items-end">
-            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1">
+            <p className="text-[9px] font-black text-byg-muted uppercase tracking-widest flex items-center gap-1">
               <DollarSign size={10} /> Utilidad USD Mes
             </p>
             <p className={`text-2xl font-black tabular-nums ${totalesPlain.usd >= 0 ? "text-emerald-600" : "text-red-600"}`}>
@@ -45,7 +45,7 @@ export default async function RulosBolsaPage() {
             </p>
           </div>
           <div className="flex flex-col items-end">
-            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-1">
+            <p className="text-[9px] font-black text-byg-muted uppercase tracking-widest flex items-center gap-1">
               <Wallet size={10} /> Utilidad ARS Mes
             </p>
             <p className={`text-2xl font-black tabular-nums ${totalesPlain.ars >= 0 ? "text-emerald-600" : "text-red-600"}`}>
