@@ -212,7 +212,12 @@ export async function editHolding(
 
   await prisma.holdingComitenteInversion.update({
     where: { id: holdingId },
-    data: { ticker, descripcion, categoria: categoriaRaw, cantidad, precioPromedio, precioActual, fechaCompra },
+    data: {
+      ticker, descripcion, categoria: categoriaRaw, cantidad, precioPromedio, precioActual, fechaCompra,
+      ...(precioActual != null
+        ? { priceSource: "MANUAL" as const, priceStatus: "OK" as const, priceSyncedAt: new Date(), providerUpdatedAt: null, priceErrorMessage: null }
+        : {}),
+    },
   });
 
   revalidate(cuentaId, comitenteId);
@@ -248,7 +253,14 @@ export async function updatePreciosByTicker(
 
   await prisma.holdingComitenteInversion.updateMany({
     where: { comitenteId: { in: ids }, ticker },
-    data: { precioActual },
+    data: {
+      precioActual,
+      priceSource: "MANUAL",
+      priceStatus: "OK",
+      priceSyncedAt: new Date(),
+      providerUpdatedAt: null,
+      priceErrorMessage: null,
+    },
   });
 
   revalidatePath("/cuentas-inversion", "layout");

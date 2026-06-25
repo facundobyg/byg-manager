@@ -614,6 +614,9 @@ export async function createActivo(
         monedaPrecio,
         precioActual: precioActual != null ? precioActual : null,
         updatedAt: new Date(),
+        ...(precioActual != null
+          ? { priceSource: "MANUAL" as const, priceStatus: "OK" as const, priceSyncedAt: new Date(), providerUpdatedAt: null, priceErrorMessage: null }
+          : {}),
       },
     });
     revalidatePath("/precios");
@@ -691,6 +694,9 @@ export async function importPreciosExcel(
               monedaPrecio: mon as Moneda,
               precioActual: precio,
               updatedAt: new Date(),
+              ...(precio != null
+                ? { priceSource: "MANUAL" as const, priceStatus: "OK" as const, priceSyncedAt: new Date(), providerUpdatedAt: null, priceErrorMessage: null }
+                : {}),
             }
           });
           report.created.push(ticker);

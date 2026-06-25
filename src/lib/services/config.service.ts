@@ -102,7 +102,12 @@ export async function updatePrecioActivo(activoId: string, precio: number, userI
       where: { id: activoId },
       data: {
         precioActual: dec,
-        updatedAt: now
+        updatedAt: now,
+        priceSource: "MANUAL",
+        priceStatus: "OK",
+        priceSyncedAt: now,
+        providerUpdatedAt: null,
+        priceErrorMessage: null,
       },
     }),
     prisma.precioHistorico.upsert({
@@ -221,7 +226,15 @@ export async function updatePreciosActivosBatch(items: { id: string; precio: num
     return [
       prisma.activo.update({
         where: { id: item.id },
-        data: { precioActual: dec, updatedAt: now },
+        data: {
+          precioActual: dec,
+          updatedAt: now,
+          priceSource: "MANUAL",
+          priceStatus: "OK",
+          priceSyncedAt: now,
+          providerUpdatedAt: null,
+          priceErrorMessage: null,
+        },
       }),
       prisma.precioHistorico.upsert({
         where: { activoId_fecha: { activoId: item.id, fecha } },

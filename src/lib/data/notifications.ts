@@ -40,7 +40,7 @@ export async function getNotifications(
       : null,
 
     canSee(allowedPermissions, "activos:leer")
-      ? prisma.activo.count({ where: { precioActual: 0 } })
+      ? prisma.activo.count({ where: { OR: [{ precioActual: null }, { precioActual: 0 }] } })
       : null,
 
     canSee(allowedPermissions, "bolsa:leer")

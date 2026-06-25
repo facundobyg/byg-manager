@@ -8,6 +8,19 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+enum PriceSource {
+  DATA912
+  MANUAL
+  LAST_KNOWN
+}
+
+enum PriceStatus {
+  OK
+  NOT_FOUND
+  ERROR
+  STALE
+}
+
 model Activo {
   id                  String                @id
   ticker              String                @unique
@@ -16,6 +29,11 @@ model Activo {
   precioActual        Decimal?              @db.Decimal(18, 6)
   precioAnterior      Decimal?              @db.Decimal(18, 6)
   monedaPrecio        Moneda                @default(USD)
+  priceSource         PriceSource           @default(MANUAL)
+  providerUpdatedAt   DateTime?
+  priceSyncedAt       DateTime?
+  priceStatus         PriceStatus           @default(OK)
+  priceErrorMessage   String?
   createdAt           DateTime              @default(now())
   updatedAt           DateTime
   CustodiaCliente     CustodiaCliente[]
@@ -220,6 +238,11 @@ model HoldingComitenteInversion {
   cantidad                  Decimal                     @db.Decimal(18, 6)
   precioPromedio            Decimal                     @db.Decimal(18, 6)
   precioActual              Decimal?                    @db.Decimal(18, 6)
+  priceSource               PriceSource                 @default(MANUAL)
+  providerUpdatedAt         DateTime?
+  priceSyncedAt             DateTime?
+  priceStatus               PriceStatus                 @default(OK)
+  priceErrorMessage         String?
   createdAt                 DateTime                    @default(now())
   updatedAt                 DateTime
   fechaCompra               DateTime?
