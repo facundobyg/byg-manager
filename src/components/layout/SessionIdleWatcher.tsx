@@ -22,7 +22,7 @@ export function SessionIdleWatcher() {
   const signingOutRef   = useRef(false);
 
   const resetActivity = useCallback(() => {
-    sessionStorage.setItem(STORAGE_KEY, String(now()));
+    localStorage.setItem(STORAGE_KEY, String(now()));
     if (warningShownRef.current) {
       warningShownRef.current = false;
       setShowWarning(false);
@@ -31,20 +31,20 @@ export function SessionIdleWatcher() {
 
   useEffect(() => {
     // On mount: check if already idle from a previous tab/session
-    const stored = sessionStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(STORAGE_KEY);
     if (stored && now() - Number(stored) >= IDLE_LIMIT) {
       doSignOut();
       return;
     }
     // Initialise timestamp if missing
-    if (!stored) sessionStorage.setItem(STORAGE_KEY, String(now()));
+    if (!stored) localStorage.setItem(STORAGE_KEY, String(now()));
 
     const events = ["mousemove", "keydown", "click", "scroll", "touchstart"] as const;
     events.forEach((e) => window.addEventListener(e, resetActivity, { passive: true }));
 
     const interval = setInterval(() => {
       if (signingOutRef.current) return;
-      const last   = Number(sessionStorage.getItem(STORAGE_KEY) ?? now());
+      const last   = Number(localStorage.getItem(STORAGE_KEY) ?? now());
       const idle   = now() - last;
 
       if (idle >= IDLE_LIMIT) {

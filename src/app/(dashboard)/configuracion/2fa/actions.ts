@@ -1,6 +1,6 @@
 "use server";
 
-import { auth } from "@/auth";
+import { auth, unstable_update } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { generateTOTPSecret, verifyTOTP } from "@/lib/auth/totp";
 import { revalidatePath } from "next/cache";
@@ -9,9 +9,11 @@ import { writeAuditLog } from "@/lib/services/audit.service";
 
 type ActionResult = { success: true } | { error: string };
 
+const ROLES_CON_2FA = new Set(["ADMIN", "SOCIO", "EMPLEADO"]);
+
 async function getAdminUser() {
   const session = await auth() as { user?: { id?: string; role?: string } } | null;
-  if (session?.user?.role !== "ADMIN") redirect("/");
+  if (!session?.user?.role || !ROLES_CON_2FA.has(session.user.role)) redirect("/");
   if (!session.user?.id) redirect("/login");
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
@@ -41,6 +43,7 @@ export async function confirmEnable2FA(_prev: unknown, formData: FormData): Prom
     data: { twoFactorEnabled: true },
   });
   await writeAuditLog({ accion: "ENABLE_2FA_CONFIRMED", entidad: "Auth", userId: user.id, description: `2FA activado y confirmado: ${user.email}` });
+  await unstable_update({ user: { twoFactorEnabled: true } }).catch(() => {});
   revalidatePath("/configuracion/2fa");
   return { success: true };
 }
@@ -58,6 +61,7 @@ export async function disable2FA(_prev: unknown, formData: FormData): Promise<Ac
     data: { twoFactorEnabled: false, twoFactorSecret: null },
   });
   await writeAuditLog({ accion: "DISABLE_2FA_CONFIRMED", entidad: "Auth", userId: user.id, description: `2FA desactivado con código verificado: ${user.email}` });
+  await unstable_update({ user: { twoFactorEnabled: false } }).catch(() => {});
   revalidatePath("/configuracion/2fa");
   return { success: true };
 }

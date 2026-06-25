@@ -9,7 +9,7 @@ import { authConfig } from "@/auth.config";
 import { verifyTOTP } from "@/lib/auth/totp";
 import { writeAuditLog } from "@/lib/services/audit.service";
 
-export const { handlers, signIn, signOut, auth } = NextAuth({
+export const { handlers, signIn, signOut, auth, unstable_update } = NextAuth({
   ...authConfig,
   trustHost: true,
   providers: [
@@ -48,26 +48,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           }).catch(() => {});
         }
 
-        return { id: user.id, email: user.email, name: user.name, role: user.role };
+        return { id: user.id, email: user.email, name: user.name, role: user.role, twoFactorEnabled: user.twoFactorEnabled };
       },
     }),
   ],
-  callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.role = (user as { role?: string }).role ?? "";
-        token.id = user.id ?? "";
-      }
-      return token;
-    },
-    async session({ session, token }) {
-      if (session.user) {
-        session.user.id = token.id as string;
-        session.user.role = token.role as string;
-      }
-      return session;
-    }
-  },
+  // jwt/session/authorized callbacks heredados de authConfig (ver auth.config.ts)
   session: {
     strategy:   "jwt",
     maxAge:     8 * 60 * 60,  // 8 hours

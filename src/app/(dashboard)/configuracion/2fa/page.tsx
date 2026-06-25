@@ -6,9 +6,11 @@ import { generateSetupSecret } from "./actions";
 import { SetupConfirmForm, DisableForm } from "./Forms";
 import Link from "next/link";
 
+const ROLES_CON_2FA = new Set(["ADMIN", "SOCIO", "EMPLEADO"]);
+
 export default async function TwoFactorSetupPage() {
   const session = await auth() as { user?: { id?: string; role?: string } } | null;
-  if (session?.user?.role !== "ADMIN") redirect("/configuracion");
+  if (!session?.user?.role || !ROLES_CON_2FA.has(session.user.role)) redirect("/configuracion");
 
   const user = await prisma.user.findUnique({
     where: { id: session.user!.id },
@@ -65,7 +67,7 @@ export default async function TwoFactorSetupPage() {
             /* ── 2FA está ON — mostrar opción de desactivar ── */
             <div className="flex flex-col gap-4">
               <p className="text-sm text-slate-600">
-                Cada vez que iniciés sesión como ADMIN necesitarás ingresar el código del autenticador.
+                Cada vez que iniciés sesión necesitarás ingresar el código del autenticador.
               </p>
               <DisableForm />
             </div>
