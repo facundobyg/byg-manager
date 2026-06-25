@@ -20,7 +20,7 @@ export default async function NuevaBolsaPage() {
       orderBy: { nombre: "asc" },
     }),
     prisma.activo.findMany({
-      select:  { ticker: true },
+      select:  { ticker: true, categoria: true },
       orderBy: { ticker: "asc" },
     }),
   ]);
@@ -58,7 +58,7 @@ export default async function NuevaBolsaPage() {
       <NuevaOpForm
         comitentes={comitentesMapped}
         carteras={carterasMapped}
-        tickers={activos.map((a) => a.ticker)}
+        activos={activos}
       />
     </div>
   );

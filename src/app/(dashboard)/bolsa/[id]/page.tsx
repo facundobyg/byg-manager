@@ -110,6 +110,7 @@ export default async function BolsaDetailPage({ params }: PageProps) {
     alyc:              op.alyc,
     fechaConcertacion: op.fechaConcertacion ? new Date(op.fechaConcertacion).toISOString().slice(0, 10) : null,
     fechaLiquidacion:  op.fechaLiquidacion  ? new Date(op.fechaLiquidacion).toISOString().slice(0, 10)  : null,
+    plazoLiquidacion:  op.plazoLiquidacion,
     comisionPct:       op.comisionPct       != null ? Number(op.comisionPct)       : null,
     comisionFija:      op.comisionFija      != null ? Number(op.comisionFija)      : null,
     derechosMercado:   op.derechosMercado   != null ? Number(op.derechosMercado)   : null,

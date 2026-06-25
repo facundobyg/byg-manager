@@ -5,12 +5,15 @@ import { crearOperacionBolsa } from "@/app/(dashboard)/bolsa/actions";
 
 type Comitente = { id: string; nombre: string };
 type Cartera = { id: string; nombre: string };
+type ActivoOpt = { ticker: string; categoria: string };
 
 type Props = {
   comitentes: Comitente[];
   carteras:   Cartera[];
-  tickers:    string[];
+  activos:    ActivoOpt[];
 };
+
+const CATEGORIAS_VN = new Set(["BONO_ARS", "BONO_USD", "ON_USD"]);
 
 const TIPOS = [
   { value: "COMPRA_BONO",        label: "Compra Bono" },
@@ -40,18 +43,36 @@ const MERCADOS = [
 const INPUT_CLS = "w-full px-3 py-2 text-[12px] border border-byg-border rounded-lg bg-byg-bg focus:outline-none focus:ring-1 focus:ring-byg-accent/40 text-byg-text [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
 const LABEL_CLS = "block text-[10px] font-black uppercase tracking-widest text-byg-muted mb-1";
 
-export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
+export function NuevaOpForm({ comitentes, carteras, activos }: Props) {
   const [sujetoTipo, setSujetoTipo] = useState<"comitente" | "cartera">("comitente");
   const [state, action, pending]   = useActionState(crearOperacionBolsa, null);
+  const [ticker,   setTicker]   = useState("");
   const [cantidad, setCantidad] = useState("");
   const [precio,   setPrecio]   = useState("");
-  const netoDisplay = (() => {
-    const q = parseFloat(cantidad);
-    const p = parseFloat(precio);
-    if (!isNaN(q) && !isNaN(p) && q > 0 && p > 0)
-      return (q * p).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return null;
-  })();
+  const [neto,     setNeto]     = useState("");
+
+  const categoriaActual = activos.find((a) => a.ticker === ticker.trim().toUpperCase())?.categoria;
+  const esVN = categoriaActual != null && CATEGORIAS_VN.has(categoriaActual);
+  const cantidadLabel = esVN ? "Valor Nominal (VN)" : "Cantidad";
+
+  function handleCantidadChange(v: string) {
+    setCantidad(v);
+    const q = parseFloat(v), p = parseFloat(precio), n = parseFloat(neto);
+    if (!isNaN(q) && q > 0) {
+      if (!isNaN(p) && p > 0) setNeto((q * p).toFixed(2));
+      else if (!isNaN(n) && n > 0) setPrecio((n / q).toFixed(6));
+    }
+  }
+  function handlePrecioChange(v: string) {
+    setPrecio(v);
+    const q = parseFloat(cantidad), p = parseFloat(v);
+    if (!isNaN(q) && !isNaN(p) && q > 0 && p > 0) setNeto((q * p).toFixed(2));
+  }
+  function handleNetoChange(v: string) {
+    setNeto(v);
+    const q = parseFloat(cantidad), n = parseFloat(v);
+    if (!isNaN(q) && !isNaN(n) && q > 0 && n > 0) setPrecio((n / q).toFixed(6));
+  }
 
   useEffect(() => {
     if (state && "ok" in state && state.ok && state.id) {
@@ -134,11 +155,13 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
               list="ticker-datalist"
               required
               placeholder="AL30, GGAL…"
+              value={ticker}
+              onChange={(e) => setTicker(e.target.value)}
               className={INPUT_CLS}
               style={{ textTransform: "uppercase" }}
             />
             <datalist id="ticker-datalist">
-              {tickers.map((t) => <option key={t} value={t} />)}
+              {activos.map((a) => <option key={a.ticker} value={a.ticker} />)}
             </datalist>
           </div>
           <div>
@@ -151,10 +174,10 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
           </div>
         </div>
 
-        {/* Cantidad + Precio */}
-        <div className="grid grid-cols-2 gap-3">
+        {/* Cantidad/VN + Precio + Neto estimado (cálculo bidireccional) */}
+        <div className="grid grid-cols-3 gap-3">
           <div>
-            <label className={LABEL_CLS}>Cantidad</label>
+            <label className={LABEL_CLS}>{cantidadLabel}</label>
             <input
               type="number"
               name="cantidad"
@@ -163,7 +186,7 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
               step="any"
               placeholder="0"
               value={cantidad}
-              onChange={(e) => setCantidad(e.target.value)}
+              onChange={(e) => handleCantidadChange(e.target.value)}
               className={INPUT_CLS}
             />
           </div>
@@ -177,16 +200,26 @@ export function NuevaOpForm({ comitentes, carteras, tickers }: Props) {
               step="any"
               placeholder="0.00"
               value={precio}
-              onChange={(e) => setPrecio(e.target.value)}
+              onChange={(e) => handlePrecioChange(e.target.value)}
+              className={INPUT_CLS}
+            />
+          </div>
+          <div>
+            <label className={LABEL_CLS}>Neto estimado</label>
+            <input
+              type="number"
+              min="0"
+              step="any"
+              placeholder="0.00"
+              value={neto}
+              onChange={(e) => handleNetoChange(e.target.value)}
               className={INPUT_CLS}
             />
           </div>
         </div>
-        {netoDisplay && (
-          <p className="text-[10px] text-byg-muted font-mono -mt-2">
-            Neto estimado: <strong className="text-byg-text">{netoDisplay}</strong>
-          </p>
-        )}
+        <p className="text-[9px] text-byg-muted -mt-2">
+          Estimado sin comisiones — el neto final se calcula al concertar.
+        </p>
 
         {/* Moneda + Mercado */}
         <div className="grid grid-cols-2 gap-3">

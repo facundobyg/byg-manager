@@ -15,6 +15,7 @@ type Props = {
   alyc?:              string | null;
   fechaConcertacion?: string | null;
   fechaLiquidacion?:  string | null;
+  plazoLiquidacion?:  string | null;
   comisionPct?:       number | null;
   comisionFija?:      number | null;
   derechosMercado?:   number | null;
@@ -38,7 +39,7 @@ function numDefault(v: number | null | undefined) {
 export function ConcertarForm({
   operacionId, estado, tipoOperacion,
   fechaOperativa, alycList,
-  nroBoleto, alyc, fechaConcertacion, fechaLiquidacion,
+  nroBoleto, alyc, fechaConcertacion, fechaLiquidacion, plazoLiquidacion,
   comisionPct, comisionFija, derechosMercado, gastos, impuestos,
   tcMepDia, comisionUSD, esSenebi, senebiBruto, diasCaucion, tasaCaucion,
 }: Props) {
@@ -101,6 +102,15 @@ export function ConcertarForm({
             <label className={LABEL_CLS}>Fecha Liquidación <span className="text-byg-muted/60 normal-case tracking-normal font-normal">(opcional)</span></label>
             <input type="date" name="fechaLiquidacion" defaultValue={fechaLiquidacion ?? ""} className={INPUT_CLS} />
           </div>
+        </div>
+
+        <div>
+          <label className={LABEL_CLS}>Plazo de Liquidación</label>
+          <select name="plazoLiquidacion" defaultValue={plazoLiquidacion ?? "T1"} className={INPUT_CLS}>
+            <option value="CI">Contado Inmediato (CI)</option>
+            <option value="T1">24 hs (T+1)</option>
+            <option value="T2">48 hs (T+2)</option>
+          </select>
         </div>
 
         {/* Comisión $ + Comisión USD */}

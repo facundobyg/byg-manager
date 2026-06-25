@@ -22,8 +22,6 @@ const INSTRUMENTO_OPTS = [
   { v: "CAUCION",  l: "Caución" },
   { v: "FUTURO",   l: "Futuro" },
   { v: "OPCIONES", l: "Opciones" },
-  { v: "MEP",      l: "MEP" },
-  { v: "SENEBI",   l: "SENEBI" },
 ] as const;
 
 type Instrumento = typeof INSTRUMENTO_OPTS[number]["v"];
@@ -35,8 +33,6 @@ const DIRECCION_OPTS: Record<Instrumento, { v: string; l: string }[]> = {
   CAUCION:  [{ v: "COLOCADORA", l: "Colocadora" }, { v: "TOMADORA", l: "Tomadora" }],
   FUTURO:   [],
   OPCIONES: [{ v: "CALL", l: "Call" }, { v: "PUT", l: "Put" }],
-  MEP:      [],
-  SENEBI:   [],
 };
 
 function toTipoOp(instrumento: Instrumento, direccion: string): string {
@@ -47,8 +43,6 @@ function toTipoOp(instrumento: Instrumento, direccion: string): string {
     case "CAUCION":  return direccion === "TOMADORA"  ? "CAUCION_TOMADORA"    : "CAUCION_COLOCADORA";
     case "FUTURO":   return "FUTURO";
     case "OPCIONES": return direccion === "PUT"       ? "OPCION_PUT"          : "OPCION_CALL";
-    case "MEP":      return "MEP";
-    case "SENEBI":   return "SENEBI";
     default:         return "COMPRA_BONO";
   }
 }

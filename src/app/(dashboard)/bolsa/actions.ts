@@ -7,7 +7,7 @@ import { readOnlyPreview } from "@/lib/config";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { setTcMepDia } from "@/lib/services/config.service";
-import type { TipoOpBolsa, MercadoBolsa, Moneda, CategoriaHoldingInversion, CategoriaActivo } from "@prisma/client";
+import type { TipoOpBolsa, MercadoBolsa, Moneda, CategoriaHoldingInversion, CategoriaActivo, PlazoLiquidacion } from "@prisma/client";
 
 export async function actualizarTcMepDia(
   _prev: { error?: string; ok?: boolean } | null,
@@ -166,6 +166,8 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
   const alyc              = (formData.get("alyc")         as string)?.trim() || null;
   const fechaConcertRaw   = formData.get("fechaConcertacion")  as string | null;
   const fechaLiquidRaw    = formData.get("fechaLiquidacion")   as string | null;
+  const plazoLiquidRaw    = (formData.get("plazoLiquidacion") as string) || "T1";
+  const plazoLiquidacion  = (["CI", "T1", "T2"].includes(plazoLiquidRaw) ? plazoLiquidRaw : "T1") as PlazoLiquidacion;
   const comisionPct          = toN(formData.get("comisionPct"));
   const comisionFija         = toN(formData.get("comisionFija"));
   const derechosMercado      = toN(formData.get("derechosMercado"));
@@ -208,6 +210,7 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
           alyc,
           fechaConcertacion:  fechaConcertRaw  ? new Date(fechaConcertRaw)  : null,
           fechaLiquidacion:   fechaLiquidRaw   ? new Date(fechaLiquidRaw)   : null,
+          plazoLiquidacion,
           comisionPct,
           comisionFija,
           derechosMercado,

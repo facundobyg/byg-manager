@@ -846,6 +846,7 @@ model OperacionBolsa {
   fechaCarga         DateTime             @default(now())
   fechaConcertacion  DateTime?            @db.Date
   fechaLiquidacion   DateTime?            @db.Date
+  plazoLiquidacion   PlazoLiquidacion     @default(T1)
   observaciones      String?
   nroBoleto          String?
   alyc               String?
@@ -1047,4 +1048,10 @@ enum MercadoBolsa {
   SENEBI_OTC
   MATBA_ROFEX
   OTC
+}
+
+enum PlazoLiquidacion {
+  CI
+  T1
+  T2
 }
