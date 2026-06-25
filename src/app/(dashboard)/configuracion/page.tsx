@@ -266,6 +266,16 @@ export default async function ConfiguracionPage() {
             <span className="text-slate-400 group-hover:translate-x-0.5 transition-transform">→</span>
           </Link>
           <Link
+            href="/configuracion/data912"
+            className="flex items-center gap-3 px-5 py-3 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 hover:border-emerald-300 transition-all group"
+          >
+            <div className="flex flex-col">
+              <span className="text-[12px] font-bold text-emerald-800 group-hover:text-emerald-900">Data912</span>
+              <span className="text-[11px] text-emerald-500">Actualización de precios de mercado</span>
+            </div>
+            <span className="text-emerald-400 group-hover:translate-x-0.5 transition-transform">→</span>
+          </Link>
+          <Link
             href="/backup"
             className="flex items-center gap-3 px-5 py-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 transition-all group"
           >
