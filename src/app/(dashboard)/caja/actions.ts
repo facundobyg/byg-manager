@@ -7,6 +7,7 @@ import { calcularSaldoCaja, calcularSaldoCajaConCliente } from "@/lib/services/c
 import { readOnlyPreview } from "@/lib/config";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { auth } from "@/auth";
+import { writeAuditLog } from "@/lib/services/audit.service";
 
 export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -65,8 +66,6 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
   const movimientoId = (formData.get("movimientoId") as string)?.trim();
   const cajaId = (formData.get("cajaId") as string)?.trim();
   const montoCubiertoRaw = (formData.get("montoCubierto") as string)?.trim();
-  const descripcionExtra = (formData.get("descripcionExtra") as string)?.trim() ?? "";
-  const slug = (formData.get("slug") as string)?.trim(); // kept for revalidatePath only — not used for auth
 
   // Determine permission from DB, not from client-supplied slug
   const cajaReal = cajaId ? await prisma.caja.findUnique({ where: { id: cajaId }, select: { slug: true } }) : null;
@@ -80,31 +79,50 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
   let montoCubierto: Decimal;
   try {
     montoCubierto = new Decimal(montoCubiertoRaw);
-    if (montoCubierto.lte(0)) return { error: "El monto debe ser mayor a 0" };
   } catch {
     return { error: "Monto inválido" };
   }
+  if (montoCubierto.lte(0)) return { error: "El monto debe ser mayor a 0" };
+
+  const session  = await auth();
+  const userId   = session?.user?.id as string | undefined;
+  const userName = (session?.user as { name?: string })?.name ?? "Sistema";
+
+  const pagoId = crypto.randomUUID();
+  let monedaPago = "";
 
   try {
-    // Checks de negocio + write dentro de la misma transacción para evitar race conditions.
+    // Checks de negocio + write dentro de la misma transacción para evitar
+    // sobrepago bajo concurrencia: el restante se calcula y valida adentro.
     await prisma.$transaction(async (tx) => {
       const original = await tx.movimientoCaja.findUnique({ where: { id: movimientoId } });
       if (!original) throw new Error("Movimiento no encontrado");
       if (original.confirmado) throw new Error("El movimiento ya está confirmado");
-      if (montoCubierto.gt(new Decimal(original.monto.toString())))
-        throw new Error("El monto cubierto supera el monto original");
+      if (original.anulado) throw new Error("El movimiento está anulado, no se puede cubrir");
 
-      const desc = `COBERTURA PARCIAL ${movimientoId}${descripcionExtra ? ` | ${descripcionExtra}` : ""}`;
+      const pagosPrevios = await tx.movimientoCaja.aggregate({
+        where: { pagoDeId: movimientoId, confirmado: true, anulado: false },
+        _sum: { monto: true },
+      });
+      const cubiertoPrevio = new Decimal(pagosPrevios._sum.monto?.toString() ?? "0");
+      const restante = new Decimal(original.monto.toString()).minus(cubiertoPrevio);
+
+      if (restante.lte(0)) throw new Error("Este pendiente ya está totalmente cubierto");
+      if (montoCubierto.gt(restante))
+        throw new Error(`El monto supera el restante (${restante.toFixed(2)} ${original.moneda})`);
+
+      monedaPago = original.moneda;
 
       await tx.movimientoCaja.create({
         data: {
-          id: crypto.randomUUID(),
+          id: pagoId,
           cajaId,
-          tipo: original.tipo as never,
+          tipo: original.tipo,
           monto: montoCubierto,
-          moneda: original.moneda as never,
-          descripcion: desc,
+          moneda: original.moneda,
+          descripcion: `Pago parcial de pendiente ${movimientoId} | usr:${userName}`,
           confirmado: true,
+          pagoDeId: movimientoId,
           fecha: new Date(),
         },
       });
@@ -114,10 +132,77 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
     return { error: msg };
   }
 
+  await writeAuditLog({
+    userId,
+    accion:      "CUBRIR_PARCIAL",
+    entidad:     "MovimientoCaja",
+    entidadId:   movimientoId,
+    description: `${userName} registró pago parcial de ${montoCubierto.toFixed(2)} ${monedaPago} sobre pendiente ${movimientoId} (pago: ${pagoId})`,
+  });
+
+  revalidatePath("/pendientes");
   revalidatePath("/caja");
-  if (slug) revalidatePath(`/caja/${slug}`);
+  if (cajaReal?.slug) revalidatePath(`/operativa/${cajaReal.slug}`);
 
   return { success: true };
+}
+
+export async function anularMovimientoCajaPendiente(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const anularDenied = await requireActionPermission("caja:eliminar_movimiento");
+  if (anularDenied) return anularDenied;
+
+  const movimientoId = formData.get("movimientoId")?.toString().trim();
+  const motivo       = formData.get("motivo")?.toString().trim();
+  if (!movimientoId) return { error: "ID requerido" };
+  if (!motivo) return { error: "El motivo es obligatorio" };
+
+  const session  = await auth();
+  const userId   = session?.user?.id as string | undefined;
+  const userName = (session?.user as { name?: string })?.name ?? "Sistema";
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const mov = await tx.movimientoCaja.findUnique({ where: { id: movimientoId } });
+      if (!mov) throw new Error("Movimiento no encontrado");
+      if (mov.confirmado) throw new Error("Solo se pueden anular movimientos pendientes (no confirmados)");
+      if (mov.anulado) throw new Error("El movimiento ya está anulado");
+      if (mov.pagoDeId) throw new Error("No se puede anular un pago parcial, solo el pendiente original");
+
+      const pagosPrevios = await tx.movimientoCaja.aggregate({
+        where: { pagoDeId: movimientoId, confirmado: true, anulado: false },
+        _sum: { monto: true },
+      });
+      const cubierto = new Decimal(pagosPrevios._sum.monto?.toString() ?? "0");
+      if (cubierto.gt(0)) throw new Error("No se puede anular un pendiente con pagos parciales registrados");
+
+      await tx.movimientoCaja.update({
+        where: { id: movimientoId },
+        data: {
+          anulado: true,
+          descripcion: `${mov.descripcion ?? ""} | ANULADO: ${motivo} | usr:${userName}`.trim(),
+        },
+      });
+    });
+  } catch (e: unknown) {
+    return { error: e instanceof Error ? e.message : "Error al anular el movimiento" };
+  }
+
+  await writeAuditLog({
+    userId,
+    accion:      "ANULAR_PENDIENTE",
+    entidad:     "MovimientoCaja",
+    entidadId:   movimientoId,
+    description: `${userName} anuló pendiente ${movimientoId}: ${motivo}`,
+  });
+
+  revalidatePath("/pendientes");
+  revalidatePath("/caja");
+  return { ok: true };
 }
 
 export async function transferirEntreCajas(prevState: any, formData: FormData) {

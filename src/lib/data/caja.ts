@@ -76,7 +76,7 @@ export async function getPendingPrincipalSummary(): Promise<PendingPrincipalSumm
 
   const rows = await prisma.movimientoCaja.groupBy({
     by: ["moneda"],
-    where: { cajaId: principal.id, confirmado: false },
+    where: { cajaId: principal.id, confirmado: false, anulado: false },
     _sum: { monto: true },
     _count: { id: true },
   });

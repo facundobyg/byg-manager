@@ -287,23 +287,28 @@ model MovimientoCC {
 }
 
 model MovimientoCaja {
-  id                String      @id
-  cajaId            String
-  fecha             DateTime    @db.Date
-  tipo              TipoMovCaja
-  moneda            Moneda
-  monto             Decimal     @db.Decimal(18, 2)
-  descripcion       String?
-  confirmado        Boolean     @default(false)
-  operacionCambioId String?
-  transferenciaRef  String?
-  userId            String?
-  createdAt         DateTime    @default(now())
-  Caja              Caja        @relation(fields: [cajaId], references: [id], onDelete: Cascade)
+  id                 String           @id
+  cajaId             String
+  fecha              DateTime         @db.Date
+  tipo               TipoMovCaja
+  moneda             Moneda
+  monto              Decimal          @db.Decimal(18, 2)
+  descripcion        String?
+  confirmado         Boolean          @default(false)
+  anulado            Boolean          @default(false)
+  operacionCambioId  String?
+  transferenciaRef   String?
+  userId             String?
+  pagoDeId           String?
+  createdAt          DateTime         @default(now())
+  Caja               Caja             @relation(fields: [cajaId], references: [id], onDelete: Cascade)
+  MovimientoOriginal MovimientoCaja?  @relation("PagosParciales", fields: [pagoDeId], references: [id])
+  PagosParciales     MovimientoCaja[] @relation("PagosParciales")
 
   @@index([cajaId, fecha])
   @@index([cajaId, moneda, confirmado])
   @@index([operacionCambioId])
+  @@index([pagoDeId])
 }
 
 model Nota {

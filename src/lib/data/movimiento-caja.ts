@@ -1,76 +1,72 @@
 import { prisma } from "@/lib/prisma";
-import { MovimientoCaja } from "@prisma/client";
+import { Decimal } from "@prisma/client/runtime/library";
+import { Moneda, TipoMovCaja } from "@prisma/client";
 
-export type EstadoVisual = "CONFIRMADO" | "PENDIENTE" | "PARCIAL";
-export type CategoriaOperativa = "URGENCIA" | "ADELANTO" | "NORMAL";
+export type EstadoPendienteVisual = "PENDIENTE" | "PARCIAL" | "PAGADO" | "ANULADO";
 
-export interface MovimientoCajaRow extends MovimientoCaja {
-  estadoVisual: EstadoVisual;
+export interface MovimientoPendienteRow {
+  id: string;
+  cajaId: string;
+  cajaLabel: string;
+  fecha: Date;
+  tipo: TipoMovCaja;
+  moneda: Moneda;
+  descripcion: string | null;
   montoTotal: number;
   montoCubierto: number;
   montoPendiente: number;
-  categoriaOperativa: CategoriaOperativa;
+  estadoVisual: EstadoPendienteVisual;
+  anulado: boolean;
 }
 
-export function derivarCategoriaOperativa(desc: string | null): CategoriaOperativa {
-  const d = (desc ?? "").toLowerCase();
-  if (d.includes("urgencia") || d.includes("urgente")) return "URGENCIA";
-  if (d.includes("adelanto")) return "ADELANTO";
-  return "NORMAL";
-}
+/**
+ * Pendientes (MovimientoCaja confirmado:false) con su cobertura real,
+ * calculada vía pagoDeId — sin depender de descripcion/regex.
+ */
+export async function getMovimientosPendientesConCobertura(): Promise<MovimientoPendienteRow[]> {
+  const pendientes = await prisma.movimientoCaja.findMany({
+    where: { confirmado: false },
+    orderBy: { fecha: "asc" },
+    include: { Caja: { select: { label: true } } },
+  });
+  if (pendientes.length === 0) return [];
 
-export async function getMovimientosByCaja(slug: string) {
-  const caja = await prisma.caja.findUnique({
-    where: { slug },
-    include: {
-      MovimientoCaja: {
-        orderBy: { fecha: "desc" },
-        take: 100,
-      },
-    },
+  const ids = pendientes.map((p) => p.id);
+  const pagos = await prisma.movimientoCaja.groupBy({
+    by: ["pagoDeId"],
+    where: { pagoDeId: { in: ids }, confirmado: true, anulado: false },
+    _sum: { monto: true },
   });
 
-  if (!caja) return null;
-
-  // Build coverage map: originalId -> total covered amount
-  const coverageMap = new Map<string, number>();
-  for (const m of caja.MovimientoCaja) {
-    if (!m.confirmado || !m.descripcion) continue;
-    const match = m.descripcion.match(/^COBERTURA PARCIAL ([a-zA-Z0-9-]+)/);
-    if (match?.[1]) {
-      const prev = coverageMap.get(match[1]) ?? 0;
-      coverageMap.set(match[1], prev + parseFloat(m.monto.toString()));
-    }
+  const cubiertoMap = new Map<string, Decimal>();
+  for (const p of pagos) {
+    if (p.pagoDeId) cubiertoMap.set(p.pagoDeId, new Decimal(p._sum.monto?.toString() ?? "0"));
   }
 
-  // Coverage movements themselves should not appear as standalone pending rows
-  const coverageIds = new Set<string>();
-  for (const m of caja.MovimientoCaja) {
-    if (m.descripcion?.match(/^COBERTURA PARCIAL /)) coverageIds.add(m.id);
-  }
+  return pendientes.map((m) => {
+    const montoTotal = new Decimal(m.monto.toString());
+    const montoCubierto = cubiertoMap.get(m.id) ?? new Decimal(0);
+    const montoPendienteDec = Decimal.max(montoTotal.minus(montoCubierto), new Decimal(0));
 
-  const movimientos: MovimientoCajaRow[] = caja.MovimientoCaja
-    .filter((m) => !coverageIds.has(m.id))
-    .map((m) => {
-      const montoTotal = parseFloat(m.monto.toString());
-      const categoriaOperativa = derivarCategoriaOperativa(m.descripcion);
+    let estadoVisual: EstadoPendienteVisual;
+    if (m.anulado) estadoVisual = "ANULADO";
+    else if (montoPendienteDec.lte(0)) estadoVisual = "PAGADO";
+    else if (montoCubierto.gt(0)) estadoVisual = "PARCIAL";
+    else estadoVisual = "PENDIENTE";
 
-      if (m.confirmado) {
-        return { ...m, estadoVisual: "CONFIRMADO" as EstadoVisual, montoTotal, montoCubierto: montoTotal, montoPendiente: 0, categoriaOperativa };
-      }
-
-      const montoCubierto = coverageMap.get(m.id) ?? 0;
-      const montoPendiente = Math.max(0, montoTotal - montoCubierto);
-      const estadoVisual: EstadoVisual =
-        montoPendiente <= 0 ? "CONFIRMADO" : montoCubierto > 0 ? "PARCIAL" : "PENDIENTE";
-
-      return { ...m, estadoVisual, montoTotal, montoCubierto, montoPendiente, categoriaOperativa };
-    });
-
-  return {
-    ...caja,
-    movimientos,
-    confirmados: movimientos.filter((m) => m.estadoVisual === "CONFIRMADO"),
-    pendientes: movimientos.filter((m) => m.estadoVisual !== "CONFIRMADO"),
-  };
+    return {
+      id: m.id,
+      cajaId: m.cajaId,
+      cajaLabel: m.Caja.label,
+      fecha: m.fecha,
+      tipo: m.tipo,
+      moneda: m.moneda,
+      descripcion: m.descripcion,
+      montoTotal: montoTotal.toNumber(),
+      montoCubierto: montoCubierto.toNumber(),
+      montoPendiente: montoPendienteDec.toNumber(),
+      estadoVisual,
+      anulado: m.anulado,
+    };
+  });
 }

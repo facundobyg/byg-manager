@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
+import { getMovimientosPendientesConCobertura } from "@/lib/data/movimiento-caja";
+import { PendientesCajaTable } from "@/components/modules/caja/PendientesCajaTable";
 
 function fmt(n: number) {
   return n.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -18,7 +20,7 @@ export default async function PendientesPage() {
   hoy.setHours(0, 0, 0, 0);
   const en7 = new Date(hoy.getTime() + 7 * 86_400_000);
 
-  const [ccNegativas, pfVencidos, pfProximos, pendientesLiquidar] = await Promise.all([
+  const [ccNegativas, pfVencidos, pfProximos, pendientesLiquidar, movimientosPagoParcial] = await Promise.all([
     prisma.cuentaCorriente.findMany({
       where: { saldo: { lt: 0 } },
       orderBy: { saldo: "asc" },
@@ -35,9 +37,10 @@ export default async function PendientesPage() {
       include: { Cliente: { select: { id: true, nombre: true } } },
     }),
     prisma.movimientoCaja.findMany({
-      where: { confirmado: false },
+      where: { confirmado: false, anulado: false },
       orderBy: [{ moneda: "asc" }, { tipo: "asc" }, { descripcion: "asc" }],
     }),
+    getMovimientosPendientesConCobertura(),
   ]);
 
   const pendUSD = pendientesLiquidar.filter((p) => p.moneda === "USD");
@@ -89,6 +92,19 @@ export default async function PendientesPage() {
           </div>
         ))}
       </div>
+
+      {/* Pagos parciales — Caja */}
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Pagos parciales — Caja</h2>
+          {movimientosPagoParcial.length > 0 && (
+            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 uppercase tracking-widest">
+              {movimientosPagoParcial.length}
+            </span>
+          )}
+        </div>
+        <PendientesCajaTable movimientos={movimientosPagoParcial} />
+      </section>
 
       {/* Pendientes a liquidar */}
       <section className="flex flex-col gap-3">

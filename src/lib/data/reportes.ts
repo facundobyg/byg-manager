@@ -222,7 +222,7 @@ export async function getPosicionPN(): Promise<number> {
     }),
     prisma.config.findUnique({ where: { clave: "tc_blue" } }),
     prisma.movimientoCaja.findMany({
-      where: { confirmado: false, tipo: { in: ["ENTRADA", "SALIDA"] as never[] } },
+      where: { confirmado: false, anulado: false, tipo: { in: ["ENTRADA", "SALIDA"] as never[] } },
       select: { tipo: true, monto: true, moneda: true },
     }),
   ]);
