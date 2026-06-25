@@ -12,6 +12,49 @@ const bcrypt = require("bcryptjs") as {
   hash(data: string, saltOrRounds: number): Promise<string>;
 };
 
+type AvatarValidation = { ok: true; value: string | null } | { ok: false; error: string };
+
+// Valida un avatar enviado como data URL: tamaño real decodificado + magic bytes
+// reales del archivo (no solo el MIME que declara el navegador).
+function validateAvatarDataUrl(raw: string): AvatarValidation {
+  if (!raw) return { ok: true, value: null };
+
+  const match = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/.exec(raw);
+  if (!match) return { ok: false, error: "Formato de imagen no permitido. Usá JPG, PNG o WebP." };
+
+  const [, mime, b64] = match;
+
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(b64, "base64");
+  } catch {
+    return { ok: false, error: "Archivo de imagen inválido." };
+  }
+
+  if (bytes.length === 0 || bytes.length > 500 * 1024) {
+    return { ok: false, error: "La imagen supera el límite de 500 KB." };
+  }
+
+  const isJpeg = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng  = bytes.length >= 8
+    && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a;
+  const isWebp = bytes.length >= 12
+    && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+    && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+
+  const matchesDeclaredType =
+    (mime === "jpeg" && isJpeg) ||
+    (mime === "png"  && isPng)  ||
+    (mime === "webp" && isWebp);
+
+  if (!matchesDeclaredType) {
+    return { ok: false, error: "El archivo no es una imagen válida (firma de bytes no coincide)." };
+  }
+
+  return { ok: true, value: raw };
+}
+
 async function ensurePermiso(modulo: string, accion: string): Promise<string> {
   const existing = await prisma.permiso.findUnique({ where: { modulo_accion: { modulo, accion } } });
   if (existing) return existing.id;
@@ -255,15 +298,14 @@ export async function adminUpdateUserProfile(
   const name         = formData.get("name")?.toString().trim();
   const email        = formData.get("email")?.toString().trim().toLowerCase();
   const activoStr    = formData.get("activo")?.toString();
-  const image        = formData.get("image")?.toString().trim() || null;
+  const imageRaw     = formData.get("image")?.toString() ?? "";
 
   if (!targetUserId || !name || !email) return { error: "Faltan datos obligatorios" };
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: "Email inválido" };
-  if (image) {
-    const isDataUrl = /^data:image\/(jpeg|png|webp);base64,/.test(image);
-    const isHttpUrl = /^https?:\/\/.+/.test(image);
-    if (!isDataUrl && !isHttpUrl) return { error: "URL de avatar inválida (usá https:// o subí una imagen)" };
-  }
+
+  const imageResult = validateAvatarDataUrl(imageRaw);
+  if (!imageResult.ok) return { error: imageResult.error };
+  const image = imageResult.value;
 
   const target = await prisma.user.findUnique({ where: { id: targetUserId } });
   if (!target) return { error: "Usuario no encontrado" };

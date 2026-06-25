@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { adminUpdateUserProfile } from "@/app/(dashboard)/permisos/actions";
-import { UserAvatar } from "@/components/modules/cuenta/UserAvatar";
+import { AvatarUploadField } from "@/components/modules/cuenta/AvatarUploadField";
 
 export function AdminEditUserForm({
   users,
@@ -11,12 +11,12 @@ export function AdminEditUserForm({
 }) {
   const [state, formAction, pending] = useActionState(adminUpdateUserProfile, null);
   const [selected, setSelected] = useState<typeof users[number] | null>(null);
-  const [imagePreview, setImagePreview] = useState("");
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
 
   function handleUserSelect(e: React.ChangeEvent<HTMLSelectElement>) {
     const u = users.find((u) => u.id === e.target.value) ?? null;
     setSelected(u);
-    setImagePreview(u?.image ?? "");
+    setImagePreview(u?.image ?? null);
   }
 
   return (
@@ -59,25 +59,13 @@ export function AdminEditUserForm({
 
         {selected && (
           <>
-            {/* Avatar preview */}
-            <div className="flex items-center gap-3">
-              <div className="h-12 w-12 rounded-full overflow-hidden bg-byg-accent/10 flex items-center justify-center shrink-0 border border-slate-200">
-                <UserAvatar image={imagePreview || null} name={selected.name} iconSize={18} />
-              </div>
-              <div className="flex-1 flex flex-col gap-1">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                  URL foto de perfil
-                </label>
-                <input
-                  type="url"
-                  name="image"
-                  defaultValue={selected.image ?? ""}
-                  onChange={(e) => setImagePreview(e.target.value)}
-                  placeholder="https://..."
-                  className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
+            <AvatarUploadField
+              name="image"
+              value={imagePreview}
+              onChange={setImagePreview}
+              previewName={selected.name}
+              size="sm"
+            />
 
             <div className="flex flex-col gap-1">
               <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">
