@@ -25,8 +25,25 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   let userImage: string | null = null;
 
   try {
-    const results = await Promise.allSettled([
-      auth(),
+    // auth() only decodes/verifies the JWT cookie — no DB round trip — so it
+    // resolves first and lets every other (real) query below run in one batch
+    // instead of being serialized behind it.
+    session = await auth();
+
+    const isAdmin = session?.user?.role === "ADMIN";
+    if (isAdmin) {
+      const store = await cookies();
+      currentPreviewId = store.get(PREVIEW_COOKIE)?.value ?? null;
+    }
+
+    const realRole = session?.user?.role as UserRole | undefined;
+    // Non-admin permissions only depend on session (already resolved), so they
+    // can run in the same parallel batch instead of after it.
+    const fastPermissionsPromise = !isAdmin && session?.user?.id
+      ? getEffectivePermissions(session.user.id, realRole as UserRole)
+      : Promise.resolve(null);
+
+    const [carterasRes, cuentasRes, cajasRes, previewUsersRes, userRes, fastPermsRes] = await Promise.allSettled([
       prisma.cartera.findMany({
         select: { nombre: true, slug: true },
         orderBy: { orden: "asc" },
@@ -41,48 +58,45 @@ export default async function DashboardLayout({ children }: { children: ReactNod
         select: { label: true, slug: true },
         orderBy: { label: "asc" },
       }),
+      isAdmin
+        ? prisma.user.findMany({
+            where: { activo: true, role: { not: "ADMIN" } },
+            select: { id: true, name: true, role: true },
+            orderBy: { name: "asc" },
+          })
+        : Promise.resolve([] as { id: string; name: string; role: string }[]),
+      session?.user?.id
+        ? prisma.user.findUnique({
+            where: { id: session.user.id },
+            select: { mustChangePassword: true, image: true },
+          })
+        : Promise.resolve(null),
+      fastPermissionsPromise,
     ]);
 
-    if (results[0].status === "fulfilled") session = results[0].value;
-    if (results[1].status === "fulfilled") carteras = results[1].value;
-    if (results[2].status === "fulfilled") cuentasInversion = results[2].value;
-    if (results[3].status === "fulfilled") cajasSucursal = results[3].value as { label: string; slug: string }[];
-
-    if (session?.user?.role === "ADMIN") {
-      const store = await cookies();
-      currentPreviewId = store.get(PREVIEW_COOKIE)?.value ?? null;
-      previewUsers = await prisma.user.findMany({
-        where: { activo: true, role: { not: "ADMIN" } },
-        select: { id: true, name: true, role: true },
-        orderBy: { name: "asc" },
-      });
+    if (carterasRes.status === "fulfilled") carteras = carterasRes.value;
+    if (cuentasRes.status === "fulfilled") cuentasInversion = cuentasRes.value;
+    if (cajasRes.status === "fulfilled") cajasSucursal = cajasRes.value as { label: string; slug: string }[];
+    if (previewUsersRes.status === "fulfilled") previewUsers = previewUsersRes.value;
+    if (userRes.status === "fulfilled" && userRes.value) {
+      mustChangePassword = userRes.value.mustChangePassword ?? false;
+      userImage = userRes.value.image ?? null;
     }
 
     if (session?.user) {
-      const realRole = session.user.role as UserRole;
-      if (realRole === "ADMIN" && !currentPreviewId) {
+      if (isAdmin && !currentPreviewId) {
         allowedPermissions = null; // admin sees all
-      } else if (realRole === "ADMIN" && currentPreviewId) {
+      } else if (isAdmin && currentPreviewId) {
         const previewUser = previewUsers.find((u) => u.id === currentPreviewId);
         if (previewUser) {
           const perms = await getEffectivePermissions(previewUser.id, previewUser.role as UserRole);
           allowedPermissions = Array.from(perms);
         }
-      } else {
-        const perms = await getEffectivePermissions(session.user.id, realRole);
-        allowedPermissions = Array.from(perms);
+      } else if (fastPermsRes.status === "fulfilled" && fastPermsRes.value) {
+        allowedPermissions = Array.from(fastPermsRes.value);
       }
     }
     notifications = await getNotifications(allowedPermissions);
-
-    if (session?.user?.id) {
-      const u = await prisma.user.findUnique({
-        where:  { id: session.user.id },
-        select: { mustChangePassword: true, image: true },
-      });
-      mustChangePassword = u?.mustChangePassword ?? false;
-      userImage = u?.image ?? null;
-    }
   } catch (error) {
     console.error("DashboardLayout: Error loading sidebar data", error);
   }
