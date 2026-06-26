@@ -1,6 +1,6 @@
 import { requirePermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
-import { CategoriaActivo } from "@prisma/client";
+import { CategoriaActivo, PriceSource, PriceStatus } from "@prisma/client";
 import { UpdatePrecioActivoForm } from "@/components/modules/configuracion/UpdatePrecioActivoForm";
 import { PreciosBatchTextareaForm } from "@/components/modules/configuracion/PreciosBatchTextareaForm";
 import { DownloadPricesCSV } from "@/components/modules/configuracion/DownloadPricesCSV";
@@ -31,7 +31,28 @@ type Row = {
   precioActual:  number | null;
   cantidadTotal: number;
   origins:       string[];
+  priceSource:   PriceSource;
+  priceStatus:   PriceStatus;
+  priceSyncedAt: Date | null;
 };
+
+const SOURCE_BADGE: Record<PriceSource, { label: string; cls: string }> = {
+  DATA912:    { label: "Data912",     cls: "bg-emerald-500/15 text-emerald-400" },
+  MANUAL:     { label: "Manual",      cls: "bg-byg-surface-2 text-byg-muted" },
+  LAST_KNOWN: { label: "Últ. conocido", cls: "bg-amber-500/15 text-amber-400" },
+};
+
+const STATUS_BADGE: Record<PriceStatus, { label: string; cls: string }> = {
+  OK:        { label: "OK",             cls: "bg-emerald-500/15 text-emerald-400" },
+  NOT_FOUND: { label: "NO ENCONTRADO",  cls: "bg-amber-500/15 text-amber-400" },
+  ERROR:     { label: "ERROR",          cls: "bg-rose-500/15 text-rose-400" },
+  STALE:     { label: "DESACTUALIZADO", cls: "bg-orange-500/15 text-orange-400" },
+};
+
+function fmtSyncedAt(d: Date | null) {
+  if (!d) return null;
+  return new Date(d).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
 
 // ─── Section component ────────────────────────────────────────────────────────
 
@@ -70,7 +91,8 @@ function PreciosSection({
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted">Descripción</th>
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted w-[60px]">Moneda</th>
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted text-right">Precio</th>
-              <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted w-[70px]">Estado</th>
+              <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted w-[90px]">Fuente</th>
+              <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted w-[90px]">Estado</th>
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted">Origen</th>
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted text-right">Actualizar</th>
               <th className="px-4 py-2 text-[9px] font-black uppercase tracking-widest text-byg-muted text-right">Hist.</th>
@@ -103,9 +125,19 @@ function PreciosSection({
                   }
                 </td>
                 <td className="px-4 py-2.5">
+                  <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${SOURCE_BADGE[row.priceSource].cls}`}>
+                    {SOURCE_BADGE[row.priceSource].label}
+                  </span>
+                  {row.priceSyncedAt && (
+                    <p className="text-[9px] text-byg-muted mt-0.5 font-mono">{fmtSyncedAt(row.priceSyncedAt)}</p>
+                  )}
+                </td>
+                <td className="px-4 py-2.5">
                   {row.precioActual === null
                     ? <span className="text-[10px] font-black text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-full">SIN PRECIO</span>
-                    : <span className="text-[10px] font-black text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">OK</span>
+                    : <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${STATUS_BADGE[row.priceStatus].cls}`}>
+                        {STATUS_BADGE[row.priceStatus].label}
+                      </span>
                   }
                 </td>
                 <td className="px-4 py-2.5">
@@ -228,6 +260,9 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
       precioActual:  a.precioActual !== null ? Number(a.precioActual) : null,
       cantidadTotal: 0,
       origins,
+      priceSource:   a.priceSource,
+      priceStatus:   a.priceStatus,
+      priceSyncedAt: a.priceSyncedAt,
     };
   });
 

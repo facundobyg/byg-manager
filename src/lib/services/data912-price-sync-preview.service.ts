@@ -82,6 +82,43 @@ interface ClassifyResult {
   reason:           string;
 }
 
+export type ScaleApplied = "DIVIDE_BY_100" | "NONE";
+
+export interface NormalizeData912PriceInput {
+  rawPrice:      number;
+  category:      CategoriaActivo | null;
+  endpoint:      Data912EndpointKey | null;
+  ticker:        string;
+  data912Symbol: string | null;
+}
+
+export interface NormalizeData912PriceResult {
+  price:        number;
+  scaleApplied: ScaleApplied;
+  reason:       string;
+}
+
+// Data912 cotiza renta fija (bonos/ON) como precio por cada 100 VN; BYG
+// calcula posiciones como cantidad VN x precio unitario (por 1 VN). El
+// endpoint también es señal válida para holdings huérfanos sin categoría
+// propia (ej. AL30D), que resuelven por alias directo a arg_bonds.
+const RENTA_FIJA_CATEGORIAS: ReadonlySet<CategoriaActivo> = new Set<CategoriaActivo>(["BONO_USD", "BONO_ARS", "ON_USD"]);
+const RENTA_FIJA_ENDPOINTS: ReadonlySet<Data912EndpointKey> = new Set<Data912EndpointKey>(["arg_bonds", "arg_corp", "arg_notes"]);
+
+export function normalizeData912PriceForByg(input: NormalizeData912PriceInput): NormalizeData912PriceResult {
+  const byCategory = input.category != null && RENTA_FIJA_CATEGORIAS.has(input.category);
+  const byEndpoint = input.endpoint != null && RENTA_FIJA_ENDPOINTS.has(input.endpoint);
+
+  if (byCategory || byEndpoint) {
+    return {
+      price: input.rawPrice / 100,
+      scaleApplied: "DIVIDE_BY_100",
+      reason: "Data912 cotiza renta fija (bonos/ON) como precio por 100 VN; BYG calcula por 1 VN.",
+    };
+  }
+  return { price: input.rawPrice, scaleApplied: "NONE", reason: "Cotización ya está en escala por unidad — sin ajuste." };
+}
+
 function attemptedEndpoints(
   input: TickerResolveInput,
   aliases: PriceTickerAliasInput[],
@@ -110,10 +147,17 @@ function classifyTicker(
     const quote = result.endpoint && result.data912Symbol
       ? findQuoteInSnapshot(snapshots, result.endpoint, result.data912Symbol)
       : null;
+    const normalized = quote?.price != null
+      ? normalizeData912PriceForByg({
+          rawPrice: quote.price, category: input.category, endpoint: result.endpoint,
+          ticker: input.bygTicker, data912Symbol: result.data912Symbol,
+        })
+      : null;
     return {
       resolveStatus: "MATCHED", resolveSource: result.source, endpoint: result.endpoint, data912Symbol: result.data912Symbol,
-      data912Price: quote?.price ?? null, inferredCurrency: quote?.inferredCurrency ?? null,
-      confidence: result.confidence, reason: result.reason,
+      data912Price: normalized?.price ?? null, inferredCurrency: quote?.inferredCurrency ?? null,
+      confidence: result.confidence,
+      reason: normalized?.scaleApplied === "DIVIDE_BY_100" ? `${result.reason} ${normalized.reason}` : result.reason,
     };
   }
 
