@@ -3,9 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireActionPermission } from "@/lib/auth/permissions";
-import { processBindPdfUpload, type UploadBindPdfsResult } from "./process-upload";
+import {
+  processBindPdfUpload,
+  resolveBindAccountAlias,
+  resolveBindTickerAlias,
+  getPendingBindMappings as getPendingBindMappingsImpl,
+  type UploadBindPdfsResult,
+  type ResolveResult,
+} from "./process-upload";
 
-export type { UploadResultRow, UploadBindPdfsResult } from "./process-upload";
+export type { UploadResultRow, UploadBindPdfsResult, ResolveResult, PendingAccountMapping, PendingTickerMapping } from "./process-upload";
 
 /**
  * Único punto de entrada gateado para la UI. La lógica real vive en
@@ -72,4 +79,71 @@ export async function getBindImportFileDetail(fileId: string) {
     unmappedTickers,
     cauciones,
   };
+}
+
+/** Cuentas/tickers pendientes de un lote, agrupados para la UI de resolución. Solo lectura. */
+export async function getPendingBindMappings(batchId: string) {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return null;
+  return getPendingBindMappingsImpl(batchId);
+}
+
+/** Selector de comitentes existentes — nunca crea uno nuevo. */
+export async function getComitentesForSelect() {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return [];
+  return prisma.comitenteInversion.findMany({
+    where: { activo: true },
+    select: { id: true, nombre: true, nroComitente: true },
+    orderBy: { nombre: "asc" },
+  });
+}
+
+/** Selector de activos existentes — nunca crea uno nuevo. */
+export async function getActivosForSelect() {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return [];
+  return prisma.activo.findMany({
+    select: { id: true, ticker: true, descripcion: true, categoria: true, monedaPrecio: true },
+    orderBy: { ticker: "asc" },
+  });
+}
+
+// ─── Resolución manual (Módulo 4.12E) ──────────────────────────────────────────
+
+export async function resolveBindAccountAliasAction(
+  _prev: ResolveResult | null,
+  formData: FormData,
+): Promise<ResolveResult> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return { ok: false, error: denied.error };
+
+  const accountNumber = formData.get("accountNumber")?.toString() ?? "";
+  const comitenteId = formData.get("comitenteId")?.toString() ?? "";
+  if (!accountNumber.trim() || !comitenteId.trim()) return { ok: false, error: "Seleccioná un comitente." };
+
+  const result = await resolveBindAccountAlias(accountNumber, comitenteId);
+  if (result.ok) {
+    try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear por esto */ }
+  }
+  return result;
+}
+
+export async function resolveBindTickerAliasAction(
+  _prev: ResolveResult | null,
+  formData: FormData,
+): Promise<ResolveResult> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return { ok: false, error: denied.error };
+
+  const ticker = formData.get("ticker")?.toString() ?? "";
+  const brokerCodeRaw = formData.get("brokerCode")?.toString() ?? "";
+  const activoId = formData.get("activoId")?.toString() ?? "";
+  if (!ticker.trim() || !activoId.trim()) return { ok: false, error: "Seleccioná un activo." };
+
+  const result = await resolveBindTickerAlias(ticker, brokerCodeRaw || null, activoId);
+  if (result.ok) {
+    try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear por esto */ }
+  }
+  return result;
 }

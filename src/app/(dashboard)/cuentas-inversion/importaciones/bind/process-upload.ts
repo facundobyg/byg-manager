@@ -10,7 +10,7 @@ import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { parseBindTenenciasPdf } from "@/lib/importers/bind-tenencias/parser";
 import type { BindTenenciasParsedFile, BindTenenciasRow } from "@/lib/importers/bind-tenencias/types";
-import type { Activo, BindSectionType, CategoriaActivo } from "@prisma/client";
+import type { Activo, BindImportBatchStatus, BindImportFileStatus, BindSectionType, CategoriaActivo } from "@prisma/client";
 
 // Límites de esta primera versión (Módulo 4.12D). El cuello de botella real
 // no es el tamaño de archivo (los 2 PDFs de referencia pesan ~16-20kb cada
@@ -76,7 +76,7 @@ function isCashSection(sectionType: BindSectionType): boolean {
  * SUPV ya cargado como ADR/ACCION_USD (Módulo 4.7B) solo porque el string
  * del ticker coincide. Mismo criterio para BBD/BBD-US, EWZ/EWZ-US.
  */
-function isCompatibleActivo(
+export function isCompatibleActivo(
   sectionType: BindSectionType,
   ticker: string,
   activo: Pick<Activo, "categoria" | "monedaPrecio">,
@@ -96,9 +96,11 @@ function isCompatibleActivo(
       return bondCategorias.includes(activo.categoria);
     }
     case "FCI":
-      // Sin regla confiable todavía (4.12A) — un match exacto de ticker NO
-      // alcanza para FCI, solo un alias explícito puede resolverlo.
-      return false;
+      // Sin regla automática confiable todavía (4.12A): el matching por
+      // ticker exacto nunca se intenta para FCI (ver matchActivo). Pero un
+      // alias EXPLÍCITO sí puede apuntar a un Activo realmente FCI — el
+      // chequeo acá solo valida que la categoría sea coherente.
+      return activo.categoria === "FCI";
     default:
       return false;
   }
@@ -308,4 +310,216 @@ export async function processBindPdfUpload(formData: FormData): Promise<UploadBi
   });
 
   return { ok: true, batchId: finalBatch.id, results };
+}
+
+// ─── Resolución manual de cuentas/tickers (Módulo 4.12E) ───────────────────────
+// Todo lo de acá hereda la misma regla de oro: nunca toca holdings/precios/
+// carteras reales. Solo escribe en BrokerAccountAlias/BrokerTickerAlias y en
+// las propias tablas de staging (BindTenenciasImportFile/Row).
+
+/** Recalcula el status de un archivo a partir de su estado real en DB. ERROR y DUPLICATE son permanentes — nunca se recalculan hacia otra cosa. */
+export async function recalcFileStatus(fileId: string): Promise<BindImportFileStatus> {
+  const file = await prisma.bindTenenciasImportFile.findUnique({ where: { id: fileId } });
+  if (!file) throw new Error(`BindTenenciasImportFile ${fileId} no existe.`);
+  if (file.status === "ERROR" || file.status === "DUPLICATE" || file.status === "CONFIRMED" || file.status === "SKIPPED") {
+    return file.status;
+  }
+  if (!file.matchedComitenteId) return "NEEDS_ACCOUNT_MAPPING";
+
+  const pendingCount = await prisma.bindTenenciasImportRow.count({ where: { importFileId: fileId, requiresMapping: true } });
+  return pendingCount > 0 ? "NEEDS_TICKER_MAPPING" : "READY";
+}
+
+/** Recalcula el status del lote a partir del status real de sus archivos. */
+export async function recalcBatchStatus(batchId: string): Promise<BindImportBatchStatus> {
+  const files = await prisma.bindTenenciasImportFile.findMany({ where: { batchId }, select: { status: true } });
+  let status: BindImportBatchStatus;
+  if (files.length === 0) {
+    status = "DRAFT";
+  } else if (files.some((f) => f.status === "ERROR")) {
+    status = "PARTIAL_ERROR";
+  } else if (files.every((f) => f.status === "READY" || f.status === "CONFIRMED")) {
+    status = "READY_TO_CONFIRM";
+  } else {
+    status = "PARSED";
+  }
+  await prisma.bindTenenciasImportBatch.update({ where: { id: batchId }, data: { status, updatedAt: new Date() } });
+  return status;
+}
+
+async function recalcAffectedFiles(fileIds: string[]): Promise<void> {
+  const uniqueFileIds = Array.from(new Set(fileIds));
+  for (const fileId of uniqueFileIds) {
+    const status = await recalcFileStatus(fileId);
+    await prisma.bindTenenciasImportFile.update({ where: { id: fileId }, data: { status, updatedAt: new Date() } });
+  }
+  const batchIds = new Set(
+    (await prisma.bindTenenciasImportFile.findMany({ where: { id: { in: uniqueFileIds } }, select: { batchId: true } })).map((f) => f.batchId),
+  );
+  for (const batchId of Array.from(batchIds)) await recalcBatchStatus(batchId);
+}
+
+export type ResolveResult = { ok: true; affectedCount: number } | { ok: false; error: string };
+
+/**
+ * Vincula una cuenta externa Bind a un ComitenteInversion ya existente.
+ * Nunca crea comitentes. Aplica a TODOS los archivos pendientes con ese
+ * accountNumber (no solo el del lote en pantalla), porque el alias es una
+ * decisión que vale para cualquier import futuro/pasado con esa cuenta.
+ */
+export async function resolveBindAccountAlias(accountNumber: string, comitenteId: string): Promise<ResolveResult> {
+  const accNum = accountNumber.trim();
+  const comId = comitenteId.trim();
+  if (!accNum || !comId) return { ok: false, error: "Faltan datos (cuenta o comitente)." };
+
+  const comitente = await prisma.comitenteInversion.findUnique({ where: { id: comId } });
+  if (!comitente) return { ok: false, error: "El comitente indicado no existe." };
+
+  const pendingFiles = await prisma.bindTenenciasImportFile.findMany({
+    where: { accountNumber: accNum, status: "NEEDS_ACCOUNT_MAPPING" },
+    select: { id: true, accountName: true },
+  });
+
+  await prisma.brokerAccountAlias.upsert({
+    where: { broker_accountNumber: { broker: "BIND", accountNumber: accNum } },
+    update: { comitenteId: comId, enabled: true, accountNameLastSeen: pendingFiles[0]?.accountName ?? undefined, updatedAt: new Date() },
+    create: {
+      id: crypto.randomUUID(),
+      broker: "BIND",
+      accountNumber: accNum,
+      accountNameLastSeen: pendingFiles[0]?.accountName ?? null,
+      comitenteId: comId,
+      enabled: true,
+      updatedAt: new Date(),
+    },
+  });
+
+  if (pendingFiles.length > 0) {
+    await prisma.bindTenenciasImportFile.updateMany({
+      where: { id: { in: pendingFiles.map((f) => f.id) } },
+      data: { matchedComitenteId: comId, updatedAt: new Date() },
+    });
+    await recalcAffectedFiles(pendingFiles.map((f) => f.id));
+  }
+
+  return { ok: true, affectedCount: pendingFiles.length };
+}
+
+/**
+ * Vincula un ticker/código Bind a un Activo BYG existente. Bloquea (no
+ * fuerza) si el Activo elegido no es compatible con la sección de origen —
+ * caso obligatorio: SUPV local nunca debe poder mapearse al Activo SUPV
+ * ADR/USD. Nunca crea Activos.
+ */
+export async function resolveBindTickerAlias(brokerTicker: string, brokerCode: string | null, activoId: string): Promise<ResolveResult> {
+  const ticker = brokerTicker.trim();
+  const actId = activoId.trim();
+  if (!ticker || !actId) return { ok: false, error: "Faltan datos (ticker o activo)." };
+
+  const activo = await prisma.activo.findUnique({ where: { id: actId } });
+  if (!activo) return { ok: false, error: "El activo indicado no existe." };
+
+  const pendingRows = await prisma.bindTenenciasImportRow.findMany({
+    where: { ticker, brokerCode, requiresMapping: true },
+  });
+  if (pendingRows.length === 0) return { ok: false, error: "No hay filas pendientes para ese ticker/código." };
+
+  const sectionType = pendingRows[0].sectionType;
+  if (!isCompatibleActivo(sectionType, ticker, activo)) {
+    return {
+      ok: false,
+      error: `No existe activo compatible. Crear/corregir activo en catálogo antes de mapear. (Activo "${activo.ticker}" es ${activo.categoria}/${activo.monedaPrecio}, incompatible con esta sección.)`,
+    };
+  }
+
+  // No se usa el shorthand de upsert por clave compuesta porque Prisma no
+  // permite null en el selector compuesto aunque la columna sea nullable
+  // (cada NULL es distinto a nivel de índice). brokerCode siempre viene
+  // poblado en datos reales de Bind, pero por si acaso se maneja a mano.
+  const existingAlias = await prisma.brokerTickerAlias.findFirst({ where: { broker: "BIND", brokerTicker: ticker, brokerCode } });
+  if (existingAlias) {
+    await prisma.brokerTickerAlias.update({ where: { id: existingAlias.id }, data: { activoId: actId, enabled: true, updatedAt: new Date() } });
+  } else {
+    await prisma.brokerTickerAlias.create({
+      data: { id: crypto.randomUUID(), broker: "BIND", brokerTicker: ticker, brokerCode, activoId: actId, enabled: true, updatedAt: new Date() },
+    });
+  }
+
+  await prisma.bindTenenciasImportRow.updateMany({
+    where: { id: { in: pendingRows.map((r) => r.id) } },
+    data: { matchedActivoId: actId, requiresMapping: false, updatedAt: new Date() },
+  });
+
+  await recalcAffectedFiles(pendingRows.map((r) => r.importFileId));
+
+  return { ok: true, affectedCount: pendingRows.length };
+}
+
+export interface PendingAccountMapping {
+  fileId: string;
+  fileName: string;
+  accountNumber: string | null;
+  accountName: string | null;
+  reportDate: Date | null;
+  totalAmountARS: number | null;
+}
+
+export interface PendingTickerMapping {
+  ticker: string;
+  brokerCode: string | null;
+  descriptionClean: string;
+  sectionType: BindSectionType;
+  inferredInstrumentType: string;
+  inferredNativeCurrency: string;
+  occurrences: number;
+  fileIds: string[];
+  totalAmountARS: number;
+}
+
+/** Lectura agregada de lo pendiente en un lote — para armar la UI de resolución. No escribe nada. */
+export async function getPendingBindMappings(batchId: string): Promise<{
+  accounts: PendingAccountMapping[];
+  tickers: PendingTickerMapping[];
+}> {
+  const files = await prisma.bindTenenciasImportFile.findMany({ where: { batchId } });
+
+  const accounts: PendingAccountMapping[] = files
+    .filter((f) => f.status === "NEEDS_ACCOUNT_MAPPING")
+    .map((f) => ({
+      fileId: f.id,
+      fileName: f.fileName,
+      accountNumber: f.accountNumber,
+      accountName: f.accountName,
+      reportDate: f.reportDate,
+      totalAmountARS: f.totalAmountARS != null ? Number(f.totalAmountARS) : null,
+    }));
+
+  const fileIds = files.map((f) => f.id);
+  const pendingRows = fileIds.length > 0
+    ? await prisma.bindTenenciasImportRow.findMany({ where: { importFileId: { in: fileIds }, requiresMapping: true } })
+    : [];
+
+  const grouped = new Map<string, PendingTickerMapping>();
+  for (const row of pendingRows) {
+    const key = `${row.ticker ?? ""}|${row.brokerCode ?? ""}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        ticker: row.ticker ?? "(sin ticker)",
+        brokerCode: row.brokerCode,
+        descriptionClean: row.descriptionClean,
+        sectionType: row.sectionType,
+        inferredInstrumentType: row.inferredInstrumentType,
+        inferredNativeCurrency: row.inferredNativeCurrency,
+        occurrences: 0,
+        fileIds: [],
+        totalAmountARS: 0,
+      });
+    }
+    const bucket = grouped.get(key)!;
+    bucket.occurrences++;
+    if (!bucket.fileIds.includes(row.importFileId)) bucket.fileIds.push(row.importFileId);
+    bucket.totalAmountARS += row.totalAmountARS != null ? Number(row.totalAmountARS) : 0;
+  }
+
+  return { accounts, tickers: Array.from(grouped.values()) };
 }
