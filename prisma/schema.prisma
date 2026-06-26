@@ -40,6 +40,8 @@ model Activo {
   PosicionCartera     PosicionCartera[]
   PrecioHistorico     PrecioHistorico[]
   TransferenciaActivo TransferenciaActivo[]
+  BindTenenciasImportRows BindTenenciasImportRow[]
+  BrokerTickerAliases     BrokerTickerAlias[]
 
   @@index([categoria])
   @@index([ticker])
@@ -163,6 +165,8 @@ model ComitenteInversion {
   OperacionHoldingInversion OperacionHoldingInversion[]
   SaldoComitenteInversion   SaldoComitenteInversion?
   OperacionBolsa            OperacionBolsa[]
+  BindTenenciasImportFiles  BindTenenciasImportFile[]
+  BrokerAccountAliases      BrokerAccountAlias[]
 
   @@unique([cuentaInversionId, nroComitente])
   @@index([carteraId])
@@ -283,6 +287,124 @@ model ImportacionHolding {
   CuentaInversion CuentaInversion @relation(fields: [cuentaId], references: [id], onDelete: Cascade)
 
   @@index([cuentaId])
+}
+
+// ── Import jobs Bind (Sesión 12, Módulo 4.12C) ──────────────────────────────
+// Auditoría/staging de PDFs "Saldos y Tenencias" — nunca escribe holdings/
+// precios reales. Ver src/lib/importers/bind-tenencias/ (parser, 4.12B).
+
+model BindTenenciasImportBatch {
+  id              String                @id
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime
+  createdByUserId String?
+  status          BindImportBatchStatus @default(DRAFT)
+  totalFiles      Int                   @default(0)
+  parsedFiles     Int                   @default(0)
+  errorFiles      Int                   @default(0)
+  confirmedFiles  Int                   @default(0)
+  notes           String?
+  CreatedByUser   User?                     @relation(fields: [createdByUserId], references: [id])
+  Files           BindTenenciasImportFile[]
+
+  @@index([status])
+  @@index([createdByUserId])
+}
+
+model BindTenenciasImportFile {
+  id                 String               @id
+  batchId            String
+  fileName           String
+  fileHashSha256     String               @unique
+  status             BindImportFileStatus @default(PARSED)
+  reportDate         DateTime?            @db.Date
+  reportTime         String?
+  accountNumber      String?
+  accountName        String?
+  matchedComitenteId String?
+  totalAmountARS     Decimal?             @db.Decimal(18, 2)
+  rawJson            Json
+  warningsJson       Json?
+  errorMessage       String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime
+  Batch              BindTenenciasImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  MatchedComitente   ComitenteInversion?      @relation(fields: [matchedComitenteId], references: [id], onDelete: SetNull)
+  Rows               BindTenenciasImportRow[]
+
+  @@index([batchId])
+  @@index([accountNumber, reportDate])
+  @@index([matchedComitenteId])
+  @@index([status])
+}
+
+model BindTenenciasImportRow {
+  id                     String          @id
+  importFileId           String
+  sectionName            String
+  sectionType            BindSectionType
+  ticker                 String?
+  brokerCode             String?
+  descriptionRaw         String
+  descriptionClean       String
+  quote                  Decimal?        @db.Decimal(18, 6)
+  saldoVencidoQuantity   Decimal?        @db.Decimal(18, 6)
+  saldoVencidoAmountARS  Decimal?        @db.Decimal(18, 2)
+  pending24AmountARS     Decimal?        @db.Decimal(18, 2)
+  pending48AmountARS     Decimal?        @db.Decimal(18, 2)
+  pendingFutureAmountARS Decimal?        @db.Decimal(18, 2)
+  garantiaQuantity       Decimal?        @db.Decimal(18, 6)
+  garantiaAmountARS      Decimal?        @db.Decimal(18, 2)
+  totalQuantity          Decimal?        @db.Decimal(18, 6)
+  totalAmountARS         Decimal?        @db.Decimal(18, 2)
+  inferredInstrumentType String
+  inferredNativeCurrency String
+  matchedActivoId        String?
+  requiresMapping        Boolean         @default(false)
+  warningsJson           Json?
+  rawJson                Json
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime
+  ImportFile             BindTenenciasImportFile @relation(fields: [importFileId], references: [id], onDelete: Cascade)
+  MatchedActivo          Activo?                 @relation(fields: [matchedActivoId], references: [id], onDelete: SetNull)
+
+  @@index([importFileId])
+  @@index([ticker])
+  @@index([brokerCode])
+  @@index([matchedActivoId])
+  @@index([requiresMapping])
+}
+
+model BrokerTickerAlias {
+  id           String   @id
+  broker       String   @default("BIND")
+  brokerTicker String
+  brokerCode   String?
+  activoId     String
+  enabled      Boolean  @default(true)
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  Activo       Activo   @relation(fields: [activoId], references: [id], onDelete: Cascade)
+
+  @@unique([broker, brokerTicker, brokerCode])
+  @@index([activoId])
+}
+
+model BrokerAccountAlias {
+  id                  String             @id
+  broker              String             @default("BIND")
+  accountNumber       String
+  accountNameLastSeen String?
+  comitenteId         String
+  enabled             Boolean            @default(true)
+  note                String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  Comitente           ComitenteInversion @relation(fields: [comitenteId], references: [id], onDelete: Cascade)
+
+  @@unique([broker, accountNumber])
+  @@index([comitenteId])
 }
 
 model InversionInmobiliaria {
@@ -704,10 +826,11 @@ model User {
   ubicacion           String?
   createdAt           DateTime              @default(now())
   updatedAt           DateTime
-  AuditLog            AuditLog[]
-  Backup              Backup[]
-  Session             Session[]
-  TransferenciaActivo TransferenciaActivo[]
+  AuditLog                  AuditLog[]
+  Backup                    Backup[]
+  Session                   Session[]
+  TransferenciaActivo       TransferenciaActivo[]
+  BindTenenciasImportBatches BindTenenciasImportBatch[]
   UserPermiso           UserPermiso[]
   OpBolsaCarga          OperacionBolsa[]    @relation("OpBolsaCarga")
   OpBolsaCierre         OperacionBolsa[]    @relation("OpBolsaCierre")
@@ -731,6 +854,38 @@ model UserPermiso {
 
   @@unique([userId, permisoId])
   @@index([userId])
+}
+
+enum BindImportBatchStatus {
+  DRAFT
+  PARSED
+  PARTIAL_ERROR
+  READY_TO_CONFIRM
+  CONFIRMED
+  CANCELLED
+}
+
+enum BindImportFileStatus {
+  PARSED
+  ERROR
+  DUPLICATE
+  NEEDS_ACCOUNT_MAPPING
+  NEEDS_TICKER_MAPPING
+  READY
+  CONFIRMED
+  SKIPPED
+}
+
+enum BindSectionType {
+  CASH_USD_CABLE
+  CASH_USD_MEP
+  CASH_ARS
+  EQUITY_SECTION_MIXED
+  CEDEAR
+  BOND
+  FCI
+  CAUCION_ALERT
+  UNKNOWN_SECTION
 }
 
 enum CategoriaActivo {
