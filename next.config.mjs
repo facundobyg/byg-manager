@@ -1,6 +1,15 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  experimental: {
+    // Default de Next.js (1mb) no alcanza para subir varios PDFs en una sola
+    // Server Action (Módulo 4.12D, import batch Bind). El límite real de
+    // archivos por carga lo impone la app (ver MAX_FILES_PER_SUBMIT en
+    // cuentas-inversion/importaciones/bind/actions.ts), no este valor.
+    serverActions: {
+      bodySizeLimit: "8mb",
+    },
+  },
   async headers() {
     return [
       {

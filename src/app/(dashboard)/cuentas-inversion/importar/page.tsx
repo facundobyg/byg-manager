@@ -25,9 +25,17 @@ export default async function ImportarPage() {
         >
           ← Cuentas de Inversión
         </Link>
-        <div>
-          <h1 className="text-3xl font-black text-slate-900 tracking-tight">Importar Holdings</h1>
-          <p className="text-slate-500 text-sm mt-1">Carga masiva desde archivo .xlsx</p>
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-3xl font-black text-slate-900 tracking-tight">Importar Holdings</h1>
+            <p className="text-slate-500 text-sm mt-1">Carga masiva desde archivo .xlsx</p>
+          </div>
+          <Link
+            href="/cuentas-inversion/importaciones/bind"
+            className="text-xs font-bold text-blue-600 hover:text-blue-700 transition-colors underline"
+          >
+            ¿Tenés PDFs de Bind (Saldos y Tenencias)? Importarlos acá →
+          </Link>
         </div>
       </header>
 
