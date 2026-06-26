@@ -108,6 +108,14 @@ export function applyRuleBasedCandidates(input: TickerResolveInput): Candidate[]
       ];
     }
 
+    case "ACCION_ARS": {
+      // Acciones locales argentinas en pesos (YPFD, BBAR, BHIP, METR
+      // confirmados en Módulo 4.10) -> exacto en arg_stocks. No usar
+      // arg_cedears (no son CEDEARs) ni aplicar ningún ajuste de escala
+      // (eso es exclusivo de renta fija, ver normalizeData912PriceForByg).
+      return [{ endpoint: "arg_stocks", symbol: normalizeTicker(bygTicker) }];
+    }
+
     case "ACCION_USD": {
       const t = normalizeTicker(bygTicker);
       if (endsWith(t, "D")) {
@@ -139,8 +147,9 @@ export function applyRuleBasedCandidates(input: TickerResolveInput): Candidate[]
       }
       if (endsWith(t, "D")) {
         // Regla 3: NO usar exacto (esa variante es otra cosa, confirmado con
-        // AAPLD). Quitar "D" y buscar en arg_cedears. Confianza media: YPFD
-        // es una excepción real conocida dentro de esta misma regla.
+        // AAPLD). Quitar "D" y buscar en arg_cedears. Confianza media: hay
+        // excepciones reales dentro de esta misma categoría (ej. tickers que
+        // en realidad son acciones locales, ver categoría ACCION_ARS).
         return [{ endpoint: "arg_cedears", symbol: stripSuffix(t, "D") }];
       }
       // Regla 6: CEDEAR sin sufijos conflictivos -> exacto en arg_cedears.

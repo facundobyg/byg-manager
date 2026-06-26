@@ -43,6 +43,7 @@ const CATEGORY_CONFIG: Record<CategoriaActivo, { label: string; accent: string }
   BONO_ARS:       { label: "Bonos ARS",                             accent: "border-l-amber-500"   },
   BONO_USD:       { label: "Bonos USD — Soberanos / Provinciales",  accent: "border-l-blue-500"    },
   ON_USD:         { label: "ONs en USD",                            accent: "border-l-indigo-500"  },
+  ACCION_ARS:     { label: "Acciones Argentinas",                   accent: "border-l-cyan-500"    },
   ACCION_USD:     { label: "Acciones USD — Cable",                  accent: "border-l-emerald-500" },
   ACCION_USD_EXT: { label: "Acciones USD — MEP",                    accent: "border-l-teal-500"    },
   CEDEAR:         { label: "CEDEARs",                               accent: "border-l-violet-500"  },
@@ -51,7 +52,7 @@ const CATEGORY_CONFIG: Record<CategoriaActivo, { label: string; accent: string }
 };
 
 const COMPLETA_ORDER: CategoriaActivo[] = [
-  "BONO_USD", "ON_USD", "ACCION_USD", "ACCION_USD_EXT", "CEDEAR", "FCI", "BONO_ARS",
+  "BONO_USD", "ON_USD", "ACCION_ARS", "ACCION_USD", "ACCION_USD_EXT", "CEDEAR", "FCI", "BONO_ARS",
 ];
 
 // ─── Types ────────────────────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ import {
 const CATEGORIES: { value: CategoriaActivo; label: string }[] = [
   { value: "BONO_USD",       label: "Bonos USD (Soberanos)" },
   { value: "ON_USD",         label: "ONs en USD" },
+  { value: "ACCION_ARS",     label: "Acciones Argentinas" },
   { value: "ACCION_USD",     label: "Acciones USD (Cable)" },
   { value: "ACCION_USD_EXT", label: "Acciones USD (MEP)" },
   { value: "CEDEAR",         label: "CEDEARs" },

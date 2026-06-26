@@ -12,14 +12,15 @@ import Link from "next/link";
 // ─── Section config ───────────────────────────────────────────────────────────
 
 const SECTIONS: { cat: CategoriaActivo; label: string; accent: string }[] = [
+  { cat: "BONO_ARS",       label: "Bonos ARS",                            accent: "border-l-amber-500"   },
   { cat: "BONO_USD",       label: "Bonos USD — Soberanos / Provinciales", accent: "border-l-blue-500"    },
   { cat: "ON_USD",         label: "ONs en USD",                           accent: "border-l-indigo-500"  },
+  { cat: "ACCION_ARS",     label: "Acciones Argentinas",                  accent: "border-l-cyan-500"    },
   { cat: "ACCION_USD",     label: "Acciones USD — Cable",                 accent: "border-l-emerald-500" },
   { cat: "ACCION_USD_EXT", label: "Acciones USD — MEP",                   accent: "border-l-teal-500"    },
   { cat: "CEDEAR",         label: "CEDEARs",                              accent: "border-l-violet-500"  },
   { cat: "FCI",            label: "FCI / Fondos",                         accent: "border-l-sky-500"     },
   { cat: "CRIPTO",         label: "Cripto",                               accent: "border-l-orange-500"  },
-  { cat: "BONO_ARS",       label: "Bonos ARS",                            accent: "border-l-amber-500"   },
 ];
 
 // ─── Row type (all plain — no Decimal) ───────────────────────────────────────

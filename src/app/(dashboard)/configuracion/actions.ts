@@ -719,7 +719,7 @@ export async function importPreciosExcel(
 // ─── Edición de catálogo (metadata de Activo) ──────────────────────────────────
 
 const CATEGORIAS_VALIDAS: CategoriaActivo[] = [
-  "BONO_USD", "BONO_ARS", "ON_USD", "ACCION_USD", "ACCION_USD_EXT", "CEDEAR", "CRIPTO", "FCI",
+  "BONO_USD", "BONO_ARS", "ON_USD", "ACCION_ARS", "ACCION_USD", "ACCION_USD_EXT", "CEDEAR", "CRIPTO", "FCI",
 ];
 const MONEDAS_VALIDAS: Moneda[] = ["USD", "ARS", "EUR", "BRL"];
 

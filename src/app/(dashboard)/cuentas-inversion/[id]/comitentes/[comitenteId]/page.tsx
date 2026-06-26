@@ -56,6 +56,7 @@ const ACTIVO_TO_HOLDING: Record<CategoriaActivo, CategoriaHoldingInversion> = {
   BONO_ARS:      "BONO",
   BONO_USD:      "BONO",
   ON_USD:        "ON",
+  ACCION_ARS:    "ACCION",
   ACCION_USD:    "ACCION",
   ACCION_USD_EXT:"ACCION",
   CEDEAR:        "CEDEAR",
