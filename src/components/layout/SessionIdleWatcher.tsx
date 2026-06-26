@@ -13,6 +13,7 @@ function now() { return Date.now(); }
 
 async function doSignOut() {
   try { await logIdleTimeout(); } catch { /* fire-and-forget */ }
+  localStorage.removeItem(STORAGE_KEY);
   await signOut({ callbackUrl: "/login?reason=idle" });
 }
 
@@ -30,22 +31,28 @@ export function SessionIdleWatcher() {
   }, []);
 
   useEffect(() => {
-    // On mount: check if already idle from a previous tab/session
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && now() - Number(stored) >= IDLE_LIMIT) {
-      doSignOut();
-      return;
-    }
-    // Initialise timestamp if missing
-    if (!stored) localStorage.setItem(STORAGE_KEY, String(now()));
+    // Cada mount de este componente representa una navegación/login fresco
+    // (vive dentro del layout autenticado) — siempre arranca contando desde
+    // ahora. Nunca cerramos sesión en base al timestamp que ya estaba en
+    // localStorage: eso era lo que causaba el loop de logout post-2FA (un
+    // timestamp viejo de una sesión anterior, nunca limpiado al deslogear,
+    // disparaba signOut apenas montaba el layout recién logueado).
+    resetActivity();
 
     const events = ["mousemove", "keydown", "click", "scroll", "touchstart"] as const;
     events.forEach((e) => window.addEventListener(e, resetActivity, { passive: true }));
 
     const interval = setInterval(() => {
       if (signingOutRef.current) return;
-      const last   = Number(localStorage.getItem(STORAGE_KEY) ?? now());
-      const idle   = now() - last;
+      const stored = localStorage.getItem(STORAGE_KEY);
+      const last   = Number(stored);
+      if (stored === null || Number.isNaN(last)) {
+        // localStorage corrupto o vaciado externamente — no cerrar sesión,
+        // solo reiniciar el contador.
+        resetActivity();
+        return;
+      }
+      const idle = now() - last;
 
       if (idle >= IDLE_LIMIT) {
         signingOutRef.current = true;
