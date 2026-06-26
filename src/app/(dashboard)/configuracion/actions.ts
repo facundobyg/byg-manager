@@ -712,6 +712,117 @@ export async function importPreciosExcel(
   revalidatePath("/precios");
   revalidatePath("/configuracion");
   revalidatePath("/carteras", "layout");
-  
+
   return { ok: true, report };
+}
+
+// ─── Edición de catálogo (metadata de Activo) ──────────────────────────────────
+
+const CATEGORIAS_VALIDAS: CategoriaActivo[] = [
+  "BONO_USD", "BONO_ARS", "ON_USD", "ACCION_USD", "ACCION_USD_EXT", "CEDEAR", "CRIPTO", "FCI",
+];
+const MONEDAS_VALIDAS: Moneda[] = ["USD", "ARS", "EUR", "BRL"];
+
+export interface ActivoUsageSummary {
+  posiciones:     { carteraNombre: string; carteraSlug: string; cantidad: number; activa: boolean }[];
+  custodias:      { clienteNombre: string; cantidadTotal: number }[];
+  holdings:       { comitenteNombre: string; cantidad: number }[];
+  historicoCount: number;
+  aliasEnabled:   boolean;
+}
+
+/** Resumen de dónde está usado un Activo, para mostrar antes de editar su catálogo. No escribe nada. */
+export async function getActivoUsageSummary(activoId: string): Promise<ActivoUsageSummary | { error: string }> {
+  const denied = await requireActionPermission("configuracion:leer");
+  if (denied) return { error: denied.error };
+
+  const activo = await prisma.activo.findUnique({ where: { id: activoId } });
+  if (!activo) return { error: "Activo no encontrado." };
+
+  const [posiciones, custodias, holdings, historicoCount, alias] = await Promise.all([
+    prisma.posicionCartera.findMany({ where: { activoId }, include: { Cartera: { select: { nombre: true, slug: true, activa: true } } } }),
+    prisma.custodiaCliente.findMany({ where: { activoId }, include: { Cliente: { select: { nombre: true } } } }),
+    prisma.holdingComitenteInversion.findMany({ where: { ticker: activo.ticker }, include: { ComitenteInversion: { select: { nombre: true } } } }),
+    prisma.precioHistorico.count({ where: { activoId } }),
+    prisma.priceTickerAlias.findFirst({ where: { bygTicker: activo.ticker, enabled: true } }),
+  ]);
+
+  return {
+    posiciones: posiciones.map((p) => ({ carteraNombre: p.Cartera.nombre, carteraSlug: p.Cartera.slug, cantidad: Number(p.cantidad), activa: p.Cartera.activa })),
+    custodias: custodias.map((c) => ({ clienteNombre: c.Cliente.nombre, cantidadTotal: Number(c.cantidadTotal) })),
+    holdings: holdings.map((h) => ({ comitenteNombre: h.ComitenteInversion.nombre, cantidad: Number(h.cantidad) })),
+    historicoCount,
+    aliasEnabled: !!alias,
+  };
+}
+
+/**
+ * Edita metadata de catálogo de un Activo (ticker, descripción, categoría,
+ * monedaPrecio). Solo ADMIN — chequeo explícito de rol, no la matriz de
+ * permisos genérica (ahí SOCIO tiene acceso total a cualquier acción de
+ * configuración, y esto debe quedar reservado solo a ADMIN dado el riesgo
+ * de romper matching de Data912 si se toca el ticker sin cuidado).
+ * No toca precioActual, PrecioHistorico ni metadata de Data912
+ * (priceSource/priceStatus/priceSyncedAt/providerUpdatedAt/priceErrorMessage).
+ */
+export async function updateActivoMetadata(
+  _prev: { error?: string; ok?: boolean } | null,
+  formData: FormData,
+): Promise<{ error?: string; ok?: boolean }> {
+  const session = await auth();
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  if (!session?.user?.id || role !== "ADMIN") {
+    return { error: "Solo un administrador puede editar el catálogo de activos." };
+  }
+
+  const activoId = formData.get("activoId")?.toString().trim();
+  if (!activoId) return { error: "Falta el activo a editar." };
+
+  const descripcion  = formData.get("descripcion")?.toString().trim();
+  const categoria    = formData.get("categoria")?.toString() as CategoriaActivo;
+  const monedaPrecio = formData.get("monedaPrecio")?.toString() as Moneda;
+  const tickerRaw     = formData.get("ticker")?.toString().trim().toUpperCase();
+  const confirmTickerChange = formData.get("confirmTickerChange") === "true";
+
+  if (!descripcion) return { error: "La descripción no puede estar vacía." };
+  if (!tickerRaw) return { error: "El ticker no puede estar vacío." };
+  if (!CATEGORIAS_VALIDAS.includes(categoria)) return { error: "Categoría inválida." };
+  if (!MONEDAS_VALIDAS.includes(monedaPrecio)) return { error: "Moneda inválida." };
+
+  const existing = await prisma.activo.findUnique({ where: { id: activoId } });
+  if (!existing) return { error: "El activo no existe." };
+
+  const data: { descripcion: string; categoria: CategoriaActivo; monedaPrecio: Moneda; updatedAt: Date; ticker?: string } = {
+    descripcion,
+    categoria,
+    monedaPrecio,
+    updatedAt: new Date(),
+  };
+
+  let tickerChanged = false;
+  if (tickerRaw !== existing.ticker) {
+    if (!confirmTickerChange) {
+      return { error: "Para cambiar el ticker tenés que confirmar el cambio explícitamente." };
+    }
+    const dup = await prisma.activo.findUnique({ where: { ticker: tickerRaw } });
+    if (dup) return { error: `Ya existe otro activo con el ticker ${tickerRaw}.` };
+    data.ticker = tickerRaw;
+    tickerChanged = true;
+  }
+
+  await prisma.activo.update({ where: { id: activoId }, data });
+
+  await writeAuditLog({
+    userId: session.user.id,
+    accion: "UPDATE_ACTIVO_METADATA",
+    entidad: "Activo",
+    entidadId: activoId,
+    description: `Editado catálogo de ${existing.ticker}: descripcion="${descripcion}" categoria=${categoria} moneda=${monedaPrecio}${tickerChanged ? ` ticker:${existing.ticker}->${tickerRaw}` : ""}`,
+  });
+
+  revalidatePath("/precios");
+  revalidatePath("/carteras", "layout");
+  revalidatePath("/posicion");
+
+  return { ok: true };
 }

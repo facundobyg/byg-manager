@@ -1,3 +1,4 @@
+import { auth } from "@/auth";
 import { requirePermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { CategoriaActivo, PriceSource, PriceStatus } from "@prisma/client";
@@ -5,6 +6,7 @@ import { UpdatePrecioActivoForm } from "@/components/modules/configuracion/Updat
 import { PreciosBatchTextareaForm } from "@/components/modules/configuracion/PreciosBatchTextareaForm";
 import { DownloadPricesCSV } from "@/components/modules/configuracion/DownloadPricesCSV";
 import { CreateActivoForm } from "@/components/modules/configuracion/CreateActivoForm";
+import { EditActivoModal } from "@/components/modules/configuracion/EditActivoModal";
 import Link from "next/link";
 
 // ─── Section config ───────────────────────────────────────────────────────────
@@ -61,11 +63,13 @@ function PreciosSection({
   accent,
   rows,
   selectedHistorialId,
+  isAdmin,
 }: {
   label: string;
   accent: string;
   rows: Row[];
   selectedHistorialId: string | null;
+  isAdmin: boolean;
 }) {
   const sinPrecio = rows.filter((r) => r.precioActual === null).length;
 
@@ -102,9 +106,20 @@ function PreciosSection({
             {rows.map((row) => (
               <tr key={row.id} className="hover:bg-byg-surface-2 transition-colors">
                 <td className="px-4 py-2.5">
-                  <span className="text-[11px] font-black font-mono text-byg-text bg-byg-surface-2 px-2 py-0.5 rounded">
-                    {row.ticker}
-                  </span>
+                  <div className="flex items-center gap-1">
+                    <span className="text-[11px] font-black font-mono text-byg-text bg-byg-surface-2 px-2 py-0.5 rounded">
+                      {row.ticker}
+                    </span>
+                    {isAdmin && (
+                      <EditActivoModal
+                        activoId={row.id}
+                        ticker={row.ticker}
+                        descripcion={row.descripcion}
+                        categoria={row.categoria}
+                        monedaPrecio={row.monedaPrecio}
+                      />
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-2.5 text-[12px] text-byg-muted max-w-[180px] truncate">
                   {row.descripcion || "—"}
@@ -234,7 +249,8 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
   const params = await searchParams;
   const historialActivoId = params.historialId ?? null;
 
-  const [activosRaw, historialData] = await Promise.all([
+  const [session, activosRaw, historialData] = await Promise.all([
+    auth(),
     prisma.activo.findMany({
       include: {
         PosicionCartera: { select: { id: true } },
@@ -244,6 +260,7 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
     }),
     historialActivoId ? buildHistorial(historialActivoId) : Promise.resolve(null),
   ]);
+  const isAdmin = (session?.user as { role?: string } | undefined)?.role === "ADMIN";
 
   // Build plain rows — no Decimal
   const rows: Row[] = activosRaw.map((a) => {
@@ -386,7 +403,7 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
         const sectionRows = bycat.get(cat);
         if (!sectionRows || sectionRows.length === 0) return null;
         return (
-          <PreciosSection key={cat} label={label} accent={accent} rows={sectionRows} selectedHistorialId={historialActivoId} />
+          <PreciosSection key={cat} label={label} accent={accent} rows={sectionRows} selectedHistorialId={historialActivoId} isAdmin={isAdmin} />
         );
       })}
     </div>
