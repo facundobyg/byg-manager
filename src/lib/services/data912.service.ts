@@ -79,14 +79,25 @@ function endsWithD(symbol: string): boolean {
   return symbol.trim().toUpperCase().endsWith("D");
 }
 
+// Excepciones confirmadas: el sufijo "D" en BYMA generalmente indica la
+// variante dólar/MEP del mismo instrumento (AL30 vs AL30D), pero para
+// algunas acciones en arg_stocks la "D" es parte del ticker real de la
+// empresa (clase de acción), no un sufijo de moneda. Confirmado con datos
+// reales: YPFD es la acción Clase D de YPF y cotiza en pesos, no dólares.
+const ARG_STOCKS_D_NO_ES_DOLAR: ReadonlySet<string> = new Set(["YPFD"]);
+
 // Reglas confirmadas con datos reales en Módulo 4.1 (matriz de matching).
 // arg_notes queda en null a propósito: ningún ticker de BYG matcheó ese
 // endpoint todavía, así que la moneda real nunca se confirmó con evidencia.
 function inferCurrency(endpoint: Data912EndpointKey, symbol: string): InferredCurrency {
   switch (endpoint) {
+    case "arg_stocks": {
+      const upper = symbol.trim().toUpperCase();
+      if (ARG_STOCKS_D_NO_ES_DOLAR.has(upper)) return "ARS";
+      return endsWithD(upper) ? "USD" : "ARS";
+    }
     case "arg_bonds":
     case "arg_corp":
-    case "arg_stocks":
       // El sufijo "D" en BYMA distingue la variante dólar/MEP de la variante
       // peso del mismo instrumento (confirmado con AL30/AL30D, GD30/GD30D).
       return endsWithD(symbol) ? "USD" : "ARS";
