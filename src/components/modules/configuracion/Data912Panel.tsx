@@ -5,6 +5,7 @@ import {
   getData912Status,
   runData912Preview,
   runData912Sync,
+  setData912AutoSync,
   type Data912StatusResult,
   type PreviewActionResult,
   type SyncActionResult,
@@ -13,6 +14,7 @@ import {
 type Props = {
   initialStatus: Data912StatusResult;
   isAdmin: boolean;
+  initialAutoSyncEnabled: boolean;
 };
 
 const BUCKET_LABELS: { key: keyof Data912StatusResult["activos"]; label: string; cls: string }[] = [
@@ -46,13 +48,26 @@ function BucketRow({ title, bucket }: { title: string; bucket: Data912StatusResu
   );
 }
 
-export function Data912Panel({ initialStatus, isAdmin }: Props) {
+export function Data912Panel({ initialStatus, isAdmin, initialAutoSyncEnabled }: Props) {
   const [status, setStatus] = useState(initialStatus);
   const [preview, setPreview] = useState<PreviewActionResult | null>(null);
   const [syncResult, setSyncResult] = useState<SyncActionResult | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(initialAutoSyncEnabled);
+  const [autoSyncError, setAutoSyncError] = useState<string | null>(null);
   const [previewPending, startPreview] = useTransition();
   const [syncPending, startSync] = useTransition();
+  const [autoSyncPending, startAutoSyncToggle] = useTransition();
+
+  function handleToggleAutoSync() {
+    const next = !autoSyncEnabled;
+    setAutoSyncError(null);
+    startAutoSyncToggle(async () => {
+      const result = await setData912AutoSync(next);
+      if (result.ok) setAutoSyncEnabled(next);
+      else setAutoSyncError(result.error);
+    });
+  }
 
   function handlePreview() {
     setSyncResult(null);
@@ -93,6 +108,37 @@ export function Data912Panel({ initialStatus, isAdmin }: Props) {
         <div className="px-6 py-5 flex flex-col gap-5">
           <BucketRow title="Activos" bucket={status.activos} />
           <BucketRow title="Holdings" bucket={status.holdings} />
+        </div>
+      </section>
+
+      {/* Cron diario */}
+      <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/30 flex items-center justify-between flex-wrap gap-2">
+          <h2 className="text-[12px] font-bold uppercase tracking-widest text-slate-800">Sincronización automática diaria</h2>
+          <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${autoSyncEnabled ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
+            {autoSyncEnabled ? "ACTIVADO" : "DESACTIVADO"}
+          </span>
+        </div>
+        <div className="px-6 py-5 flex flex-col gap-3">
+          <p className="text-[12px] text-slate-500">
+            Corre todos los días a las 20:00 (Argentina) si está activado. Si Data912 falla, nunca borra ni pone en 0 precios existentes — solo marca el estado.
+          </p>
+          {isAdmin ? (
+            <button
+              onClick={handleToggleAutoSync}
+              disabled={autoSyncPending}
+              className={`self-start rounded-xl px-5 py-2.5 text-sm font-semibold transition-colors disabled:opacity-60 ${
+                autoSyncEnabled ? "bg-rose-600 text-white hover:bg-rose-700" : "bg-emerald-600 text-white hover:bg-emerald-700"
+              }`}
+            >
+              {autoSyncPending ? "Guardando..." : autoSyncEnabled ? "Desactivar cron" : "Activar cron"}
+            </button>
+          ) : (
+            <span className="text-[11px] text-slate-400 font-medium px-3 py-2.5 rounded-xl bg-slate-50 border border-slate-200 self-start">
+              Solo un administrador puede activar/desactivar el cron.
+            </span>
+          )}
+          {autoSyncError && <p className="text-[11px] text-rose-600 font-bold">{autoSyncError}</p>}
         </div>
       </section>
 

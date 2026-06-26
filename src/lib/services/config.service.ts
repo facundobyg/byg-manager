@@ -246,3 +246,21 @@ export async function updatePreciosActivosBatch(items: { id: string; precio: num
 
   await prisma.$transaction(operations);
 }
+
+// ─── Data912 — flag de sync automático (cron) ──────────────────────────────────
+
+const DATA912_AUTO_SYNC_FLAG = "data912_auto_sync_enabled";
+
+/** Default false hasta que se active manualmente — nunca corre sync automático sin que alguien lo prenda explícitamente. */
+export async function getData912AutoSyncEnabled(): Promise<boolean> {
+  const row = await prisma.config.findUnique({ where: { clave: DATA912_AUTO_SYNC_FLAG } });
+  return row?.valor === "true";
+}
+
+export async function setData912AutoSyncEnabled(enabled: boolean): Promise<void> {
+  await prisma.config.upsert({
+    where: { clave: DATA912_AUTO_SYNC_FLAG },
+    update: { valor: enabled ? "true" : "false", updatedAt: new Date() },
+    create: { id: crypto.randomUUID(), clave: DATA912_AUTO_SYNC_FLAG, valor: enabled ? "true" : "false", updatedAt: new Date() },
+  });
+}

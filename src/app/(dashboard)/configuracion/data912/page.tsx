@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { auth } from "@/auth";
 import { requirePermission } from "@/lib/auth/permissions";
-import { getData912Status } from "./actions";
+import { getData912Status, getData912AutoSyncStatus } from "./actions";
 import { Data912Panel } from "@/components/modules/configuracion/Data912Panel";
 
 export default async function Data912AdminPage() {
   await requirePermission("configuracion:leer");
 
-  const [session, status] = await Promise.all([auth(), getData912Status()]);
+  const [session, status, autoSyncEnabled] = await Promise.all([auth(), getData912Status(), getData912AutoSyncStatus()]);
   const isAdmin = (session?.user as { role?: string } | undefined)?.role === "ADMIN";
 
   return (
@@ -20,7 +20,7 @@ export default async function Data912AdminPage() {
         </p>
       </header>
 
-      <Data912Panel initialStatus={status} isAdmin={isAdmin} />
+      <Data912Panel initialStatus={status} isAdmin={isAdmin} initialAutoSyncEnabled={autoSyncEnabled} />
 
       <Link href="/configuracion" className="text-xs text-slate-400 hover:text-slate-600 transition-colors">
         ← Volver a Configuración

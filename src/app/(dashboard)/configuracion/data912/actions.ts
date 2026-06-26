@@ -7,6 +7,7 @@ import { requireActionPermission } from "@/lib/auth/permissions";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { buildData912PriceSyncPreview } from "@/lib/services/data912-price-sync-preview.service";
 import { applyData912PriceSync } from "@/lib/services/data912-price-sync.service";
+import { getData912AutoSyncEnabled, setData912AutoSyncEnabled } from "@/lib/services/config.service";
 import type { PriceSource, PriceStatus, UserRole } from "@prisma/client";
 
 export interface Data912StatusBucket {
@@ -158,4 +159,41 @@ export async function runData912Sync(): Promise<SyncActionResult> {
   } catch {
     return { ok: false, error: "No se pudo completar la sincronización. Verificá la conexión e intentá nuevamente." };
   }
+}
+
+/** Estado del flag de cron — solo lectura. */
+export async function getData912AutoSyncStatus(): Promise<boolean> {
+  const denied = await requireActionPermission("configuracion:leer");
+  if (denied) return false;
+  return getData912AutoSyncEnabled();
+}
+
+/**
+ * Prende/apaga el cron diario sin tocar código ni hacer deploy. Solo ADMIN —
+ * mismo motivo que runData912Sync: la matriz genérica le daría acceso a SOCIO.
+ */
+export async function setData912AutoSync(enabled: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
+  const session = await auth();
+  const role = (session?.user as { role?: UserRole } | undefined)?.role;
+
+  if (!session?.user?.id || role !== "ADMIN") {
+    await writeAuditLog({
+      userId: session?.user?.id ?? null,
+      accion: "ACCESO_DENEGADO",
+      entidad: "Data912AutoSync",
+      description: `Intento de cambiar el flag de cron Data912 sin rol ADMIN (role=${role ?? "sin sesión"})`,
+    });
+    return { ok: false, error: "Solo un administrador puede cambiar esta configuración." };
+  }
+
+  await setData912AutoSyncEnabled(enabled);
+  await writeAuditLog({
+    userId: session.user.id,
+    accion: "DATA912_AUTO_SYNC_TOGGLE",
+    entidad: "Config",
+    description: `Cron Data912 ${enabled ? "activado" : "desactivado"}`,
+  });
+
+  revalidatePath("/configuracion/data912");
+  return { ok: true };
 }
