@@ -84,11 +84,19 @@ export async function getResumenConsolidado() {
     prisma.custodiaCliente.count(),
     prisma.cuentaCorriente.aggregate({ _sum: { saldo: true } }),
     prisma.plazoFijo.aggregate({ _sum: { capital: true }, where: { estado: "ACTIVO" } }),
-    prisma.posicionCartera.findMany({ 
-      include: { Activo: { select: { precioActual: true } } } 
+    prisma.posicionCartera.findMany({
+      select: {
+        cantidad: true,
+        precioCompra: true,
+        Activo: { select: { precioActual: true } },
+      },
     }),
-    prisma.custodiaCliente.findMany({ 
-      include: { Activo: { select: { precioActual: true } } } 
+    prisma.custodiaCliente.findMany({
+      select: {
+        cantidadTotal: true,
+        precioPromedio: true,
+        Activo: { select: { precioActual: true } },
+      },
     }),
     prisma.config.findUnique({ where: { clave: "tc_blue" } }),
   ]);
