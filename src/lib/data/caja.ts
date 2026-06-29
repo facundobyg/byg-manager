@@ -26,42 +26,46 @@ export async function getCajasWithBalances(): Promise<CajaEnriquecida[]> {
     }
   });
 
-  const cajasConSaldos = await Promise.all(
-    cajas.map(async (caja) => {
-      const movs = await prisma.movimientoCaja.findMany({
-        where: { cajaId: caja.id, confirmado: true },
-        select: { tipo: true, moneda: true, monto: true },
-      });
+  const cajaIds = cajas.map((c) => c.id);
 
-      let saldoUSD = new Decimal(caja.saldoInicialUSD);
-      let saldoARS = new Decimal(caja.saldoInicialARS);
+  // Una sola query agregada (en vez de un findMany de movimientos por caja)
+  // para eliminar el N+1: agrupa por caja+moneda+tipo y suma montos en DB.
+  const grouped = cajaIds.length > 0
+    ? await prisma.movimientoCaja.groupBy({
+        by: ["cajaId", "moneda", "tipo"],
+        where: { cajaId: { in: cajaIds }, confirmado: true },
+        _sum: { monto: true },
+      })
+    : [];
 
-      for (const m of movs) {
-        const monto    = new Decimal(m.monto.toString());
-        const esEntrada = m.tipo === "ENTRADA" || m.tipo === "TRANSFERENCIA_IN";
-        if (m.moneda === "USD") {
-          saldoUSD = esEntrada ? saldoUSD.add(monto) : saldoUSD.sub(monto);
-        } else if (m.moneda === "ARS") {
-          saldoARS = esEntrada ? saldoARS.add(monto) : saldoARS.sub(monto);
-        }
-      }
+  const deltasPorCaja = new Map<string, { USD: Decimal; ARS: Decimal }>();
+  for (const g of grouped) {
+    const monto = g._sum.monto ? new Decimal(g._sum.monto.toString()) : new Decimal(0);
+    const esEntrada = g.tipo === "ENTRADA" || g.tipo === "TRANSFERENCIA_IN";
+    const bucket = deltasPorCaja.get(g.cajaId) ?? { USD: new Decimal(0), ARS: new Decimal(0) };
+    if (g.moneda === "USD") {
+      bucket.USD = esEntrada ? bucket.USD.add(monto) : bucket.USD.sub(monto);
+    } else if (g.moneda === "ARS") {
+      bucket.ARS = esEntrada ? bucket.ARS.add(monto) : bucket.ARS.sub(monto);
+    }
+    deltasPorCaja.set(g.cajaId, bucket);
+  }
 
-      return {
-        id: caja.id,
-        slug: caja.slug,
-        label: caja.label,
-        tipo: caja.tipo,
-        esPrincipal: caja.esPrincipal,
-        saldoInicialUSD: caja.saldoInicialUSD,
-        saldoInicialARS: caja.saldoInicialARS,
-        saldoActualUSD: saldoUSD,
-        saldoActualARS: saldoARS,
-        totalMovimientos: caja._count.MovimientoCaja
-      };
-    })
-  );
-
-  return cajasConSaldos;
+  return cajas.map((caja) => {
+    const delta = deltasPorCaja.get(caja.id) ?? { USD: new Decimal(0), ARS: new Decimal(0) };
+    return {
+      id: caja.id,
+      slug: caja.slug,
+      label: caja.label,
+      tipo: caja.tipo,
+      esPrincipal: caja.esPrincipal,
+      saldoInicialUSD: caja.saldoInicialUSD,
+      saldoInicialARS: caja.saldoInicialARS,
+      saldoActualUSD: new Decimal(caja.saldoInicialUSD).add(delta.USD),
+      saldoActualARS: new Decimal(caja.saldoInicialARS).add(delta.ARS),
+      totalMovimientos: caja._count.MovimientoCaja
+    };
+  });
 }
 
 export interface PendingPrincipalSummary {
