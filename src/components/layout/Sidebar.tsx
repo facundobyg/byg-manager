@@ -24,6 +24,7 @@ import {
   CandlestickChart,
   Tag,
   DollarSign,
+  Upload,
 } from "lucide-react";
 
 type NavItem = { label: string; href: string; icon: React.ElementType };
@@ -98,6 +99,7 @@ const NAV_ITEM_PERMISSIONS: Record<string, string> = {
   "/cierres":                   "configuracion:leer",
   "/auditoria":                 "auditoria:leer",
   "/configuracion":             "configuracion:leer",
+  "/cuentas-inversion/importar": "holdings:editar",
 };
 
 type CajaLink = { label: string; slug: string };
@@ -157,6 +159,7 @@ export function Sidebar({ carteras, cuentasInversion, cajasSucursal, allowedPerm
   const canSeeCarteras = permSet === null || permSet.has("carteras:leer");
   const canSeeCuentas  = permSet === null || permSet.has("banco_industrial:leer");
   const canSeeComisiones = canSee("/comisiones");
+  const canSeeImportar   = canSee("/cuentas-inversion/importar");
 
   const [mounted, setMounted] = useState(false);
   const pathname = usePathname();
@@ -256,8 +259,8 @@ export function Sidebar({ carteras, cuentasInversion, cajasSucursal, allowedPerm
           </div>
         )}
 
-        {/* Cuentas de Inversión — dynamic from DB + Comisiones fixed */}
-        {(canSeeCuentas || canSeeComisiones) && (
+        {/* Cuentas de Inversión — dynamic from DB + Comisiones/Importar fixed */}
+        {(canSeeCuentas || canSeeComisiones || canSeeImportar) && (
           <div>
             <SectionHeader label="Cuentas de Inversión" isOpen={open["Cuentas de Inversión"]} onToggle={() => toggle("Cuentas de Inversión")} />
             {open["Cuentas de Inversión"] && (
@@ -293,6 +296,21 @@ export function Sidebar({ carteras, cuentasInversion, cajasSucursal, allowedPerm
                     >
                       <DollarSign size={16} />
                       Comisiones
+                    </Link>
+                  );
+                })()}
+                {canSeeImportar && (() => {
+                  const href   = "/cuentas-inversion/importar";
+                  const active = pathname === href || pathname.startsWith(href + "/");
+                  return (
+                    <Link
+                      href={href}
+                      className={`flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors ${
+                        active ? "bg-blue-600 text-white shadow-md shadow-blue-600/20" : "text-byg-muted hover:bg-[var(--byg-nav-hover)] hover:text-byg-text"
+                      }`}
+                    >
+                      <Upload size={16} />
+                      Importar
                     </Link>
                   );
                 })()}
