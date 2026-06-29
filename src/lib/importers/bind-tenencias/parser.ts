@@ -72,8 +72,31 @@ async function ensurePdfjsNodePolyfills(): Promise<void> {
   pdfjsNodePolyfillsReady = true;
 }
 
+// En Node, pdf.js corre sin un Worker real ("fake worker" en el mismo
+// thread) — pero para armarlo igual hace un `import(workerSrc)` con un
+// *string calculado en runtime* ("./pdf.worker.mjs"). Vercel traza los
+// archivos a incluir en la función serverless analizando imports estáticos;
+// un import dinámico con string variable no se detecta, así que el archivo
+// del worker no queda copiado al deploy ("Cannot find module .../
+// pdf.worker.mjs"). pdf.js evita ese import si encuentra de antemano
+// `globalThis.pdfjsWorker.WorkerMessageHandler` ya seteado — lo hacemos acá
+// con un import ESTÁTICO (string literal), que Vercel sí puede trazar.
+let pdfjsWorkerReady = false;
+async function ensurePdfjsWorkerPolyfill(): Promise<void> {
+  if (pdfjsWorkerReady || (globalThis as Record<string, unknown>).pdfjsWorker) {
+    pdfjsWorkerReady = true;
+    return;
+  }
+  // @ts-expect-error -- pdfjs-dist no expone tipos para este subpath
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pdfjsWorker: any = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+  (globalThis as Record<string, unknown>).pdfjsWorker = pdfjsWorker;
+  pdfjsWorkerReady = true;
+}
+
 async function extractLinesByPage(data: Uint8Array): Promise<RawLine[][]> {
   await ensurePdfjsNodePolyfills();
+  await ensurePdfjsWorkerPolyfill();
 
   // Import dinámico — build legacy de pdf.js, pensado para Node (sin DOM).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
