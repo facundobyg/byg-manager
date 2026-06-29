@@ -10,11 +10,25 @@ export async function getClientesActivos() {
 
 export async function getCarteraPropia() {
   return prisma.posicionCartera.findMany({
-    include: {
-      Activo: true,
-      Cartera: true,
+    select: {
+      id: true,
+      cantidad: true,
+      precioCompra: true,
+      Activo: {
+        select: {
+          ticker: true,
+          descripcion: true,
+        },
+      },
+      Cartera: {
+        select: {
+          nombre: true,
+        },
+      },
     },
-    orderBy: { createdAt: "desc" },
+    orderBy: {
+      createdAt: "desc",
+    },
   });
 }
 
