@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { ImportarXlsx } from "@/components/modules/cuentas-inversion/ImportarXlsx";
+import { requirePermission } from "@/lib/auth/permissions";
 
 export default async function ImportarPage() {
+  await requirePermission("holdings:editar");
   const [cuentas, historial] = await Promise.all([
     prisma.cuentaInversion.findMany({
       where: { activa: true },
