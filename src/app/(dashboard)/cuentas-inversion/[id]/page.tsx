@@ -5,7 +5,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ProductorInversion } from "@prisma/client";
 import { getProductoresConfig, getMesOperativo } from "@/lib/services/config.service";
-import { hasPermission } from "@/lib/auth/permissions";
+import { hasPermission, requirePermission } from "@/lib/auth/permissions";
 import { CreateComitenteModal }  from "@/components/modules/cuentas-inversion/CreateComitenteModal";
 import { EditComitenteForm }     from "@/components/modules/cuentas-inversion/EditComitenteForm";
 import { EditSaldosForm }        from "@/components/modules/cuentas-inversion/EditSaldosForm";
@@ -169,6 +169,8 @@ export default async function CuentaInversionPage({
     clienteId?: string; estado?: string; tipo?: string;
   }>;
 }) {
+  await requirePermission("banco_industrial:leer");
+
   const { id } = await params;
   const {
     editId, editSaldosId,
