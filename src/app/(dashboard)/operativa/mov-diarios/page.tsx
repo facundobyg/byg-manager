@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/prisma";
+import { Decimal } from "@prisma/client/runtime/library";
 import { getMovimientosDiarios, getResultadoCambioMensual } from "@/lib/data/mov-diarios";
 import { MovDiariosTable } from "@/components/modules/operativa/MovDiariosTable";
 import { OperativaFormToggle } from "@/components/modules/operativa/OperativaFormToggle";
-import { calcularSaldoCaja } from "@/lib/services/caja.service";
 import { hasPermission, requirePermission } from "@/lib/auth/permissions";
 
 export default async function MovDiariosPage() {
@@ -27,16 +27,39 @@ export default async function MovDiariosPage() {
     }),
   ]);
 
-  // Enriquecer cajas con saldos actuales
-  const cajas = await Promise.all(cajasBase.map(async (c) => ({
-    id: c.id,
-    label: c.label,
-    slug: c.slug,
-    tipo: c.tipo,
-    esPrincipal: c.esPrincipal,
-    saldoUSD: Number(await calcularSaldoCaja(c.id, "USD")),
-    saldoARS: Number(await calcularSaldoCaja(c.id, "ARS"))
-  })));
+  // Enriquecer cajas con saldos actuales — una sola query agregada en vez de
+  // una por caja (antes: calcularSaldoCaja(id, "USD"|"ARS") por cada caja).
+  const cajaIds = cajasBase.map((c) => c.id);
+  const movsAgrupados = cajaIds.length > 0
+    ? await prisma.movimientoCaja.groupBy({
+        by: ["cajaId", "moneda", "tipo"],
+        where: { cajaId: { in: cajaIds }, confirmado: true },
+        _sum: { monto: true },
+      })
+    : [];
+
+  const deltasPorCaja = new Map<string, { USD: Decimal; ARS: Decimal }>();
+  for (const g of movsAgrupados) {
+    const monto = g._sum.monto ? new Decimal(g._sum.monto.toString()) : new Decimal(0);
+    const esEntrada = g.tipo === "ENTRADA" || g.tipo === "TRANSFERENCIA_IN";
+    const bucket = deltasPorCaja.get(g.cajaId) ?? { USD: new Decimal(0), ARS: new Decimal(0) };
+    if (g.moneda === "USD") bucket.USD = esEntrada ? bucket.USD.add(monto) : bucket.USD.sub(monto);
+    else if (g.moneda === "ARS") bucket.ARS = esEntrada ? bucket.ARS.add(monto) : bucket.ARS.sub(monto);
+    deltasPorCaja.set(g.cajaId, bucket);
+  }
+
+  const cajas = cajasBase.map((c) => {
+    const delta = deltasPorCaja.get(c.id) ?? { USD: new Decimal(0), ARS: new Decimal(0) };
+    return {
+      id: c.id,
+      label: c.label,
+      slug: c.slug,
+      tipo: c.tipo,
+      esPrincipal: c.esPrincipal,
+      saldoUSD: Number(new Decimal(c.saldoInicialUSD).add(delta.USD)),
+      saldoARS: Number(new Decimal(c.saldoInicialARS).add(delta.ARS)),
+    };
+  });
 
   // Serializar datos para el cliente (Decimal -> number, Date -> string)
   const rowsPlain = rows.map(r => ({
