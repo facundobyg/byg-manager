@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
+import { getReportesBaseData } from "@/lib/data/reportes-base";
 
 const VENTA_TIPOS_ARB = new Set([
   "VENTA_BONO", "VENTA_ACCION", "VENTA_CEDEAR", "CAUCION_COLOCADORA",
@@ -172,15 +173,11 @@ export async function getUtilidadMes(mes: string) {
 // ── Bloque 2: Apertura Moneda ────────────────────────────────────────────────
 
 export async function getAperturaMoneda() {
-  const [movsCaja, ccs, pfs, cartera, custodia, tcConfig] = await Promise.all([
-    prisma.movimientoCaja.findMany({
-      where: { confirmado: true },
-      select: { moneda: true, tipo: true, monto: true },
-    }),
-    prisma.cuentaCorriente.findMany({ select: { moneda: true, saldo: true } }),
-    prisma.plazoFijo.findMany({ where: { estado: "ACTIVO" }, select: { moneda: true, capital: true } }),
-    prisma.posicionCartera.findMany({ include: { Activo: { select: { precioActual: true, monedaPrecio: true } } } }),
-    prisma.custodiaCliente.findMany({ include: { Activo: { select: { precioActual: true, monedaPrecio: true } } } }),
+  const [
+    { movCaja: movsCaja, cuentasCorrientes: ccs, plazosFijos: pfs, posicionesCartera: cartera, posicionesCustodia: custodia },
+    tcConfig,
+  ] = await Promise.all([
+    getReportesBaseData(),
     prisma.config.findUnique({ where: { clave: "tc_blue" } }),
   ]);
 

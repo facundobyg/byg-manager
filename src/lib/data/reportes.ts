@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
 import { Moneda } from "@prisma/client";
 import { getCajasWithBalances } from "@/lib/data/caja";
+import { getReportesBaseData } from "@/lib/data/reportes-base";
 
 export async function getExposicionPorCliente() {
   const [clientes, tcConfig] = await Promise.all([
@@ -148,19 +149,7 @@ export async function getResumenConsolidado() {
 }
 
 export async function getExposicionPorMoneda() {
-  const [movCaja, cuentasCorrientes, plazosFijos] = await Promise.all([
-    prisma.movimientoCaja.findMany({
-      where: { confirmado: true },
-      select: { moneda: true, tipo: true, monto: true },
-    }),
-    prisma.cuentaCorriente.findMany({
-      select: { moneda: true, saldo: true },
-    }),
-    prisma.plazoFijo.findMany({
-      where: { estado: "ACTIVO" },
-      select: { moneda: true, capital: true },
-    }),
-  ]);
+  const { movCaja, cuentasCorrientes, plazosFijos } = await getReportesBaseData();
 
   const monedas = new Set<Moneda>();
   const caja = new Map<Moneda, Decimal>();
@@ -304,24 +293,8 @@ export async function getPosicionPN(): Promise<number> {
 }
 
 export async function getBalanceGeneral() {
-  const [movCaja, cuentasCorrientes, plazosFijos, posicionesCartera, posicionesCustodia, tcConfig] = await Promise.all([
-    prisma.movimientoCaja.findMany({
-      where: { confirmado: true },
-      select: { moneda: true, tipo: true, monto: true },
-    }),
-    prisma.cuentaCorriente.findMany({
-      select: { moneda: true, saldo: true },
-    }),
-    prisma.plazoFijo.findMany({
-      where: { estado: "ACTIVO" },
-      select: { moneda: true, capital: true },
-    }),
-    prisma.posicionCartera.findMany({
-      include: { Activo: { select: { precioActual: true, monedaPrecio: true } } },
-    }),
-    prisma.custodiaCliente.findMany({
-      include: { Activo: { select: { precioActual: true } } },
-    }),
+  const [{ movCaja, cuentasCorrientes, plazosFijos, posicionesCartera, posicionesCustodia }, tcConfig] = await Promise.all([
+    getReportesBaseData(),
     prisma.config.findUnique({ where: { clave: "tc_blue" } }),
   ]);
 
