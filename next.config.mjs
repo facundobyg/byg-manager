@@ -1,6 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // pdfjs-dist (parser de PDFs Bind, Módulo 4.12B) usa @napi-rs/canvas para
+  // polyfillear DOMMatrix/Path2D/ImageData en Node. Son paquetes con binarios
+  // nativos por plataforma — si Next los bundlea con webpack/turbopack, el
+  // tracing de archivos de Vercel puede no incluir el binario .node correcto
+  // en la función serverless ("DOMMatrix is not defined" en runtime). Dejarlos
+  // afuera del bundle para que se resuelvan como node_modules normales.
+  serverExternalPackages: ["pdfjs-dist", "@napi-rs/canvas"],
   experimental: {
     // Default de Next.js (1mb) no alcanza para subir varios PDFs en una sola
     // Server Action (Módulo 4.12D, import batch Bind). El límite real de

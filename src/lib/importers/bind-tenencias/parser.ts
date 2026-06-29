@@ -49,7 +49,32 @@ const HEADER_LABELS = new Set([
 interface RawTextItem { x: number; y: number; str: string }
 interface RawLine { y: number; items: RawTextItem[] }
 
+// pdf.js (incluso el build legacy/Node) construye DOMMatrix/Path2D/ImageData
+// internamente para procesar paths de glifos de fuentes embebidas — incluso
+// para getTextContent(), sin renderizar nada a canvas. Node no trae esas
+// clases; pdf.js intenta polyfillearlas solo si encuentra @napi-rs/canvas
+// instalado, pero ese require() interno puede fallar silenciosamente si el
+// binario nativo de la plataforma no quedó incluido en el bundle serverless
+// (pdf.js solo loguea un warning y sigue, y después explota con
+// "DOMMatrix is not defined" al primer glifo que lo necesite). Lo hacemos
+// explícito acá para no depender de ese mecanismo interno.
+let pdfjsNodePolyfillsReady = false;
+async function ensurePdfjsNodePolyfills(): Promise<void> {
+  if (pdfjsNodePolyfillsReady || typeof (globalThis as Record<string, unknown>).DOMMatrix !== "undefined") {
+    pdfjsNodePolyfillsReady = true;
+    return;
+  }
+  const canvas = await import("@napi-rs/canvas");
+  const target = globalThis as Record<string, unknown>;
+  target.DOMMatrix = canvas.DOMMatrix;
+  target.Path2D = canvas.Path2D;
+  target.ImageData = canvas.ImageData;
+  pdfjsNodePolyfillsReady = true;
+}
+
 async function extractLinesByPage(data: Uint8Array): Promise<RawLine[][]> {
+  await ensurePdfjsNodePolyfills();
+
   // Import dinámico — build legacy de pdf.js, pensado para Node (sin DOM).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pdfjsLib: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
