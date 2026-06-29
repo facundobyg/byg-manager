@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { createComitente } from "@/app/(dashboard)/cuentas-inversion/actions";
 import type { ProductorOption } from "@/lib/services/config.service";
 import { UserPlus, X } from "lucide-react";
@@ -16,9 +17,11 @@ const DEFAULT_PRODUCTORES: ProductorOption[] = [
 export function CreateComitenteModal({
   cuentaInversionId,
   productores = DEFAULT_PRODUCTORES,
+  canImportar = false,
 }: {
   cuentaInversionId: string;
   productores?: ProductorOption[];
+  canImportar?: boolean;
 }) {
   const [open, setOpen]          = useState(false);
   const formRef                  = useRef<HTMLFormElement>(null);
@@ -119,6 +122,15 @@ export function CreateComitenteModal({
                 </button>
                 {state?.error && <p className="text-rose-400 text-xs font-bold">{state.error}</p>}
               </div>
+
+              {canImportar && (
+                <Link
+                  href="/cuentas-inversion/importar"
+                  className="block text-[10px] text-byg-muted hover:text-byg-accent transition-colors underline"
+                >
+                  Importar desde Bind →
+                </Link>
+              )}
             </form>
           </div>
         </div>

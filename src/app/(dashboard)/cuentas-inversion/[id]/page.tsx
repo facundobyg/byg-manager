@@ -5,6 +5,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ProductorInversion } from "@prisma/client";
 import { getProductoresConfig, getMesOperativo } from "@/lib/services/config.service";
+import { hasPermission } from "@/lib/auth/permissions";
 import { CreateComitenteModal }  from "@/components/modules/cuentas-inversion/CreateComitenteModal";
 import { EditComitenteForm }     from "@/components/modules/cuentas-inversion/EditComitenteForm";
 import { EditSaldosForm }        from "@/components/modules/cuentas-inversion/EditSaldosForm";
@@ -186,6 +187,8 @@ export default async function CuentaInversionPage({
   const reportClienteId  = clienteIdParam ?? "all";
   const reportEstado     = estadoParam    ?? "all";
   const reportTipo       = tipoParam      ?? "all";
+
+  const canImportar = await hasPermission("holdings:editar");
 
   const [cuenta, mirroredCarteras, productores, mesOperativo] = await Promise.all([
     prisma.cuentaInversion.findUnique({
@@ -500,7 +503,12 @@ export default async function CuentaInversionPage({
           <Link href={`${baseUrl}/precios`} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors">
             Actualizar precios
           </Link>
-          {tab === "clientes" && <CreateComitenteModal cuentaInversionId={id} productores={productores} />}
+          {canImportar && (
+            <Link href="/cuentas-inversion/importar" className="px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors">
+              Importar
+            </Link>
+          )}
+          {tab === "clientes" && <CreateComitenteModal cuentaInversionId={id} productores={productores} canImportar={canImportar} />}
           {!cuenta.activa && (
             <span className="text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-slate-100 text-slate-500">Inactiva</span>
           )}
