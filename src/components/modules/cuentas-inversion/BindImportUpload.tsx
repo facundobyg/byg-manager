@@ -11,8 +11,10 @@ import {
   getActivosForSelect,
   resolveBindAccountAliasAction,
   resolveBindTickerAliasAction,
+  resolveBindTickerAliasesBulkAction,
   type UploadBindPdfsResult,
   type ResolveResult,
+  type BulkResolveResult,
   type PendingAccountMapping,
   type PendingTickerMapping,
 } from "@/app/(dashboard)/cuentas-inversion/importaciones/bind/actions";
@@ -76,7 +78,19 @@ function AccountResolveForm({ pending, comitentes, onResolved }: { pending: Pend
   );
 }
 
-function TickerResolveForm({ pending, activos, onResolved }: { pending: PendingTickerMapping; activos: Activos; onResolved: () => void }) {
+function tickerKey(ticker: string, brokerCode: string | null) {
+  return `${ticker}|${brokerCode ?? ""}`;
+}
+
+function TickerResolveForm({
+  pending, activos, selectedActivoId, onSelectChange, onResolved,
+}: {
+  pending: PendingTickerMapping;
+  activos: Activos;
+  selectedActivoId: string;
+  onSelectChange: (activoId: string) => void;
+  onResolved: () => void;
+}) {
   const [state, action, busy] = useActionState<ResolveResult | null, FormData>(resolveBindTickerAliasAction, null);
 
   useEffect(() => {
@@ -92,11 +106,17 @@ function TickerResolveForm({ pending, activos, onResolved }: { pending: PendingT
         {pending.brokerCode && <span className="text-slate-400 font-mono"> ({pending.brokerCode})</span>}
         <span className="text-slate-400"> — {pending.descriptionClean} — {pending.sectionType.replaceAll("_", " ")} — {pending.occurrences}x — {fmtMoney(pending.totalAmountARS)}</span>
       </div>
-      <select name="activoId" required defaultValue="" className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white max-w-64">
+      <select
+        name="activoId"
+        required
+        value={selectedActivoId}
+        onChange={(e) => onSelectChange(e.target.value)}
+        className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white max-w-64"
+      >
         <option value="" disabled>Elegir activo…</option>
         {activos.map((a) => <option key={a.id} value={a.id}>{a.ticker} — {a.categoria}/{a.monedaPrecio}</option>)}
       </select>
-      <button type="submit" disabled={busy} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold">
+      <button type="submit" disabled={busy || !selectedActivoId} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold">
         <Link2 size={12} /> {busy ? "Vinculando…" : "Vincular"}
       </button>
       {state && !state.ok && <p className="text-[11px] text-rose-600 font-bold w-full">{state.error}</p>}
@@ -111,8 +131,10 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
   const [pendingMappings, setPendingMappings] = useState<PendingMappings>(null);
   const [comitentes, setComitentes] = useState<Comitentes>([]);
   const [activos, setActivos] = useState<Activos>([]);
+  const [tickerSelections, setTickerSelections] = useState<Record<string, string>>({});
   const [detailLoading, startDetailLoad] = useTransition();
   const [state, formAction, pending] = useActionState<UploadBindPdfsResult | null, FormData>(uploadBindPdfsAction, null);
+  const [bulkState, bulkAction, bulkPending] = useActionState<BulkResolveResult | null, FormData>(resolveBindTickerAliasesBulkAction, null);
 
   function refreshPendingData(batchId: string) {
     startDetailLoad(async () => {
@@ -135,12 +157,28 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (bulkState?.ok && batch?.id) {
+      setTickerSelections({});
+      refreshPendingData(batch.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkState]);
+
   function openDetail(fileId: string) {
     startDetailLoad(async () => {
       const d = await getBindImportFileDetail(fileId);
       setDetail(d);
     });
   }
+
+  function setTickerSelection(ticker: string, brokerCode: string | null, activoId: string) {
+    setTickerSelections((prev) => ({ ...prev, [tickerKey(ticker, brokerCode)]: activoId }));
+  }
+
+  const tickerBulkSelections = (pendingMappings?.tickers ?? [])
+    .map((t) => ({ ticker: t.ticker, brokerCode: t.brokerCode, activoId: tickerSelections[tickerKey(t.ticker, t.brokerCode)] ?? "" }))
+    .filter((s) => s.activoId);
 
   const duplicateCount = uploadResult?.results.filter((r) => r.status === "DUPLICATE").length ?? 0;
 
@@ -297,12 +335,54 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
       {/* Resolución de tickers pendientes */}
       {pendingMappings && pendingMappings.tickers.length > 0 && (
         <div className="bg-white rounded-xl border border-orange-200 shadow-sm p-6">
-          <p className="text-[10px] font-black uppercase tracking-widest text-orange-500 mb-3">
-            4 — Vincular tickers pendientes ({pendingMappings.tickers.length})
-          </p>
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-orange-500">
+              4 — Vincular tickers pendientes ({pendingMappings.tickers.length})
+            </p>
+            <form action={bulkAction}>
+              <input type="hidden" name="selections" value={JSON.stringify(tickerBulkSelections)} />
+              <button
+                type="submit"
+                disabled={bulkPending || tickerBulkSelections.length === 0}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold"
+              >
+                <Link2 size={12} /> {bulkPending ? "Guardando…" : `Guardar vínculos seleccionados (${tickerBulkSelections.length})`}
+              </button>
+            </form>
+          </div>
+
+          {bulkState?.ok && bulkState.results && (
+            <div className="mb-3 flex flex-col gap-1">
+              {bulkState.results.map((r, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <StatusBadge status={r.ok ? "READY" : "ERROR"} />
+                  <span className="font-mono text-slate-600">{r.ticker}</span>
+                  {!r.ok && <span className="text-rose-600">— {r.error}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {bulkState && !bulkState.ok && (
+            <p className="mb-3 text-xs text-rose-600 font-bold">{bulkState.error}</p>
+          )}
+
           <div className="rounded-xl border border-slate-200 overflow-hidden divide-y divide-slate-100">
             {pendingMappings.tickers.map((t) => (
-              <TickerResolveForm key={`${t.ticker}|${t.brokerCode}`} pending={t} activos={activos} onResolved={() => refreshPendingData(batch!.id)} />
+              <TickerResolveForm
+                key={tickerKey(t.ticker, t.brokerCode)}
+                pending={t}
+                activos={activos}
+                selectedActivoId={tickerSelections[tickerKey(t.ticker, t.brokerCode)] ?? ""}
+                onSelectChange={(activoId) => setTickerSelection(t.ticker, t.brokerCode, activoId)}
+                onResolved={() => {
+                  setTickerSelections((prev) => {
+                    const next = { ...prev };
+                    delete next[tickerKey(t.ticker, t.brokerCode)];
+                    return next;
+                  });
+                  refreshPendingData(batch!.id);
+                }}
+              />
             ))}
           </div>
           <p className="text-[11px] text-slate-400 mt-2">

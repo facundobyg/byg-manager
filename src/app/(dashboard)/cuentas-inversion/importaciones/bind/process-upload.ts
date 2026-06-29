@@ -455,6 +455,42 @@ export async function resolveBindTickerAlias(brokerTicker: string, brokerCode: s
   return { ok: true, affectedCount: pendingRows.length };
 }
 
+export interface BulkTickerSelection {
+  ticker: string;
+  brokerCode: string | null;
+  activoId: string;
+}
+
+export interface BulkTickerResolveItemResult {
+  ticker: string;
+  brokerCode: string | null;
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Vincula varios tickers pendientes en una sola llamada (vinculación masiva
+ * asistida, Módulo E2.2). Reutiliza resolveBindTickerAlias ítem por ítem —
+ * no duplica ninguna regla de compatibilidad. Secuencial (no Promise.all)
+ * para que los recálculos de status de archivo/lote de cada ítem no se
+ * pisen entre sí. Un ítem incompatible no corta los demás.
+ */
+export async function resolveBindTickerAliasesBulk(
+  selections: BulkTickerSelection[],
+): Promise<BulkTickerResolveItemResult[]> {
+  const results: BulkTickerResolveItemResult[] = [];
+  for (const sel of selections) {
+    const result = await resolveBindTickerAlias(sel.ticker, sel.brokerCode, sel.activoId);
+    results.push({
+      ticker: sel.ticker,
+      brokerCode: sel.brokerCode,
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+    });
+  }
+  return results;
+}
+
 export interface PendingAccountMapping {
   fileId: string;
   fileName: string;

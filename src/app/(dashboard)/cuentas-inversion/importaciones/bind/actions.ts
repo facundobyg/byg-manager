@@ -7,12 +7,18 @@ import {
   processBindPdfUpload,
   resolveBindAccountAlias,
   resolveBindTickerAlias,
+  resolveBindTickerAliasesBulk,
   getPendingBindMappings as getPendingBindMappingsImpl,
   type UploadBindPdfsResult,
   type ResolveResult,
+  type BulkTickerSelection,
+  type BulkTickerResolveItemResult,
 } from "./process-upload";
 
-export type { UploadResultRow, UploadBindPdfsResult, ResolveResult, PendingAccountMapping, PendingTickerMapping } from "./process-upload";
+export type {
+  UploadResultRow, UploadBindPdfsResult, ResolveResult, PendingAccountMapping, PendingTickerMapping,
+  BulkTickerSelection, BulkTickerResolveItemResult,
+} from "./process-upload";
 
 /**
  * Único punto de entrada gateado para la UI. La lógica real vive en
@@ -146,4 +152,44 @@ export async function resolveBindTickerAliasAction(
     try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear por esto */ }
   }
   return result;
+}
+
+export interface BulkResolveResult {
+  ok: boolean;
+  error?: string;
+  results?: BulkTickerResolveItemResult[];
+}
+
+/** Vinculación masiva asistida (Módulo E2.2) — mismo permiso y misma lógica de compatibilidad que la individual, solo cambia el transporte (varios ítems en un POST). */
+export async function resolveBindTickerAliasesBulkAction(
+  _prev: BulkResolveResult | null,
+  formData: FormData,
+): Promise<BulkResolveResult> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return { ok: false, error: denied.error };
+
+  const raw = formData.get("selections")?.toString() ?? "";
+  let selections: BulkTickerSelection[];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("Selección vacía.");
+    selections = parsed.map((item) => {
+      const s = item as Record<string, unknown>;
+      return {
+        ticker: String(s.ticker ?? "").trim(),
+        brokerCode: s.brokerCode ? String(s.brokerCode) : null,
+        activoId: String(s.activoId ?? "").trim(),
+      };
+    });
+    if (selections.some((s) => !s.ticker || !s.activoId)) throw new Error("Selección con datos incompletos.");
+  } catch {
+    return { ok: false, error: "Selección inválida — no se guardó nada." };
+  }
+
+  const results = await resolveBindTickerAliasesBulk(selections);
+  if (results.some((r) => r.ok)) {
+    try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear por esto */ }
+  }
+
+  return { ok: true, results };
 }
