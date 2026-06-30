@@ -175,23 +175,15 @@ export async function processBindPdfUpload(formData: FormData): Promise<UploadBi
   }
 
   const existingBatchId = formData.get("batchId")?.toString().trim() || null;
-  let batchId = existingBatchId;
-  if (!batchId) {
-    const batch = await prisma.bindTenenciasImportBatch.create({
-      data: { id: crypto.randomUUID(), updatedAt: new Date(), status: "DRAFT" },
-    });
-    batchId = batch.id;
-  } else {
-    const batch = await prisma.bindTenenciasImportBatch.findUnique({ where: { id: batchId } });
-    if (!batch) return { ok: false, error: "El lote indicado no existe.", results: [] };
-    if (batch.status === "CONFIRMED" || batch.status === "CANCELLED") {
-      return { ok: false, error: "Este lote ya está cerrado, no se le pueden agregar archivos.", results: [] };
-    }
-  }
 
+  // Fase 1: leer, validar firma PDF y chequear duplicado de CADA archivo
+  // ANTES de decidir si hace falta crear un lote nuevo. Antes este chequeo
+  // pasaba DESPUÉS de crear el batch, así que un reintento de un PDF ya
+  // previsualizado (o un archivo inválido) igual dejaba un
+  // BindTenenciasImportBatch vacío en la DB (Módulo E2.7).
   const results: UploadResultRow[] = [];
-  let parsedCount = 0;
   let errorCount = 0;
+  const pending: { file: File; buf: Buffer; hash: string }[] = [];
 
   for (const file of files) {
     try {
@@ -218,6 +210,39 @@ export async function processBindPdfUpload(formData: FormData): Promise<UploadBi
         continue;
       }
 
+      pending.push({ file, buf, hash });
+    } catch (e) {
+      results.push({ fileName: file.name, status: "ERROR", message: e instanceof Error ? e.message : "Error desconocido leyendo el archivo." });
+      errorCount++;
+    }
+  }
+
+  // Nada para persistir (todo duplicado y/o inválido) y no se pidió agregar
+  // a un lote existente puntual: no crear ningún BindTenenciasImportBatch.
+  if (pending.length === 0 && !existingBatchId) {
+    const firstDuplicateBatchId = results.find((r) => r.status === "DUPLICATE")?.existingBatchId;
+    return { ok: true, batchId: firstDuplicateBatchId, results };
+  }
+
+  let batchId = existingBatchId;
+  if (!batchId) {
+    const batch = await prisma.bindTenenciasImportBatch.create({
+      data: { id: crypto.randomUUID(), updatedAt: new Date(), status: "DRAFT" },
+    });
+    batchId = batch.id;
+  } else {
+    const batch = await prisma.bindTenenciasImportBatch.findUnique({ where: { id: batchId } });
+    if (!batch) return { ok: false, error: "El lote indicado no existe.", results: [] };
+    if (batch.status === "CONFIRMED" || batch.status === "CANCELLED") {
+      return { ok: false, error: "Este lote ya está cerrado, no se le pueden agregar archivos.", results: [] };
+    }
+  }
+
+  // Fase 2: parsear y persistir solo los archivos genuinamente nuevos.
+  let parsedCount = 0;
+
+  for (const { file, buf, hash } of pending) {
+    try {
       const parsed = await parseBindTenenciasPdf(new Uint8Array(buf), file.name);
       const { id: matchedComitenteId, reason: comitenteReason } = await matchComitente(parsed.accountNumber);
 
