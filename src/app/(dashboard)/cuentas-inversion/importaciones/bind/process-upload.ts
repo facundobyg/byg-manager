@@ -38,6 +38,7 @@ export interface UploadResultRow {
   status: "PARSED" | "ERROR" | "DUPLICATE" | "NEEDS_ACCOUNT_MAPPING" | "NEEDS_TICKER_MAPPING" | "READY";
   message: string;
   fileId?: string;
+  existingBatchId?: string;
 }
 
 export interface UploadBindPdfsResult {
@@ -204,11 +205,15 @@ export async function processBindPdfUpload(formData: FormData): Promise<UploadBi
       const hash = sha256(buf);
       const existing = await prisma.bindTenenciasImportFile.findUnique({ where: { fileHashSha256: hash } });
       if (existing) {
+        // No se "importó" nada — esto es preview/staging. El PDF ya fue
+        // previsualizado en otro lote; devolvemos ese batchId para que la
+        // UI pueda abrirlo en vez de mostrar un lote nuevo vacío.
         results.push({
           fileName: file.name,
           status: "DUPLICATE",
-          message: `Ya fue importado (archivo "${existing.fileName}", lote ${existing.batchId}, ${existing.createdAt.toLocaleString("es-AR")}).`,
+          message: `Este PDF ya fue previsualizado en un lote anterior ("${existing.fileName}", ${existing.createdAt.toLocaleString("es-AR")}).`,
           fileId: existing.id,
+          existingBatchId: existing.batchId,
         });
         continue;
       }
@@ -489,6 +494,65 @@ export async function resolveBindTickerAliasesBulk(
     });
   }
   return results;
+}
+
+export type ReprocessResult =
+  | { ok: true; recheckedCount: number; resolvedCount: number }
+  | { ok: false; error: string };
+
+/**
+ * Re-intenta resolver matchedActivoId para las rows YA PARSEADAS de un
+ * archivo, sin volver a subir/parsear el PDF (Módulo E2.5-BUG1). Útil
+ * después de cargar activos nuevos al catálogo: las rows que quedaron
+ * pendientes en el parseo original siguen pendientes para siempre si nadie
+ * las re-evalúa, aunque el catálogo ya tenga el Activo correcto.
+ *
+ * Mismo orden y mismas reglas que matchActivo (alias primero, después
+ * ticker exacto + isCompatibleActivo) — sin duplicar la lógica de
+ * compatibilidad. Nunca crea Activos ni Aliases, nunca toca holdings.
+ */
+export async function reprocessBindFileMappings(fileId: string): Promise<ReprocessResult> {
+  const file = await prisma.bindTenenciasImportFile.findUnique({ where: { id: fileId } });
+  if (!file) return { ok: false, error: "El archivo indicado no existe." };
+
+  const pendingRows = await prisma.bindTenenciasImportRow.findMany({
+    where: { importFileId: fileId, requiresMapping: true },
+  });
+
+  let resolvedCount = 0;
+  for (const row of pendingRows) {
+    if (!row.ticker) continue;
+
+    const alias = await prisma.brokerTickerAlias.findFirst({
+      where: { broker: "BIND", brokerTicker: row.ticker, brokerCode: row.brokerCode, enabled: true },
+    });
+    if (alias) {
+      await prisma.bindTenenciasImportRow.update({
+        where: { id: row.id },
+        data: { matchedActivoId: alias.activoId, requiresMapping: false, updatedAt: new Date() },
+      });
+      resolvedCount++;
+      continue;
+    }
+
+    if (row.sectionType === "FCI") continue; // sigue exigiendo alias explícito
+
+    const activo = await prisma.activo.findUnique({ where: { ticker: row.ticker } });
+    if (activo && isCompatibleActivo(row.sectionType, row.ticker, activo)) {
+      await prisma.bindTenenciasImportRow.update({
+        where: { id: row.id },
+        data: { matchedActivoId: activo.id, requiresMapping: false, updatedAt: new Date() },
+      });
+      resolvedCount++;
+    }
+    // si no existe o no es compatible, la row queda igual (requiresMapping=true)
+  }
+
+  if (pendingRows.length > 0) {
+    await recalcAffectedFiles([fileId]);
+  }
+
+  return { ok: true, recheckedCount: pendingRows.length, resolvedCount };
 }
 
 export interface PendingAccountMapping {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useState, useTransition } from "react";
-import { Upload, AlertCircle, FileText, Link2, ShieldAlert } from "lucide-react";
+import { Upload, AlertCircle, FileText, Link2, ShieldAlert, RefreshCw } from "lucide-react";
 import {
   uploadBindPdfsAction,
   getBindImportBatch,
@@ -12,9 +12,11 @@ import {
   resolveBindAccountAliasAction,
   resolveBindTickerAliasAction,
   resolveBindTickerAliasesBulkAction,
+  reprocessBindFileMappingsAction,
   type UploadBindPdfsResult,
   type ResolveResult,
   type BulkResolveResult,
+  type ReprocessResult,
   type PendingAccountMapping,
   type PendingTickerMapping,
 } from "@/app/(dashboard)/cuentas-inversion/importaciones/bind/actions";
@@ -124,6 +126,28 @@ function TickerResolveForm({
   );
 }
 
+function ReprocessButton({ fileId, onDone }: { fileId: string; onDone: () => void }) {
+  const [state, action, busy] = useActionState<ReprocessResult | null, FormData>(reprocessBindFileMappingsAction, null);
+
+  useEffect(() => {
+    if (state?.ok) onDone();
+  }, [state, onDone]);
+
+  return (
+    <form action={action} className="flex items-center gap-1.5">
+      <input type="hidden" name="fileId" value={fileId} />
+      <button type="submit" disabled={busy} className="flex items-center gap-1 text-emerald-600 hover:text-emerald-800 font-bold disabled:text-slate-300">
+        <RefreshCw size={12} /> {busy ? "Recalculando…" : "Recalcular mappings"}
+      </button>
+      {state && (
+        state.ok
+          ? <span className="text-[10px] text-emerald-600">({state.resolvedCount}/{state.recheckedCount} resueltos)</span>
+          : <span className="text-[10px] text-rose-600">{state.error}</span>
+      )}
+    </form>
+  );
+}
+
 export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
   const [batch, setBatch] = useState<Batch>(initialBatch);
   const [uploadResult, setUploadResult] = useState<UploadBindPdfsResult | null>(null);
@@ -147,7 +171,15 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
   useEffect(() => {
     if (!state) return;
     setUploadResult(state);
-    if (state.ok && state.batchId) refreshPendingData(state.batchId);
+    if (state.ok && state.batchId) {
+      // Si TODO lo que se mandó ya estaba previsualizado antes, el lote
+      // nuevo que se acaba de crear queda vacío (0 archivos reales) — mejor
+      // abrir directamente el lote real donde sí está el archivo.
+      const allDuplicates = state.results.length > 0 && state.results.every((r) => r.status === "DUPLICATE");
+      const firstDup = state.results.find((r) => r.status === "DUPLICATE" && r.existingBatchId);
+      const targetBatchId = allDuplicates && firstDup?.existingBatchId ? firstDup.existingBatchId : state.batchId;
+      refreshPendingData(targetBatchId);
+    }
   }, [state]);
 
   useEffect(() => {
@@ -234,11 +266,20 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
                 <StatusBadge status={r.status} />
                 <span className="font-mono text-slate-600">{r.fileName}</span>
                 <span className="text-slate-400">— {r.message}</span>
+                {r.status === "DUPLICATE" && r.existingBatchId && (
+                  <button
+                    type="button"
+                    onClick={() => refreshPendingData(r.existingBatchId!)}
+                    className="text-blue-600 hover:text-blue-800 font-bold underline"
+                  >
+                    Abrir lote existente →
+                  </button>
+                )}
               </div>
             ))}
             {duplicateCount > 0 && (
               <p className="text-[11px] text-amber-600 font-medium mt-1">
-                {duplicateCount} archivo(s) ya estaban importados — no se duplicaron filas.
+                {duplicateCount} archivo(s) ya habían sido previsualizados antes — no se duplicaron filas, no se aplicó ningún import real.
               </p>
             )}
           </div>
@@ -292,9 +333,14 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
                     <td className="px-3 py-2 text-right tabular-nums font-bold text-slate-800">{fmtMoney(f.totalAmountARS ? Number(f.totalAmountARS) : null)}</td>
                     <td className="px-3 py-2"><StatusBadge status={f.status} /></td>
                     <td className="px-3 py-2 text-right">
-                      <button onClick={() => openDetail(f.id)} className="flex items-center gap-1 text-blue-600 hover:text-blue-800 font-bold">
-                        <FileText size={12} /> Ver detalle
-                      </button>
+                      <div className="flex items-center justify-end gap-3">
+                        {f.status === "NEEDS_TICKER_MAPPING" && (
+                          <ReprocessButton fileId={f.id} onDone={() => refreshPendingData(batch.id)} />
+                        )}
+                        <button onClick={() => openDetail(f.id)} className="flex items-center gap-1 text-blue-600 hover:text-blue-800 font-bold">
+                          <FileText size={12} /> Ver detalle
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

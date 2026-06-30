@@ -8,16 +8,18 @@ import {
   resolveBindAccountAlias,
   resolveBindTickerAlias,
   resolveBindTickerAliasesBulk,
+  reprocessBindFileMappings,
   getPendingBindMappings as getPendingBindMappingsImpl,
   type UploadBindPdfsResult,
   type ResolveResult,
   type BulkTickerSelection,
   type BulkTickerResolveItemResult,
+  type ReprocessResult,
 } from "./process-upload";
 
 export type {
   UploadResultRow, UploadBindPdfsResult, ResolveResult, PendingAccountMapping, PendingTickerMapping,
-  BulkTickerSelection, BulkTickerResolveItemResult,
+  BulkTickerSelection, BulkTickerResolveItemResult, ReprocessResult,
 } from "./process-upload";
 
 /**
@@ -192,4 +194,26 @@ export async function resolveBindTickerAliasesBulkAction(
   }
 
   return { ok: true, results };
+}
+
+/**
+ * Reintenta el matching de las rows pendientes de un archivo ya parseado,
+ * contra el catálogo/aliases actuales — sin volver a subir el PDF (Módulo
+ * E2.5-BUG1). Útil después de cargar Activos nuevos al catálogo.
+ */
+export async function reprocessBindFileMappingsAction(
+  _prev: ReprocessResult | null,
+  formData: FormData,
+): Promise<ReprocessResult> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return { ok: false, error: denied.error };
+
+  const fileId = formData.get("fileId")?.toString().trim() ?? "";
+  if (!fileId) return { ok: false, error: "Falta el ID del archivo." };
+
+  const result = await reprocessBindFileMappings(fileId);
+  if (result.ok) {
+    try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear por esto */ }
+  }
+  return result;
 }
