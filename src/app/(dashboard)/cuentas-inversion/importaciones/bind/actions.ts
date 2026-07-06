@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireActionPermission } from "@/lib/auth/permissions";
+import { auth } from "@/auth";
 import {
   processBindPdfUpload,
   resolveBindAccountAlias,
@@ -16,11 +17,16 @@ import {
   type BulkTickerResolveItemResult,
   type ReprocessResult,
 } from "./process-upload";
+import {
+  confirmBindFileImport,
+  type ConfirmBindFileResult,
+} from "./confirm-import";
 
 export type {
   UploadResultRow, UploadBindPdfsResult, ResolveResult, PendingAccountMapping, PendingTickerMapping,
   BulkTickerSelection, BulkTickerResolveItemResult, ReprocessResult,
 } from "./process-upload";
+export type { ConfirmBindFileResult, QuantityDiscrepancy } from "./confirm-import";
 
 /**
  * Único punto de entrada gateado para la UI. La lógica real vive en
@@ -215,5 +221,37 @@ export async function reprocessBindFileMappingsAction(
   if (result.ok) {
     try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear por esto */ }
   }
+  return result;
+}
+
+/**
+ * Confirmación real de un archivo de import Bind a holdings definitivos (Módulo E3.2).
+ * Escribe en HoldingComitenteInversion y SaldoComitenteInversion.
+ * NO conectado a botón UI todavía — se conecta en E3.3.
+ */
+export async function confirmBindFileImportAction(
+  _prev: ConfirmBindFileResult | null,
+  formData: FormData,
+): Promise<ConfirmBindFileResult> {
+  const EMPTY: ConfirmBindFileResult = {
+    ok: false, created: [], updated: [], skipped: [], warnings: [], quantityDiscrepancies: [], cashUpdated: false,
+  };
+
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return { ...EMPTY, error: denied.error };
+
+  const fileId = formData.get("fileId")?.toString().trim() ?? "";
+  if (!fileId) return { ...EMPTY, error: "Falta el ID del archivo." };
+
+  const session  = await auth();
+  const userId   = (session?.user?.id as string | undefined) ?? null;
+
+  const result = await confirmBindFileImport(fileId, userId);
+
+  if (result.ok) {
+    try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear */ }
+    try { revalidatePath("/cuentas-inversion", "layout"); } catch { /* no bloquear */ }
+  }
+
   return result;
 }
