@@ -105,6 +105,25 @@ export async function confirmBindFileImport(
     };
   }
 
+  // Defensive: CASH_USD_* deben tener saldoVencidoQuantity (USD nominal real del PDF).
+  // Si es null no podemos determinar el monto en USD → bloquear antes de escribir datos incorrectos.
+  const mepCashRow   = cashRows.find((r) => r.sectionType === "CASH_USD_MEP");
+  const cableCashRow = cashRows.find((r) => r.sectionType === "CASH_USD_CABLE");
+  if (mepCashRow && mepCashRow.saldoVencidoQuantity === null) {
+    return {
+      ok: false,
+      error: "CASH_USD_MEP row sin saldoVencidoQuantity (USD nominal) — confirmación bloqueada para no guardar equivalente ARS como USD.",
+      ...EMPTY_RESULT,
+    };
+  }
+  if (cableCashRow && cableCashRow.saldoVencidoQuantity === null) {
+    return {
+      ok: false,
+      error: "CASH_USD_CABLE row sin saldoVencidoQuantity (USD nominal) — confirmación bloqueada para no guardar equivalente ARS como USD.",
+      ...EMPTY_RESULT,
+    };
+  }
+
   // Pre-validate categoria mappings — filter out rows that can't be written
   const warnings: string[] = [];
   const skipped: string[] = [];
@@ -163,11 +182,12 @@ export async function confirmBindFileImport(
         const mepRow    = cashRows.find((r) => r.sectionType === "CASH_USD_MEP");
         const cableRow  = cashRows.find((r) => r.sectionType === "CASH_USD_CABLE");
 
-        // For CASH_USD_* rows, totalAmountARS actually stores the native USD amount
-        // (Bind's PDF shows USD balances in USD; the parser stores them verbatim).
-        const saldoARS    = arsRow?.totalAmountARS   ?? new Decimal(0);
-        const saldoMEP    = mepRow?.totalAmountARS   ?? new Decimal(0);
-        const saldoCable  = cableRow?.totalAmountARS ?? new Decimal(0);
+        // CASH_ARS:    totalAmountARS        = saldo ARS (puede ser negativo por pendientes).
+        // CASH_USD_*:  saldoVencidoQuantity  = USD nominal real del PDF.
+        //              totalAmountARS        = equivalente ARS calculado por Bind — NO usar para saldoUSDMep/Cable.
+        const saldoARS   = arsRow?.totalAmountARS        ?? new Decimal(0);
+        const saldoMEP   = mepRow?.saldoVencidoQuantity   ?? new Decimal(0);
+        const saldoCable = cableRow?.saldoVencidoQuantity  ?? new Decimal(0);
 
         await tx.saldoComitenteInversion.upsert({
           where: { comitenteId: comitente.id },

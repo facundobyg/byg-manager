@@ -307,9 +307,11 @@ export async function getBindFileConfirmPreview(fileId: string): Promise<BindFil
     else toCreate.push(ticker);
   }
 
+  // cashARS: saldo ARS del PDF (totalAmountARS).
+  // cashMEP / cashCable: USD nominal real (saldoVencidoQuantity) — NO totalAmountARS que es ARS equivalente.
   const cashARS   = cashRows.find((r) => r.sectionType === "CASH_ARS")?.totalAmountARS;
-  const cashMEP   = cashRows.find((r) => r.sectionType === "CASH_USD_MEP")?.totalAmountARS;
-  const cashCable = cashRows.find((r) => r.sectionType === "CASH_USD_CABLE")?.totalAmountARS;
+  const cashMEP   = cashRows.find((r) => r.sectionType === "CASH_USD_MEP")?.saldoVencidoQuantity;
+  const cashCable = cashRows.find((r) => r.sectionType === "CASH_USD_CABLE")?.saldoVencidoQuantity;
 
   return {
     fileId:         file.id,
