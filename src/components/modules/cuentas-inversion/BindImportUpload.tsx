@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useState, useTransition } from "react";
-import { Upload, AlertCircle, FileText, Link2, ShieldAlert, RefreshCw, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Upload, AlertCircle, FileText, Link2, ShieldAlert, RefreshCw, AlertTriangle, CheckCircle2, UserPlus } from "lucide-react";
 import {
   uploadBindPdfsAction,
   getBindImportBatch,
@@ -15,6 +15,7 @@ import {
   reprocessBindFileMappingsAction,
   confirmBindFileImportAction,
   getBindFileConfirmPreview,
+  createAndResolveBindAccountAction,
   type UploadBindPdfsResult,
   type ResolveResult,
   type BulkResolveResult,
@@ -23,6 +24,7 @@ import {
   type PendingTickerMapping,
   type ConfirmBindFileResult,
   type BindFileConfirmPreview,
+  type CreateAndResolveResult,
 } from "@/app/(dashboard)/cuentas-inversion/importaciones/bind/actions";
 import { Modal } from "@/components/ui/Modal";
 
@@ -135,6 +137,60 @@ function TickerResolveForm({
   );
 }
 
+function CreateAndLinkForm({
+  pending,
+  defaultProductor,
+  onCreated,
+}: {
+  pending: PendingAccountMapping;
+  defaultProductor: string;
+  onCreated: () => void;
+}) {
+  const [state, action, busy] = useActionState<CreateAndResolveResult | null, FormData>(
+    createAndResolveBindAccountAction, null,
+  );
+  const [productor, setProductor] = useState(defaultProductor || "IPS");
+
+  useEffect(() => { setProductor(defaultProductor || "IPS"); }, [defaultProductor]);
+  useEffect(() => { if (state?.ok) onCreated(); }, [state, onCreated]);
+
+  return (
+    <form action={action} className="flex flex-wrap items-end gap-2 px-3 py-2.5 bg-slate-50/50">
+      <input type="hidden" name="accountNumber" value={pending.accountNumber ?? ""} />
+      <div className="flex items-center gap-1 text-[10px] font-bold uppercase text-slate-400 w-full">
+        <UserPlus size={10} /> Crear comitente nuevo y vincular
+      </div>
+      <input
+        name="displayName"
+        defaultValue={pending.accountName ?? ""}
+        placeholder="Nombre del comitente"
+        required
+        className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white min-w-48 flex-1"
+      />
+      <select
+        name="productor"
+        value={productor}
+        onChange={(e) => setProductor(e.target.value)}
+        required
+        className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white"
+      >
+        <option value="IPS">IPS</option>
+        <option value="BYG">BYG</option>
+        <option value="OTRO">Otro</option>
+      </select>
+      <button
+        type="submit"
+        disabled={busy}
+        className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold"
+      >
+        <UserPlus size={12} /> {busy ? "Creando…" : "Crear y vincular"}
+      </button>
+      {state && !state.ok && <p className="text-[11px] text-rose-600 font-bold w-full">{state.error}</p>}
+      {state?.ok && <p className="text-[11px] text-emerald-600 font-bold w-full">✓ {state.comitenteName} creado y vinculado.</p>}
+    </form>
+  );
+}
+
 function ReprocessButton({ fileId, onDone }: { fileId: string; onDone: () => void }) {
   const [state, action, busy] = useActionState<ReprocessResult | null, FormData>(reprocessBindFileMappingsAction, null);
 
@@ -175,6 +231,11 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
   const [confirmResults, setConfirmResults]         = useState<ConfirmBindFileResult[]>([]);
   const [confirmPreviewLoading, startConfirmPreview]   = useTransition();
   const [confirmExecuting, startConfirmExecution]   = useTransition();
+
+  // Bulk create comitentes
+  const [bulkProductor, setBulkProductor]           = useState("IPS");
+  const [bulkCreating, startBulkCreate]             = useTransition();
+  const [bulkCreateResults, setBulkCreateResults]   = useState<CreateAndResolveResult[]>([]);
 
   function refreshPendingData(batchId: string) {
     startDetailLoad(async () => {
@@ -217,6 +278,25 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
     startDetailLoad(async () => {
       const d = await getBindImportFileDetail(fileId);
       setDetail(d);
+    });
+  }
+
+  function handleBulkCreateAll() {
+    const accounts = pendingMappings?.accounts ?? [];
+    if (accounts.length === 0) return;
+    setBulkCreateResults([]);
+    startBulkCreate(async () => {
+      const results: CreateAndResolveResult[] = [];
+      for (const acc of accounts) {
+        const fd = new FormData();
+        fd.set("accountNumber", acc.accountNumber ?? "");
+        fd.set("displayName",   acc.accountName   ?? "");
+        fd.set("productor",     bulkProductor);
+        const r = await createAndResolveBindAccountAction(null, fd);
+        results.push(r);
+      }
+      setBulkCreateResults(results);
+      if (results.some((r) => r.ok) && batch?.id) refreshPendingData(batch.id);
     });
   }
 
@@ -436,16 +516,56 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
       {/* Resolución de cuentas pendientes */}
       {pendingMappings && pendingMappings.accounts.length > 0 && (
         <div className="bg-white rounded-xl border border-orange-200 shadow-sm p-6">
-          <p className="text-[10px] font-black uppercase tracking-widest text-orange-500 mb-3">
-            3 — Vincular cuentas pendientes ({pendingMappings.accounts.length})
-          </p>
-          <div className="rounded-xl border border-slate-200 overflow-hidden divide-y divide-slate-100">
+          <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-orange-500">
+              3 — Vincular cuentas pendientes ({pendingMappings.accounts.length})
+            </p>
+            {/* Bulk create all */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] font-bold uppercase text-slate-400">Crear todos con productor:</span>
+              <select
+                value={bulkProductor}
+                onChange={(e) => { setBulkProductor(e.target.value); setBulkCreateResults([]); }}
+                className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-white"
+              >
+                <option value="IPS">IPS</option>
+                <option value="BYG">BYG</option>
+                <option value="OTRO">Otro</option>
+              </select>
+              <button
+                type="button"
+                disabled={bulkCreating}
+                onClick={handleBulkCreateAll}
+                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold"
+              >
+                <UserPlus size={12} /> {bulkCreating ? "Creando…" : `Crear y vincular todos (${pendingMappings.accounts.length})`}
+              </button>
+            </div>
+          </div>
+
+          {bulkCreateResults.length > 0 && (
+            <div className="mb-3 flex flex-col gap-1">
+              {bulkCreateResults.map((r, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <StatusBadge status={r.ok ? "READY" : "ERROR"} />
+                  {r.ok
+                    ? <span className="text-emerald-700 font-bold">{r.comitenteName} — vinculado</span>
+                    : <span className="text-rose-600">{r.error}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-xl border border-slate-200 overflow-hidden">
             {pendingMappings.accounts.map((a) => (
-              <AccountResolveForm key={a.fileId} pending={a} comitentes={comitentes} onResolved={() => refreshPendingData(batch!.id)} />
+              <div key={a.fileId} className="divide-y divide-slate-50 border-b border-slate-100 last:border-0">
+                <AccountResolveForm pending={a} comitentes={comitentes} onResolved={() => refreshPendingData(batch!.id)} />
+                <CreateAndLinkForm pending={a} defaultProductor={bulkProductor} onCreated={() => refreshPendingData(batch!.id)} />
+              </div>
             ))}
           </div>
           <p className="text-[11px] text-slate-400 mt-2">
-            Si la cuenta no corresponde a ningún comitente existente (caso Lucila Crespo / 17098), queda pendiente — este módulo nunca crea comitentes nuevos.
+            Vinculá a un comitente existente (arriba) o creá uno nuevo directamente desde acá (abajo). Los alias se guardan para futuros imports.
           </p>
         </div>
       )}

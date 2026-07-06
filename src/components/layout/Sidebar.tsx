@@ -301,7 +301,7 @@ export function Sidebar({ carteras, cuentasInversion, cajasSucursal, allowedPerm
                 })()}
                 {canSeeImportar && (() => {
                   const href   = "/cuentas-inversion/importar";
-                  const active = pathname === href || pathname.startsWith(href + "/");
+                  const active = pathname === href || pathname.startsWith(href + "/") || pathname.startsWith("/cuentas-inversion/importaciones/bind");
                   return (
                     <Link
                       href={href}

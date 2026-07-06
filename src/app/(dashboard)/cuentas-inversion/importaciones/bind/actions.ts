@@ -1,7 +1,9 @@
 "use server";
 
+import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { Decimal } from "@prisma/client/runtime/library";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { auth } from "@/auth";
 import {
@@ -222,6 +224,102 @@ export async function reprocessBindFileMappingsAction(
     try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear por esto */ }
   }
   return result;
+}
+
+// ── Crear comitente nuevo desde import Bind y vincular ────────────────────────
+
+export type CreateAndResolveResult = {
+  ok: boolean;
+  error?: string;
+  comitenteName?: string;
+  affectedCount?: number;
+};
+
+/**
+ * Crea un ComitenteInversion a partir de los datos del PDF Bind (nunca duplica),
+ * crea su SaldoComitenteInversion en 0, crea el BrokerAccountAlias BIND/cuenta,
+ * y recalcula file+batch status. Equivalente a crear desde Banco Industrial
+ * + vincular, pero en un solo paso desde la pantalla de importación.
+ */
+export async function createAndResolveBindAccountAction(
+  _prev: CreateAndResolveResult | null,
+  formData: FormData,
+): Promise<CreateAndResolveResult> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return { ok: false, error: denied.error };
+
+  const accountNumber = formData.get("accountNumber")?.toString().trim() ?? "";
+  const displayName   = formData.get("displayName")?.toString().trim() ?? "";
+  const productorRaw  = formData.get("productor")?.toString().trim() ?? "";
+
+  if (!accountNumber || !displayName) return { ok: false, error: "Cuenta y nombre son requeridos." };
+  if (!["IPS", "BYG", "OTRO"].includes(productorRaw))
+    return { ok: false, error: "Productor inválido. Elegí IPS, BYG u OTRO." };
+  const productor = productorRaw as "IPS" | "BYG" | "OTRO";
+
+  // Guard: no alias previo para esta cuenta Bind
+  const existingAlias = await prisma.brokerAccountAlias.findFirst({
+    where: { broker: "BIND", accountNumber },
+    select: { id: true },
+  });
+  if (existingAlias) return { ok: false, error: `La cuenta Bind ${accountNumber} ya tiene un alias asignado.` };
+
+  // Obtener la cuenta de inversión (única en el sistema)
+  const cuenta = await prisma.cuentaInversion.findFirst({ select: { id: true } });
+  if (!cuenta) return { ok: false, error: "No se encontró cuenta de inversión en el sistema." };
+
+  // Guard: no comitente con mismo nroComitente en esa cuenta
+  const existingComitente = await prisma.comitenteInversion.findUnique({
+    where: { cuentaInversionId_nroComitente: { cuentaInversionId: cuenta.id, nroComitente: accountNumber } },
+    select: { id: true },
+  });
+  if (existingComitente) return { ok: false, error: `Ya existe un comitente con número ${accountNumber} en esta cuenta.` };
+
+  // Crear comitente + saldo inicial en transacción
+  let newComitenteId: string;
+  let newComitenteName: string;
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const comitente = await tx.comitenteInversion.create({
+        data: {
+          id:                crypto.randomUUID(),
+          cuentaInversionId: cuenta.id,
+          nroComitente:      accountNumber,
+          nombre:            displayName,
+          productor,
+          activo:            true,
+          esPropioBYG:       false,
+          updatedAt:         new Date(),
+        },
+      });
+      await tx.saldoComitenteInversion.create({
+        data: {
+          id:            crypto.randomUUID(),
+          comitenteId:   comitente.id,
+          saldoARS:      new Decimal(0),
+          saldoUSDCable: new Decimal(0),
+          saldoUSDMep:   new Decimal(0),
+          updatedAt:     new Date(),
+        },
+      });
+      return comitente;
+    }, { timeout: 15_000 });
+    newComitenteId = created.id;
+    newComitenteName = created.nombre;
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  // Crear BrokerAccountAlias + actualizar files pendientes + recalcular batch
+  const linkResult = await resolveBindAccountAlias(accountNumber, newComitenteId);
+  if (!linkResult.ok) {
+    return { ok: false, error: `Comitente '${newComitenteName}' creado pero falló la vinculación: ${linkResult.error}` };
+  }
+
+  try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear */ }
+  try { revalidatePath("/cuentas-inversion", "layout"); } catch { /* no bloquear */ }
+
+  return { ok: true, comitenteName: newComitenteName, affectedCount: linkResult.affectedCount };
 }
 
 /**

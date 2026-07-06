@@ -16,7 +16,7 @@ export default async function BindImportPage({
     <div className="flex flex-col gap-8 pb-20">
       <header className="flex flex-col gap-3">
         <Link
-          href="/cuentas-inversion/importar"
+          href="/cuentas-inversion/importar?tab=bind"
           className="text-[10px] font-black uppercase tracking-[0.3em] text-blue-600 hover:text-blue-700 transition-colors"
         >
           ← Importar Holdings
