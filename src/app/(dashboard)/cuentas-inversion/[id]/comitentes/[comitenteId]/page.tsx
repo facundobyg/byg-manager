@@ -363,11 +363,11 @@ export default async function ComitenteDetailPage({
           <p className="text-2xl font-black text-slate-900 tabular-nums leading-none">
             USD {fmt(totalCarteraUSD)}
           </p>
-          {saldoARS > 0 && (
+          {saldoARS !== 0 && (
             <p className="text-xs font-bold text-slate-400 tabular-nums">
               {tcMep
                 ? `$ ${fmt(saldoARS)} ARS (TC MEP ${fmt(tcMep, 0)})`
-                : `+ $ ${fmt(saldoARS)} ARS`}
+                : `$ ${fmt(saldoARS)} ARS`}
             </p>
           )}
         </div>
