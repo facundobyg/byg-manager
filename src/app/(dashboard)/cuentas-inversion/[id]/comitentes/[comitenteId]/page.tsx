@@ -74,7 +74,7 @@ export default async function ComitenteDetailPage({
   const { id, comitenteId }           = await params;
   const { editId, venderId, comprar } = await searchParams;
 
-  const [comitente, auditLogs, canDeleteHolding, tcMepRow, opsBolsaRaw, canWriteBolsa] = await Promise.all([
+  const [comitente, auditLogs, canDeleteHolding, tcMepRow, opsBolsaRaw, canWriteBolsa, bindFileIds] = await Promise.all([
   prisma.comitenteInversion.findUnique({
     where: { id: comitenteId },
     include: {
@@ -107,9 +107,29 @@ export default async function ComitenteDetailPage({
     include: { OperadorCarga: { select: { name: true } } },
   }),
   canDoAction("bolsa:concertar"),
+  prisma.bindTenenciasImportFile.findMany({
+    where:  { matchedComitenteId: comitenteId, status: "CONFIRMED" },
+    select: { id: true },
+  }),
   ]);
 
   if (!comitente || comitente.cuentaInversionId !== id) notFound();
+
+  // Fetch Bind import audit logs separately (stored with entidad=BindTenenciasImportFile, not ComitenteInversion)
+  const bindAuditLogs = bindFileIds.length > 0
+    ? await prisma.auditLog.findMany({
+        where: {
+          accion:    "BIND_IMPORT_CONFIRM",
+          entidad:   "BindTenenciasImportFile",
+          entidadId: { in: bindFileIds.map((f) => f.id) },
+        },
+        orderBy: { createdAt: "desc" },
+        include: { User: { select: { name: true } } },
+      })
+    : [];
+  const allAuditLogs = [...auditLogs, ...bindAuditLogs].sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  );
 
   // Serialize ops for client component (dates → strings)
   const opsBolsa: OpsBolsaRow[] = opsBolsaRaw.map((o) => ({
@@ -808,12 +828,12 @@ export default async function ComitenteDetailPage({
       </section>
 
       {/* ── Audit — últimos movimientos ───────────────────────────────────── */}
-      {auditLogs.length > 0 && (
+      {allAuditLogs.length > 0 && (
         <section className="flex flex-col gap-3">
           <h2 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Últimos movimientos</h2>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="divide-y divide-slate-50">
-              {auditLogs.map((log) => {
+              {allAuditLogs.map((log) => {
                 const desc = (log.datosNuevos as { description?: string } | null)?.description;
                 return (
                   <div key={log.id} className="px-4 py-2.5 flex items-center gap-3 text-xs">
