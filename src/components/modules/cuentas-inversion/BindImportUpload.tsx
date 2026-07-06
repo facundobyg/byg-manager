@@ -139,19 +139,19 @@ function TickerResolveForm({
 
 function CreateAndLinkForm({
   pending,
-  defaultProductor,
+  productor,
+  onProductorChange,
   onCreated,
 }: {
   pending: PendingAccountMapping;
-  defaultProductor: string;
+  productor: string;
+  onProductorChange: (value: string) => void;
   onCreated: () => void;
 }) {
   const [state, action, busy] = useActionState<CreateAndResolveResult | null, FormData>(
     createAndResolveBindAccountAction, null,
   );
-  const [productor, setProductor] = useState(defaultProductor || "IPS");
 
-  useEffect(() => { setProductor(defaultProductor || "IPS"); }, [defaultProductor]);
   useEffect(() => { if (state?.ok) onCreated(); }, [state, onCreated]);
 
   return (
@@ -170,7 +170,7 @@ function CreateAndLinkForm({
       <select
         name="productor"
         value={productor}
-        onChange={(e) => setProductor(e.target.value)}
+        onChange={(e) => onProductorChange(e.target.value)}
         required
         className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white"
       >
@@ -232,10 +232,10 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
   const [confirmPreviewLoading, startConfirmPreview]   = useTransition();
   const [confirmExecuting, startConfirmExecution]   = useTransition();
 
-  // Bulk create comitentes
-  const [bulkProductor, setBulkProductor]           = useState("IPS");
-  const [bulkCreating, startBulkCreate]             = useTransition();
-  const [bulkCreateResults, setBulkCreateResults]   = useState<CreateAndResolveResult[]>([]);
+  // Bulk create comitentes — productor per account (default BYG)
+  const [productorSelections, setProductorSelections] = useState<Record<string, string>>({});
+  const [bulkCreating, startBulkCreate]               = useTransition();
+  const [bulkCreateResults, setBulkCreateResults]     = useState<CreateAndResolveResult[]>([]);
 
   function refreshPendingData(batchId: string) {
     startDetailLoad(async () => {
@@ -291,7 +291,7 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
         const fd = new FormData();
         fd.set("accountNumber", acc.accountNumber ?? "");
         fd.set("displayName",   acc.accountName   ?? "");
-        fd.set("productor",     bulkProductor);
+        fd.set("productor",     productorSelections[acc.accountNumber ?? ""] ?? "BYG");
         const r = await createAndResolveBindAccountAction(null, fd);
         results.push(r);
       }
@@ -520,27 +520,15 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
             <p className="text-[10px] font-black uppercase tracking-widest text-orange-500">
               3 — Vincular cuentas pendientes ({pendingMappings.accounts.length})
             </p>
-            {/* Bulk create all */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[10px] font-bold uppercase text-slate-400">Crear todos con productor:</span>
-              <select
-                value={bulkProductor}
-                onChange={(e) => { setBulkProductor(e.target.value); setBulkCreateResults([]); }}
-                className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-white"
-              >
-                <option value="IPS">IPS</option>
-                <option value="BYG">BYG</option>
-                <option value="OTRO">Otro</option>
-              </select>
-              <button
-                type="button"
-                disabled={bulkCreating}
-                onClick={handleBulkCreateAll}
-                className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold"
-              >
-                <UserPlus size={12} /> {bulkCreating ? "Creando…" : `Crear y vincular todos (${pendingMappings.accounts.length})`}
-              </button>
-            </div>
+            {/* Bulk create all — uses per-row productor */}
+            <button
+              type="button"
+              disabled={bulkCreating}
+              onClick={handleBulkCreateAll}
+              className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold"
+            >
+              <UserPlus size={12} /> {bulkCreating ? "Creando…" : `Crear y vincular todos (${pendingMappings.accounts.length})`}
+            </button>
           </div>
 
           {bulkCreateResults.length > 0 && (
@@ -560,7 +548,12 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
             {pendingMappings.accounts.map((a) => (
               <div key={a.fileId} className="divide-y divide-slate-50 border-b border-slate-100 last:border-0">
                 <AccountResolveForm pending={a} comitentes={comitentes} onResolved={() => refreshPendingData(batch!.id)} />
-                <CreateAndLinkForm pending={a} defaultProductor={bulkProductor} onCreated={() => refreshPendingData(batch!.id)} />
+                <CreateAndLinkForm
+                  pending={a}
+                  productor={productorSelections[a.accountNumber ?? ""] ?? "BYG"}
+                  onProductorChange={(val) => setProductorSelections((prev) => ({ ...prev, [a.accountNumber ?? ""]: val }))}
+                  onCreated={() => refreshPendingData(batch!.id)}
+                />
               </div>
             ))}
           </div>
