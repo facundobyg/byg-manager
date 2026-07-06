@@ -255,3 +255,74 @@ export async function confirmBindFileImportAction(
 
   return result;
 }
+
+// ── Preflight: resumen de lo que haría la confirmación (read-only, no toca DB) ──
+
+export type BindFileConfirmPreview = {
+  fileId: string;
+  fileName: string;
+  comitente: string;
+  nroComitente: string;
+  cuentaBind: string | null;
+  reportDate: string | null;
+  totalAmountARS: number;
+  toCreate: string[];
+  toUpdate: string[];
+  cashARS: number;
+  cashMEP: number;
+  cashCable: number;
+};
+
+export async function getBindFileConfirmPreview(fileId: string): Promise<BindFileConfirmPreview | null> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return null;
+
+  const file = await prisma.bindTenenciasImportFile.findUnique({
+    where: { id: fileId },
+    include: {
+      MatchedComitente: { select: { id: true, nombre: true, nroComitente: true } },
+      Rows: {
+        include: { MatchedActivo: { select: { id: true, ticker: true } } },
+      },
+    },
+  });
+
+  if (!file || !file.MatchedComitente || file.status !== "READY") return null;
+
+  const CASH_TYPES = new Set(["CASH_ARS", "CASH_USD_MEP", "CASH_USD_CABLE"]);
+  const cashRows    = file.Rows.filter((r) => CASH_TYPES.has(r.sectionType));
+  const holdingRows = file.Rows.filter(
+    (r) => !CASH_TYPES.has(r.sectionType) && r.sectionType !== "CAUCION_ALERT" && r.MatchedActivo,
+  );
+
+  const toCreate: string[] = [];
+  const toUpdate: string[] = [];
+  for (const row of holdingRows) {
+    const ticker = row.MatchedActivo!.ticker;
+    const existing = await prisma.holdingComitenteInversion.findUnique({
+      where: { comitenteId_ticker: { comitenteId: file.MatchedComitente.id, ticker } },
+      select: { id: true },
+    });
+    if (existing) toUpdate.push(ticker);
+    else toCreate.push(ticker);
+  }
+
+  const cashARS   = cashRows.find((r) => r.sectionType === "CASH_ARS")?.totalAmountARS;
+  const cashMEP   = cashRows.find((r) => r.sectionType === "CASH_USD_MEP")?.totalAmountARS;
+  const cashCable = cashRows.find((r) => r.sectionType === "CASH_USD_CABLE")?.totalAmountARS;
+
+  return {
+    fileId:         file.id,
+    fileName:       file.fileName,
+    comitente:      file.MatchedComitente.nombre,
+    nroComitente:   file.MatchedComitente.nroComitente,
+    cuentaBind:     file.accountNumber ?? null,
+    reportDate:     file.reportDate ? file.reportDate.toISOString().split("T")[0] : null,
+    totalAmountARS: file.totalAmountARS ? Number(file.totalAmountARS) : 0,
+    toCreate,
+    toUpdate,
+    cashARS:   cashARS   ? Number(cashARS)   : 0,
+    cashMEP:   cashMEP   ? Number(cashMEP)   : 0,
+    cashCable: cashCable ? Number(cashCable) : 0,
+  };
+}

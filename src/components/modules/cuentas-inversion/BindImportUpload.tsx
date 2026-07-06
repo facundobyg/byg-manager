@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useState, useTransition } from "react";
-import { Upload, AlertCircle, FileText, Link2, ShieldAlert, RefreshCw } from "lucide-react";
+import { Upload, AlertCircle, FileText, Link2, ShieldAlert, RefreshCw, AlertTriangle, CheckCircle2 } from "lucide-react";
 import {
   uploadBindPdfsAction,
   getBindImportBatch,
@@ -13,12 +13,16 @@ import {
   resolveBindTickerAliasAction,
   resolveBindTickerAliasesBulkAction,
   reprocessBindFileMappingsAction,
+  confirmBindFileImportAction,
+  getBindFileConfirmPreview,
   type UploadBindPdfsResult,
   type ResolveResult,
   type BulkResolveResult,
   type ReprocessResult,
   type PendingAccountMapping,
   type PendingTickerMapping,
+  type ConfirmBindFileResult,
+  type BindFileConfirmPreview,
 } from "@/app/(dashboard)/cuentas-inversion/importaciones/bind/actions";
 import { Modal } from "@/components/ui/Modal";
 
@@ -52,6 +56,11 @@ function StatusBadge({ status }: { status: string }) {
 function fmtMoney(n: number | null | undefined) {
   if (n == null) return "—";
   return `$ ${n.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fmtUSD(n: number | null | undefined) {
+  if (n == null) return "—";
+  return `USD ${n.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function AccountResolveForm({ pending, comitentes, onResolved }: { pending: PendingAccountMapping; comitentes: Comitentes; onResolved: () => void }) {
@@ -160,6 +169,13 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
   const [state, formAction, pending] = useActionState<UploadBindPdfsResult | null, FormData>(uploadBindPdfsAction, null);
   const [bulkState, bulkAction, bulkPending] = useActionState<BulkResolveResult | null, FormData>(resolveBindTickerAliasesBulkAction, null);
 
+  // Confirm modal state
+  const [confirmModalOpen, setConfirmModalOpen]     = useState(false);
+  const [confirmPreviews, setConfirmPreviews]       = useState<BindFileConfirmPreview[]>([]);
+  const [confirmResults, setConfirmResults]         = useState<ConfirmBindFileResult[]>([]);
+  const [confirmPreviewLoading, startConfirmPreview]   = useTransition();
+  const [confirmExecuting, startConfirmExecution]   = useTransition();
+
   function refreshPendingData(batchId: string) {
     startDetailLoad(async () => {
       const [refreshedBatch, mappings] = await Promise.all([getBindImportBatch(batchId), getPendingBindMappings(batchId)]);
@@ -204,6 +220,45 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
     });
   }
 
+  const readyFiles = batch?.Files.filter((f) => f.status === "READY") ?? [];
+  const canConfirm =
+    batch?.status === "READY_TO_CONFIRM" &&
+    readyFiles.length > 0 &&
+    readyFiles.every((f) => f.MatchedComitente != null);
+
+  function handleOpenConfirmModal() {
+    setConfirmResults([]);
+    setConfirmPreviews([]);
+    setConfirmModalOpen(true);
+    startConfirmPreview(async () => {
+      const previews = await Promise.all(readyFiles.map((f) => getBindFileConfirmPreview(f.id)));
+      setConfirmPreviews(previews.filter((p): p is BindFileConfirmPreview => p !== null));
+    });
+  }
+
+  function handleConfirmImport() {
+    startConfirmExecution(async () => {
+      const results: ConfirmBindFileResult[] = [];
+      for (const preview of confirmPreviews) {
+        const fd = new FormData();
+        fd.set("fileId", preview.fileId);
+        const r = await confirmBindFileImportAction(null, fd);
+        results.push(r);
+      }
+      setConfirmResults(results);
+      if (results.every((r) => r.ok) && batch?.id) {
+        refreshPendingData(batch.id);
+      }
+    });
+  }
+
+  function handleCloseConfirmModal() {
+    if (confirmExecuting) return;
+    setConfirmModalOpen(false);
+    setConfirmPreviews([]);
+    setConfirmResults([]);
+  }
+
   function setTickerSelection(ticker: string, brokerCode: string | null, activoId: string) {
     setTickerSelections((prev) => ({ ...prev, [tickerKey(ticker, brokerCode)]: activoId }));
   }
@@ -222,7 +277,8 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
         <div className="text-[12px] text-blue-800">
           <strong>Esto es preview/staging.</strong> Nada de lo que pasa acá modifica holdings, carteras ni precios reales todavía.
           Los alias que vincules (cuenta → comitente, ticker → activo) sí se guardan y van a aplicarse automáticamente en futuros imports —
-          si vinculás algo mal, podés corregirlo después editando o desactivando el alias. La confirmación real es un módulo aparte, todavía no implementado.
+          si vinculás algo mal, podés corregirlo después editando o desactivando el alias.
+          La confirmación real requiere aprobación explícita en el paso 2 y no se puede deshacer automáticamente.
         </div>
       </div>
 
@@ -348,15 +404,31 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
             </table>
           </div>
 
-          <div className="mt-5 flex items-center gap-3">
+          <div className="mt-5 flex items-center gap-3 flex-wrap">
             <button
               type="button"
-              disabled
-              title="Próximo módulo"
-              className="px-5 py-2 bg-slate-200 text-slate-400 rounded-lg text-sm font-bold cursor-not-allowed"
+              disabled={!canConfirm}
+              onClick={canConfirm ? handleOpenConfirmModal : undefined}
+              title={
+                !canConfirm
+                  ? batch?.status !== "READY_TO_CONFIRM"
+                    ? `Estado del lote: ${batch?.status ?? "—"}`
+                    : readyFiles.some((f) => !f.MatchedComitente)
+                    ? "Todos los archivos deben tener comitente vinculado"
+                    : "No hay archivos en estado READY"
+                  : "Confirmar importación a holdings reales"
+              }
+              className={
+                canConfirm
+                  ? "flex items-center gap-2 px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-sm font-bold"
+                  : "px-5 py-2 bg-slate-200 text-slate-400 rounded-lg text-sm font-bold cursor-not-allowed"
+              }
             >
-              Confirmar importación real (Próximo módulo)
+              Confirmar importación real
             </button>
+            {batch?.status === "READY_TO_CONFIRM" && readyFiles.some((f) => !f.MatchedComitente) && (
+              <p className="text-xs text-orange-600">Todos los archivos deben tener comitente vinculado.</p>
+            )}
           </div>
         </div>
       )}
@@ -435,6 +507,187 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
             Si elegís un activo incompatible por moneda/categoría (ej. SUPV local vs. SUPV ADR en USD), el sistema lo va a rechazar — hay que corregir el catálogo primero.
           </p>
         </div>
+      )}
+
+      {/* Modal de confirmación real */}
+      {confirmModalOpen && (
+        <Modal
+          title="Confirmar importación real"
+          accentColor="text-rose-600"
+          maxWidth="max-w-2xl"
+          onClose={handleCloseConfirmModal}
+        >
+          <div className="p-5 max-h-[80vh] overflow-y-auto flex flex-col gap-5">
+
+            {/* Fase: cargando preview */}
+            {confirmPreviewLoading && (
+              <p className="text-sm text-slate-400">Calculando resumen…</p>
+            )}
+
+            {/* Fase: preview cargado, sin resultados */}
+            {!confirmPreviewLoading && confirmResults.length === 0 && (
+              <>
+                {confirmPreviews.length === 0 ? (
+                  <p className="text-sm text-rose-600">No se pudo cargar la vista previa. Verificá que el archivo esté en estado READY.</p>
+                ) : (
+                  <>
+                    {confirmPreviews.map((preview) => (
+                      <div key={preview.fileId} className="flex flex-col gap-4">
+                        {/* Datos del archivo */}
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                          <div>
+                            <span className="text-slate-400">Comitente:</span>{" "}
+                            <span className="font-bold text-slate-800">{preview.comitente}</span>
+                            <span className="text-slate-400"> ({preview.nroComitente})</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400">Cuenta Bind:</span>{" "}
+                            <span className="font-mono font-bold text-slate-800">{preview.cuentaBind ?? "—"}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400">Fecha reporte:</span>{" "}
+                            <span className="font-bold text-slate-800">{preview.reportDate ?? "—"}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400">Total ARS:</span>{" "}
+                            <span className="font-mono font-bold text-slate-800">{fmtMoney(preview.totalAmountARS)}</span>
+                          </div>
+                        </div>
+
+                        {/* Holdings */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="bg-emerald-50 rounded-lg px-3 py-2">
+                            <p className="text-[10px] font-bold uppercase text-emerald-600 mb-0.5">Holdings a crear</p>
+                            <p className="text-2xl font-black text-emerald-800 tabular-nums">{preview.toCreate.length}</p>
+                            {preview.toCreate.length > 0 && (
+                              <p className="text-[10px] text-emerald-600 mt-1 break-all">{preview.toCreate.join(", ")}</p>
+                            )}
+                          </div>
+                          <div className="bg-blue-50 rounded-lg px-3 py-2">
+                            <p className="text-[10px] font-bold uppercase text-blue-600 mb-0.5">Holdings a actualizar precio</p>
+                            <p className="text-2xl font-black text-blue-800 tabular-nums">{preview.toUpdate.length}</p>
+                            {preview.toUpdate.length > 0 && (
+                              <p className="text-[10px] text-blue-600 mt-1 break-all">{preview.toUpdate.join(", ")}</p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Saldos cash */}
+                        <div>
+                          <p className="text-[10px] font-bold uppercase text-slate-400 mb-2">Saldos cash a reemplazar</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="bg-slate-50 rounded-lg px-3 py-2">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">ARS</p>
+                              <p className="font-mono font-bold text-sm text-slate-800">{fmtMoney(preview.cashARS)}</p>
+                            </div>
+                            <div className="bg-slate-50 rounded-lg px-3 py-2">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">USD MEP</p>
+                              <p className="font-mono font-bold text-sm text-slate-800">{fmtUSD(preview.cashMEP)}</p>
+                            </div>
+                            <div className="bg-slate-50 rounded-lg px-3 py-2">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-0.5">USD Cable</p>
+                              <p className="font-mono font-bold text-sm text-slate-800">{fmtUSD(preview.cashCable)}</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Advertencia */}
+                    <div className="rounded-xl bg-rose-50 border border-rose-200 px-4 py-3 flex items-start gap-2">
+                      <AlertTriangle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                      <p className="text-[12px] text-rose-800">
+                        <strong>Esta acción escribirá holdings y saldos reales. No se puede deshacer automáticamente.</strong>{" "}
+                        Los holdings existentes solo actualizarán su precio actual; los nuevos se crearán con cantidad y precio del PDF.
+                      </p>
+                    </div>
+
+                    {/* Botones */}
+                    <div className="flex items-center gap-3 justify-end">
+                      <button
+                        type="button"
+                        onClick={handleCloseConfirmModal}
+                        className="px-4 py-2 text-slate-600 hover:text-slate-800 text-sm font-bold"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        disabled={confirmExecuting}
+                        onClick={handleConfirmImport}
+                        className="flex items-center gap-2 px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:bg-slate-300 text-white rounded-lg text-sm font-bold"
+                      >
+                        {confirmExecuting ? "Confirmando…" : "Confirmar importación real"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            {/* Fase: ejecución en curso */}
+            {confirmExecuting && (
+              <p className="text-sm text-slate-400">Escribiendo holdings y saldos reales…</p>
+            )}
+
+            {/* Fase: resultados */}
+            {!confirmExecuting && confirmResults.length > 0 && (
+              <div className="flex flex-col gap-4">
+                {confirmResults.map((result, i) => (
+                  <div key={i}>
+                    {result.ok ? (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
+                          <CheckCircle2 size={16} /> Confirmación exitosa
+                        </div>
+                        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-xs text-emerald-800 space-y-1">
+                          {result.created.length > 0 && (
+                            <p><strong>Holdings creados ({result.created.length}):</strong> {result.created.join(", ")}</p>
+                          )}
+                          {result.updated.length > 0 && (
+                            <p><strong>Holdings actualizados precio ({result.updated.length}):</strong> {result.updated.join(", ")}</p>
+                          )}
+                          {result.cashUpdated && <p><strong>Saldos cash reemplazados.</strong></p>}
+                          {result.skipped.length > 0 && (
+                            <p className="text-emerald-600">Omitidos: {result.skipped.join(", ")}</p>
+                          )}
+                          {result.quantityDiscrepancies.length > 0 && (
+                            <div className="mt-1 p-2 bg-amber-50 border border-amber-200 rounded-lg">
+                              <p className="font-bold text-amber-800">Discrepancias de cantidad ({result.quantityDiscrepancies.length}):</p>
+                              {result.quantityDiscrepancies.map((d, j) => (
+                                <p key={j} className="text-amber-700">{d.ticker}: PDF {d.pdfQuantity} / actual {d.actualQuantity}</p>
+                              ))}
+                            </div>
+                          )}
+                          {result.warnings.map((w, j) => (
+                            <p key={j} className="text-amber-700">⚠ {w}</p>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3">
+                        <p className="text-rose-800 font-bold text-sm flex items-center gap-2">
+                          <AlertTriangle size={14} /> Error al confirmar
+                        </p>
+                        <p className="text-xs text-rose-700 mt-1">{result.error}</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleCloseConfirmModal}
+                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-bold"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </Modal>
       )}
 
       {/* Modal de detalle */}
