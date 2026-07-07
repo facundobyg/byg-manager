@@ -7,6 +7,7 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { ProductorInversion } from "@prisma/client";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
+import { recalcBatchStatus } from "./importaciones/bind/process-upload";
 
 type ActionResult = { error?: string; success?: boolean };
 
@@ -150,7 +151,27 @@ export async function deleteComitente(
   if (holdingsCount > 0)
     return { error: `No se puede eliminar: el comitente tiene ${holdingsCount} holding(s) registrado(s)` };
 
+  // Capturar archivos Bind afectados antes de que el onDelete:SetNull los desreferencie
+  const affectedBindFiles = await prisma.bindTenenciasImportFile.findMany({
+    where: {
+      matchedComitenteId: id,
+      status: { notIn: ["CONFIRMED", "ERROR", "DUPLICATE", "SKIPPED"] },
+    },
+    select: { id: true, batchId: true },
+  });
+
   await prisma.comitenteInversion.delete({ where: { id } });
+
+  // Después del delete, matchedComitenteId ya es null por onDelete:SetNull
+  // Recalcular status de archivos y lotes afectados
+  if (affectedBindFiles.length > 0) {
+    await prisma.bindTenenciasImportFile.updateMany({
+      where: { id: { in: affectedBindFiles.map((f) => f.id) } },
+      data: { status: "NEEDS_ACCOUNT_MAPPING", updatedAt: new Date() },
+    });
+    const batchIds = Array.from(new Set(affectedBindFiles.map((f) => f.batchId)));
+    for (const batchId of batchIds) await recalcBatchStatus(batchId);
+  }
 
   revalidate(cuentaId);
   return { success: true };
