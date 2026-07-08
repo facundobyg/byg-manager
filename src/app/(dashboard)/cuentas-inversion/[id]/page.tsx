@@ -6,10 +6,8 @@ import { prisma } from "@/lib/prisma";
 import { ProductorInversion } from "@prisma/client";
 import { getProductoresConfig, getMesOperativo } from "@/lib/services/config.service";
 import { hasPermission, requirePermission } from "@/lib/auth/permissions";
-import { CreateComitenteModal }  from "@/components/modules/cuentas-inversion/CreateComitenteModal";
-import { EditComitenteForm }     from "@/components/modules/cuentas-inversion/EditComitenteForm";
-import { EditSaldosForm }        from "@/components/modules/cuentas-inversion/EditSaldosForm";
-import { DeleteComitenteButton } from "@/components/modules/cuentas-inversion/DeleteComitenteButton";
+import { CreateComitenteModal }    from "@/components/modules/cuentas-inversion/CreateComitenteModal";
+import { ComitentesTableClient }  from "@/components/modules/cuentas-inversion/ComitentesTableClient";
 import { ReportesFilters }       from "./ReportesFilters";
 import { CsvDownloadButton }     from "./CsvDownloadButton";
 
@@ -534,72 +532,27 @@ export default async function CuentaInversionPage({
             <StatCard label="Actualizado" value={<span className="text-sm">{cuenta.updatedAt.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" })}</span>} />
           </div>
 
-          {clienteComitentes.length === 0 ? (
-            <div className="rounded-xl border border-slate-200 bg-white p-8 text-center">
-              <p className="text-sm text-slate-400 italic">Sin clientes. Usar "Nuevo Comitente" arriba.</p>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-slate-200 overflow-hidden">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200">
-                    {["N° Comitente", "Cliente", "Productor", "ARS", "USD Cable", "USD MEP", "Holdings", ""].map((h, i) => (
-                      <th key={h || `col-${i}`} className={`px-4 py-3 text-[10px] font-black uppercase tracking-widest text-slate-400 ${i < 3 || i === 7 ? "text-left" : "text-right"}`}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {clienteComitentes.map((c) => {
-                    const ars   = Number(c.SaldoComitenteInversion?.saldoARS      ?? 0);
-                    const cable = Number(c.SaldoComitenteInversion?.saldoUSDCable  ?? 0);
-                    const mep   = Number(c.SaldoComitenteInversion?.saldoUSDMep    ?? 0);
-                    const isEditingData   = editId === c.id;
-                    const isEditingSaldos = editSaldosId === c.id;
-                    return (
-                      <React.Fragment key={c.id}>
-                        <tr className={`border-b border-slate-50 last:border-0 transition-colors ${isEditingData || isEditingSaldos ? "bg-slate-50" : c.activo ? "bg-white hover:bg-slate-50/60" : "bg-slate-50 opacity-60"}`}>
-                          <td className="px-4 py-3 font-mono text-slate-700 font-semibold">{c.nroComitente}</td>
-                          <td className="px-4 py-3 font-medium">
-                            <Link href={`${baseUrl}/comitentes/${c.id}`} className="text-slate-800 hover:text-blue-600 transition-colors">{c.nombre ?? c.razonSocial}</Link>
-                            {c.nombre && c.razonSocial && <span className="block text-[10px] text-slate-400 font-normal">{c.razonSocial}</span>}
-                            {!c.activo && <span className="ml-1 text-[10px] text-slate-400 font-bold">(inactivo)</span>}
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${PRODUCTOR_CLS[c.productor]}`}>{PRODUCTOR_LABEL[c.productor]}</span>
-                          </td>
-                          <td className="px-4 py-3 text-right tabular-nums text-slate-600">{ars !== 0 ? `$ ${fmt(ars)}` : <span className="text-slate-300">—</span>}</td>
-                          <td className="px-4 py-3 text-right tabular-nums text-slate-600">{cable !== 0 ? `USD ${fmt(cable)}` : <span className="text-slate-300">—</span>}</td>
-                          <td className="px-4 py-3 text-right tabular-nums text-slate-600">{mep !== 0 ? `USD ${fmt(mep)}` : <span className="text-slate-300">—</span>}</td>
-                          <td className="px-4 py-3 text-right tabular-nums text-slate-600 font-medium">{c._count.HoldingComitenteInversion}</td>
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-1">
-                              <Link href={isEditingData ? `${baseUrl}?tab=clientes` : `${baseUrl}?tab=clientes&editId=${c.id}`} className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-colors ${isEditingData ? "bg-amber-100 text-amber-700" : "text-slate-500 hover:bg-amber-50 hover:text-amber-600"}`}>Editar</Link>
-                              <Link href={isEditingSaldos ? `${baseUrl}?tab=clientes` : `${baseUrl}?tab=clientes&editSaldosId=${c.id}`} className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-colors ${isEditingSaldos ? "bg-emerald-100 text-emerald-700" : "text-slate-500 hover:bg-emerald-50 hover:text-emerald-600"}`}>Saldos</Link>
-                              <DeleteComitenteButton id={c.id} cuentaInversionId={id} />
-                            </div>
-                          </td>
-                        </tr>
-                        {isEditingData && (
-                          <tr className="bg-amber-50/50">
-                            <td colSpan={8} className="px-4 py-4">
-                              <EditComitenteForm id={c.id} cuentaInversionId={id} nroComitente={c.nroComitente} nombre={c.nombre} razonSocial={c.razonSocial} productor={c.productor} notas={c.notas} activo={c.activo} esPropioBYG={c.esPropioBYG} cancelHref={`${baseUrl}?tab=clientes`} productores={productores} />
-                            </td>
-                          </tr>
-                        )}
-                        {isEditingSaldos && (
-                          <tr className="bg-emerald-50/30">
-                            <td colSpan={8} className="px-4 py-4">
-                              <EditSaldosForm comitenteId={c.id} cuentaInversionId={id} saldoARS={ars} saldoUSDCable={cable} saldoUSDMep={mep} cancelHref={`${baseUrl}?tab=clientes`} />
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <ComitentesTableClient
+            comitentes={clienteComitentes.map((c) => ({
+              id:             c.id,
+              nroComitente:   c.nroComitente,
+              nombre:         c.nombre,
+              razonSocial:    c.razonSocial,
+              productor:      c.productor,
+              activo:         c.activo,
+              esPropioBYG:    c.esPropioBYG,
+              notas:          c.notas ?? null,
+              saldoARS:       Number(c.SaldoComitenteInversion?.saldoARS      ?? 0),
+              saldoUSDCable:  Number(c.SaldoComitenteInversion?.saldoUSDCable  ?? 0),
+              saldoUSDMep:    Number(c.SaldoComitenteInversion?.saldoUSDMep    ?? 0),
+              holdingsCount:  c._count.HoldingComitenteInversion,
+            }))}
+            editId={editId}
+            editSaldosId={editSaldosId}
+            baseUrl={baseUrl}
+            productores={productores}
+            cuentaInversionId={id}
+          />
         </section>
       )}
 

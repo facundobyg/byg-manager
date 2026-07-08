@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { Upload, AlertCircle, FileText, Link2, ShieldAlert, RefreshCw, AlertTriangle, CheckCircle2, UserPlus } from "lucide-react";
 import {
   uploadBindPdfsAction,
@@ -231,6 +232,8 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
   const [confirmResults, setConfirmResults]         = useState<ConfirmBindFileResult[]>([]);
   const [confirmPreviewLoading, startConfirmPreview]   = useTransition();
   const [confirmExecuting, startConfirmExecution]   = useTransition();
+
+  const router = useRouter();
 
   // Bulk create comitentes — productor per account (default BYG)
   const [productorSelections, setProductorSelections] = useState<Record<string, string>>({});
@@ -625,7 +628,7 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
       {/* Modal de confirmación real */}
       {confirmModalOpen && (
         <Modal
-          title="Confirmar importación real"
+          title={!confirmExecuting && confirmResults.length > 0 && confirmResults.every((r) => r.ok) ? "Importación confirmada" : "Confirmar importación real"}
           accentColor="text-rose-600"
           maxWidth="max-w-2xl"
           onClose={handleCloseConfirmModal}
@@ -787,14 +790,23 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
                     )}
                   </div>
                 ))}
-                <div className="flex justify-end">
+                <div className="flex items-center gap-3 justify-end">
                   <button
                     type="button"
                     onClick={handleCloseConfirmModal}
-                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-bold"
+                    className="px-4 py-2 text-slate-500 hover:text-slate-700 text-sm font-bold"
                   >
                     Cerrar
                   </button>
+                  {confirmResults.every((r) => r.ok) && (
+                    <button
+                      type="button"
+                      onClick={() => { handleCloseConfirmModal(); router.push("/cuentas-inversion"); }}
+                      className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-bold"
+                    >
+                      Ir a Banco Industrial →
+                    </button>
+                  )}
                 </div>
               </div>
             )}
