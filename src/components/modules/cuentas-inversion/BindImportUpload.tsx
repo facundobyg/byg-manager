@@ -142,34 +142,36 @@ function CreateAndLinkForm({
   pending,
   productor,
   onProductorChange,
-  onCreated,
+  onConfirmRequest,
 }: {
   pending: PendingAccountMapping;
   productor: string;
   onProductorChange: (value: string) => void;
-  onCreated: () => void;
+  onConfirmRequest: (displayName: string) => void;
 }) {
-  const [state, action, busy] = useActionState<CreateAndResolveResult | null, FormData>(
-    createAndResolveBindAccountAction, null,
-  );
-
-  useEffect(() => { if (state?.ok) onCreated(); }, [state, onCreated]);
+  const [displayName, setDisplayName] = useState(pending.accountName ?? "");
 
   return (
-    <form action={action} className="flex flex-wrap items-end gap-2 px-3 py-2.5 bg-slate-50/50">
-      <input type="hidden" name="accountNumber" value={pending.accountNumber ?? ""} />
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const name = displayName.trim();
+        if (!name) return;
+        onConfirmRequest(name);
+      }}
+      className="flex flex-wrap items-end gap-2 px-3 py-2.5 bg-slate-50/50"
+    >
       <div className="flex items-center gap-1 text-[10px] font-bold uppercase text-slate-400 w-full">
         <UserPlus size={10} /> Crear comitente nuevo y vincular
       </div>
       <input
-        name="displayName"
-        defaultValue={pending.accountName ?? ""}
+        value={displayName}
+        onChange={(e) => setDisplayName(e.target.value)}
         placeholder="Nombre del comitente"
         required
         className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white min-w-48 flex-1"
       />
       <select
-        name="productor"
         value={productor}
         onChange={(e) => onProductorChange(e.target.value)}
         required
@@ -181,13 +183,10 @@ function CreateAndLinkForm({
       </select>
       <button
         type="submit"
-        disabled={busy}
-        className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold"
+        className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold"
       >
-        <UserPlus size={12} /> {busy ? "Creando…" : "Crear y vincular"}
+        <UserPlus size={12} /> Crear y vincular
       </button>
-      {state && !state.ok && <p className="text-[11px] text-rose-600 font-bold w-full">{state.error}</p>}
-      {state?.ok && <p className="text-[11px] text-emerald-600 font-bold w-full">✓ {state.comitenteName} creado y vinculado.</p>}
     </form>
   );
 }
@@ -240,6 +239,19 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
   const [bulkCreating, startBulkCreate]               = useTransition();
   const [bulkCreateResults, setBulkCreateResults]     = useState<CreateAndResolveResult[]>([]);
 
+  // Modal de confirmación individual: crear y vincular
+  const [createLinkModalOpen, setCreateLinkModalOpen] = useState(false);
+  const [createLinkData, setCreateLinkData]           = useState<{
+    pending: PendingAccountMapping;
+    displayName: string;
+    productor: string;
+  } | null>(null);
+  const [createLinkResult, setCreateLinkResult]         = useState<CreateAndResolveResult | null>(null);
+  const [createLinkExecuting, startCreateLinkExecution] = useTransition();
+
+  // Modal de confirmación masiva: crear y vincular todos
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+
   function refreshPendingData(batchId: string) {
     startDetailLoad(async () => {
       const [refreshedBatch, mappings] = await Promise.all([getBindImportBatch(batchId), getPendingBindMappings(batchId)]);
@@ -284,9 +296,42 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
     });
   }
 
+  function handleCreateLinkRequest(pending: PendingAccountMapping, displayName: string, productor: string) {
+    setCreateLinkData({ pending, displayName, productor });
+    setCreateLinkResult(null);
+    setCreateLinkModalOpen(true);
+  }
+
+  function handleCreateLinkConfirm() {
+    if (!createLinkData) return;
+    const { pending, displayName, productor } = createLinkData;
+    startCreateLinkExecution(async () => {
+      const fd = new FormData();
+      fd.set("accountNumber", pending.accountNumber ?? "");
+      fd.set("displayName",   displayName);
+      fd.set("productor",     productor);
+      const r = await createAndResolveBindAccountAction(null, fd);
+      setCreateLinkResult(r);
+      if (r.ok && batch?.id) refreshPendingData(batch.id);
+    });
+  }
+
+  function handleCreateLinkClose() {
+    if (createLinkExecuting) return;
+    setCreateLinkModalOpen(false);
+    setCreateLinkData(null);
+    setCreateLinkResult(null);
+  }
+
+  function handleBulkCreateAllRequest() {
+    if ((pendingMappings?.accounts ?? []).length === 0) return;
+    setBulkConfirmOpen(true);
+  }
+
   function handleBulkCreateAll() {
     const accounts = pendingMappings?.accounts ?? [];
     if (accounts.length === 0) return;
+    setBulkConfirmOpen(false);
     setBulkCreateResults([]);
     startBulkCreate(async () => {
       const results: CreateAndResolveResult[] = [];
@@ -527,7 +572,7 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
             <button
               type="button"
               disabled={bulkCreating}
-              onClick={handleBulkCreateAll}
+              onClick={handleBulkCreateAllRequest}
               className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-xs font-bold"
             >
               <UserPlus size={12} /> {bulkCreating ? "Creando…" : `Crear y vincular todos (${pendingMappings.accounts.length})`}
@@ -555,7 +600,9 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
                   pending={a}
                   productor={productorSelections[a.accountNumber ?? ""] ?? "BYG"}
                   onProductorChange={(val) => setProductorSelections((prev) => ({ ...prev, [a.accountNumber ?? ""]: val }))}
-                  onCreated={() => refreshPendingData(batch!.id)}
+                  onConfirmRequest={(displayName) =>
+                    handleCreateLinkRequest(a, displayName, productorSelections[a.accountNumber ?? ""] ?? "BYG")
+                  }
                 />
               </div>
             ))}
@@ -811,6 +858,159 @@ export function BindImportUpload({ initialBatch }: { initialBatch: Batch }) {
               </div>
             )}
 
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal de confirmación individual: crear y vincular comitente */}
+      {createLinkModalOpen && createLinkData && (
+        <Modal
+          title="Confirmar creación y vínculo"
+          accentColor="text-emerald-600"
+          maxWidth="max-w-lg"
+          onClose={handleCreateLinkClose}
+        >
+          <div className="p-5 flex flex-col gap-4">
+            {/* Ejecutando */}
+            {createLinkExecuting && (
+              <p className="text-sm text-slate-400">Creando comitente y vinculando cuenta…</p>
+            )}
+
+            {/* Éxito */}
+            {!createLinkExecuting && createLinkResult?.ok && (
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm">
+                  <CheckCircle2 size={16} /> Comitente creado y vinculado
+                </div>
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-xs text-emerald-800">
+                  <strong>{createLinkResult.comitenteName}</strong> fue creado y vinculado correctamente.
+                  {createLinkResult.affectedCount != null && (
+                    <span className="text-emerald-600"> ({createLinkResult.affectedCount} archivo(s) actualizado(s))</span>
+                  )}
+                </div>
+                <div className="flex justify-end">
+                  <button type="button" onClick={handleCreateLinkClose} className="px-4 py-2 text-slate-600 hover:text-slate-800 text-sm font-bold">
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Error */}
+            {!createLinkExecuting && createLinkResult && !createLinkResult.ok && (
+              <div className="flex flex-col gap-3">
+                <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3">
+                  <p className="text-rose-800 font-bold text-sm flex items-center gap-2">
+                    <AlertTriangle size={14} /> Error al crear
+                  </p>
+                  <p className="text-xs text-rose-700 mt-1">{createLinkResult.error}</p>
+                </div>
+                <div className="flex items-center gap-3 justify-end">
+                  <button type="button" onClick={handleCreateLinkClose} className="px-4 py-2 text-slate-600 hover:text-slate-800 text-sm font-bold">
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={createLinkExecuting}
+                    onClick={handleCreateLinkConfirm}
+                    className="flex items-center gap-2 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-sm font-bold"
+                  >
+                    Reintentar
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Preview — estado inicial, esperando confirmación */}
+            {!createLinkExecuting && !createLinkResult && (
+              <>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                  <div>
+                    <span className="text-slate-400">Nombre:</span>{" "}
+                    <span className="font-bold text-slate-800">{createLinkData.displayName}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Cuenta Bind:</span>{" "}
+                    <span className="font-mono font-bold text-slate-800">{createLinkData.pending.accountNumber ?? "—"}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Productor:</span>{" "}
+                    <span className="font-bold text-slate-800">{createLinkData.productor}</span>
+                  </div>
+                  {createLinkData.pending.totalAmountARS != null && (
+                    <div>
+                      <span className="text-slate-400">Total PDF:</span>{" "}
+                      <span className="font-mono font-bold text-slate-800">{fmtMoney(createLinkData.pending.totalAmountARS)}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="rounded-xl bg-blue-50 border border-blue-200 px-4 py-3 text-[12px] text-blue-800">
+                  Esta acción crea el comitente y vincula la cuenta externa para futuros imports.
+                  No aplica holdings ni saldos reales todavía.
+                </div>
+                <div className="flex items-center gap-3 justify-end">
+                  <button type="button" onClick={handleCreateLinkClose} className="px-4 py-2 text-slate-600 hover:text-slate-800 text-sm font-bold">
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCreateLinkConfirm}
+                    className="flex items-center gap-2 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold"
+                  >
+                    <UserPlus size={14} />
+                    Confirmar creación y vínculo
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal de confirmación masiva: crear y vincular todos */}
+      {bulkConfirmOpen && pendingMappings && (
+        <Modal
+          title={`Confirmar creación masiva — ${pendingMappings.accounts.length} cuenta(s)`}
+          accentColor="text-emerald-600"
+          maxWidth="max-w-lg"
+          onClose={() => setBulkConfirmOpen(false)}
+        >
+          <div className="p-5 flex flex-col gap-4">
+            <p className="text-xs text-slate-600">
+              Se crearán <strong>{pendingMappings.accounts.length}</strong> comitente(s) y se vincularán sus cuentas Bind para futuros imports.
+              No aplica holdings ni saldos reales todavía.
+            </p>
+            <div className="rounded-xl border border-slate-200 divide-y divide-slate-100 max-h-48 overflow-y-auto">
+              {pendingMappings.accounts.map((a) => (
+                <div key={a.fileId} className="px-3 py-2 flex items-center justify-between text-xs">
+                  <div>
+                    <span className="font-mono font-bold text-slate-700">{a.accountNumber}</span>
+                    <span className="text-slate-400"> — {a.accountName}</span>
+                  </div>
+                  <span className="text-[10px] font-bold uppercase bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                    {productorSelections[a.accountNumber ?? ""] ?? "BYG"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="rounded-xl bg-blue-50 border border-blue-200 px-4 py-3 text-[12px] text-blue-800">
+              Esta acción crea todos los comitentes y vincula sus cuentas externas para futuros imports.
+              No aplica holdings ni saldos reales todavía.
+            </div>
+            <div className="flex items-center gap-3 justify-end">
+              <button type="button" onClick={() => setBulkConfirmOpen(false)} className="px-4 py-2 text-slate-600 hover:text-slate-800 text-sm font-bold">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={bulkCreating}
+                onClick={handleBulkCreateAll}
+                className="flex items-center gap-2 px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-lg text-sm font-bold"
+              >
+                <UserPlus size={14} />
+                {bulkCreating ? "Creando…" : "Confirmar creación masiva"}
+              </button>
+            </div>
           </div>
         </Modal>
       )}
