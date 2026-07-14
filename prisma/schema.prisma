@@ -119,6 +119,7 @@ model Cartera {
   PosicionCartera            PosicionCartera[]
   TransferenciaActivo        TransferenciaActivo[]
   OperacionBolsa             OperacionBolsa[]
+  BolsaImportFilas           BolsaImportFila[]     @relation("FilaCarteraResuelta")
 }
 
 model Cliente {
@@ -167,6 +168,7 @@ model ComitenteInversion {
   OperacionBolsa            OperacionBolsa[]
   BindTenenciasImportFiles  BindTenenciasImportFile[]
   BrokerAccountAliases      BrokerAccountAlias[]
+  BolsaImportFilas          BolsaImportFila[]           @relation("FilaComitenteResuelto")
 
   @@unique([cuentaInversionId, nroComitente])
   @@index([carteraId])
@@ -836,6 +838,9 @@ model User {
   OpBolsaCierre         OperacionBolsa[]    @relation("OpBolsaCierre")
   OperacionBolsaLog     OperacionBolsaLog[]
   CierreMensual         CierreMensual[]
+  BolsaImportLotesCargados   BolsaImportLote[]  @relation("LoteCargadoPor")
+  BolsaImportLotesValidados  BolsaImportLote[]  @relation("LoteValidadoPor")
+  BolsaImportFilasCorregidas BolsaImportFila[]  @relation("FilaCorregidaPor")
 
   @@index([email])
 }
@@ -1076,6 +1081,7 @@ model OperacionBolsa {
   OperadorCarga      User                 @relation("OpBolsaCarga",  fields: [operadorCargaId],  references: [id])
   OperadorCierre     User?                @relation("OpBolsaCierre", fields: [operadorCierreId], references: [id])
   OperacionBolsaLog  OperacionBolsaLog[]
+  BolsaImportFila    BolsaImportFila?    @relation("FilaImportBolsa")
 
   @@index([clienteId])
   @@index([carteraId])
@@ -1251,4 +1257,179 @@ enum PlazoLiquidacion {
   CI
   T1
   T2
+}
+
+// ── Importación Masiva Bolsa (E4.3A) ─────────────────────────────────────────
+// Staging de operaciones importadas desde Excel o imagen.
+// Ninguna fila genera impacto financiero hasta que Augusto aprueba y el
+// servicio de confirmación invoca el motor existente fila por fila.
+
+enum BolsaImportOrigen {
+  EXCEL
+  IMAGEN
+}
+
+enum BolsaLoteEstado {
+  SUBIDO
+  PROCESANDO
+  REVISION_PENDIENTE
+  LISTO_PARA_ENVIO
+  EN_VALIDACION
+  DEVUELTO
+  RECHAZADO
+  APROBADO
+  CONFIRMANDO
+  CONFIRMADO
+  CONFIRMADO_PARCIAL
+  FALLIDO
+}
+
+enum BolsaArchivoEstado {
+  PROCESANDO
+  LISTO
+  ERROR
+  DUPLICADO
+}
+
+enum BolsaFilaEstado {
+  DETECTADA
+  RESUELTA
+  ADVERTENCIA
+  ERROR
+  EXCLUIDA
+  LISTA
+  ENVIADA
+  APROBADA
+  RECHAZADA
+  CONFIRMADA
+  FALLIDA
+}
+
+enum BolsaImportTipoSujeto {
+  COMITENTE
+  CARTERA
+}
+
+model BolsaImportLote {
+  id                    String               @id
+  estado                BolsaLoteEstado      @default(SUBIDO)
+  origen                BolsaImportOrigen
+  fechaOperativa        DateTime?            @db.Date
+  creadoPorId           String?
+  validadoPorId         String?
+  observacionValidacion String?
+  totalFilas            Int                  @default(0)
+  filasListas           Int                  @default(0)
+  filasConAdvertencia   Int                  @default(0)
+  filasConError         Int                  @default(0)
+  filasExcluidas        Int                  @default(0)
+  filasConfirmadas      Int                  @default(0)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  CreadoPor             User?                @relation("LoteCargadoPor",  fields: [creadoPorId],   references: [id], onDelete: SetNull)
+  ValidadoPor           User?                @relation("LoteValidadoPor", fields: [validadoPorId], references: [id], onDelete: SetNull)
+  Archivos              BolsaImportArchivo[]
+  Filas                 BolsaImportFila[]
+
+  @@index([estado])
+  @@index([creadoPorId])
+  @@index([fechaOperativa])
+}
+
+model BolsaImportArchivo {
+  id             String             @id
+  loteId         String
+  nombreOriginal String
+  mimeType       String
+  tamano         Int
+  fileHashSha256 String             @unique
+  estado         BolsaArchivoEstado @default(PROCESANDO)
+  origen         BolsaImportOrigen
+  hojaDetectada  String?
+  rawJson        Json?
+  warningsJson   Json?
+  errorMessage   String?
+  totalFilas     Int                @default(0)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  Lote           BolsaImportLote    @relation(fields: [loteId], references: [id], onDelete: Cascade)
+  Filas          BolsaImportFila[]
+
+  @@index([loteId, estado])
+  @@index([estado])
+}
+
+model BolsaImportFila {
+  id        String          @id
+  loteId    String
+  archivoId String
+  estado    BolsaFilaEstado @default(DETECTADA)
+
+  // Origen en el archivo
+  numeroBloque Int?
+  numeroFila   Int?
+  rawJson      Json
+
+  // Datos detectados por el parser
+  nombreDetectado        String?
+  nroComitenteDetectado  String?
+  tipoOperacionDetectada String?
+
+  // Resolución de entidades
+  comitenteResueltoId String?
+  carteraResueltaId   String?
+  tipoSujeto          BolsaImportTipoSujeto?
+  conflictoNombre     Boolean                @default(false)
+
+  // Operación normalizada
+  tipoOperacionResuelta TipoOpBolsa?
+  ticker                String?
+  instrumento           String?
+  moneda                Moneda?
+  cantidad              Decimal?     @db.Decimal(18, 6)
+  precio                Decimal?     @db.Decimal(18, 6)
+  montoNetoReferencia   Decimal?     @db.Decimal(18, 2)
+  fechaConcertacion     DateTime?    @db.Date
+  plazo                 String?
+  fechaVencimiento      DateTime?    @db.Date
+  tasaCaucion           Decimal?     @db.Decimal(8, 4)
+  diasCaucion           Int?
+  montoCobrarReferencia Decimal?     @db.Decimal(18, 2)
+  montoPagarReferencia  Decimal?     @db.Decimal(18, 2)
+
+  // Confianza (null para Excel; relevante para imágenes en E4.12+)
+  confianzaGeneral      Decimal? @db.Decimal(5, 4)
+  confianzaPorCampoJson Json?
+
+  // Revisión y correcciones
+  erroresJson                     Json?
+  warningsJson                    Json?
+  camposCorregidosJson            Json?
+  corregidoPorId                  String?
+  // true cuando Francisco confirma que dos filas con el mismo fingerprint son operaciones distintas
+  confirmadoComoDuplicadoDistinto Boolean @default(false)
+
+  // Agrupación de arbitraje en staging; NO es el grupoArbitrajeId real de OperacionBolsa
+  grupoArbitrajeStaging String?
+
+  // Idempotencia y vínculo con la operación real creada al confirmar
+  fingerprint      String?
+  operacionBolsaId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  Lote              BolsaImportLote     @relation(fields: [loteId],    references: [id], onDelete: Cascade)
+  Archivo           BolsaImportArchivo  @relation(fields: [archivoId], references: [id], onDelete: Cascade)
+  ComitenteResuelto ComitenteInversion? @relation("FilaComitenteResuelto", fields: [comitenteResueltoId], references: [id], onDelete: SetNull)
+  CarteraResuelta   Cartera?            @relation("FilaCarteraResuelta",   fields: [carteraResueltaId],   references: [id], onDelete: SetNull)
+  CorregidoPor      User?               @relation("FilaCorregidaPor",      fields: [corregidoPorId],      references: [id], onDelete: SetNull)
+  OperacionBolsa    OperacionBolsa?     @relation("FilaImportBolsa",        fields: [operacionBolsaId],    references: [id], onDelete: SetNull)
+
+  @@index([loteId, estado])
+  @@index([archivoId])
+  @@index([nroComitenteDetectado])
+  @@index([comitenteResueltoId])
+  @@index([fingerprint])
+  @@index([grupoArbitrajeStaging])
 }
