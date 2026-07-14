@@ -2,7 +2,8 @@
 
 import { useActionState, useEffect, useState } from "react";
 import { crearOpMesaDiaria } from "@/app/(dashboard)/bolsa/actions";
-import { ChevronDown, ChevronUp, PlusCircle } from "lucide-react";
+import { PlusCircle } from "lucide-react";
+import { Modal } from "@/components/ui/Modal";
 
 type Comitente = { id: string; nombre: string; nroComitente: string };
 type Cartera   = { id: string; nombre: string };
@@ -56,10 +57,11 @@ const lCls = "text-[10px] font-bold uppercase tracking-widest text-byg-muted mb-
 export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefault }: Props) {
   const [state, action, pending] = useActionState(crearOpMesaDiaria, null);
   const [formKey,         setFormKey]         = useState(0);
+  const [modalOpen,       setModalOpen]       = useState(false);
+  const [errorMsg,        setErrorMsg]        = useState<string | null>(null);
   const [sujetoTipo,      setSujetoTipo]      = useState<"cartera" | "comitente">("cartera");
   const [instrumento,     setInstrumento]     = useState<Instrumento>("BONO");
   const [direccion,       setDireccion]       = useState("COMPRA");
-  const [expanded,        setExpanded]        = useState(true);
   const [comitenteSearch, setComitenteSearch] = useState("");
   const [tcMep,           setTcMep]           = useState(tcMepDefault != null ? String(tcMepDefault) : "");
 
@@ -86,12 +88,28 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
     if (!isNaN(q) && !isNaN(n) && q > 0 && n > 0) setPrecio((n / q).toFixed(6));
   }
 
+  function handleOpen() {
+    setErrorMsg(null);
+    setFormKey((k) => k + 1);
+    setModalOpen(true);
+  }
+
+  function handleClose() {
+    if (pending) return;
+    setModalOpen(false);
+  }
+
   useEffect(() => {
     if (state && "ok" in state && state.ok) {
       setFormKey((k) => k + 1);
       setCantidad("");
       setPrecio("");
       setNeto("");
+      setErrorMsg(null);
+      setModalOpen(false);
+    }
+    if (state && "error" in state && state.error) {
+      setErrorMsg(state.error);
     }
   }, [state]);
 
@@ -106,23 +124,18 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
   const direccionOpts = DIRECCION_OPTS[instrumento];
 
   return (
-    <div className="bg-byg-surface rounded-2xl border border-byg-border overflow-hidden">
+    <>
       <button
         type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full px-5 py-3 border-b border-byg-border bg-byg-bg flex items-center justify-between hover:bg-byg-surface-2 transition-colors"
-        aria-expanded={expanded}
+        onClick={handleOpen}
+        className="inline-flex items-center gap-2 self-start px-5 py-2.5 rounded-xl bg-byg-accent text-white text-[11px] font-black uppercase tracking-widest hover:bg-blue-500 transition-colors shadow-sm shadow-blue-600/20"
       >
-        <div className="flex items-center gap-2">
-          <PlusCircle size={14} className="text-byg-accent" />
-          <span className="text-[11px] font-black uppercase tracking-widest text-byg-text">
-            Cargar operación
-          </span>
-        </div>
-        {expanded ? <ChevronUp size={14} className="text-byg-muted" /> : <ChevronDown size={14} className="text-byg-muted" />}
+        <PlusCircle size={14} />
+        Cargar operación manual
       </button>
 
-      {expanded && (
+      {modalOpen && (
+        <Modal title="Cargar operación manual" accentColor="text-byg-accent" maxWidth="max-w-3xl" onClose={handleClose}><div className="max-h-[calc(100vh-10rem)] overflow-y-auto">
         <form key={formKey} action={action} className="p-5 flex flex-col gap-4">
 
           {/* ── TC MEP + carga completa (banner superior) ── */}
@@ -341,7 +354,7 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
           )}
 
           {/* Submit */}
-          <div className="flex items-center gap-3 pt-1">
+          <div className="flex items-center gap-3 pt-1 flex-wrap">
             <button
               type="submit"
               disabled={pending}
@@ -349,16 +362,21 @@ export function MesaDiariaForm({ comitentes, carteras, defaultFecha, tcMepDefaul
             >
               {pending ? "Guardando…" : "Guardar operación"}
             </button>
-
-            {state && "ok" in state && state.ok && (
-              <span className="text-[11px] font-semibold text-emerald-500">Operación guardada</span>
-            )}
-            {state && "error" in state && state.error && (
-              <span className="text-[11px] font-semibold text-rose-500">{state.error}</span>
+            <button
+              type="button"
+              onClick={handleClose}
+              disabled={pending}
+              className="inline-flex items-center text-[11px] font-black px-4 py-2.5 rounded-xl border border-byg-border text-byg-muted hover:text-byg-text hover:border-byg-text/30 disabled:opacity-50 transition-colors uppercase tracking-widest"
+            >
+              Cancelar
+            </button>
+            {errorMsg && (
+              <span className="text-[11px] font-semibold text-rose-500">{errorMsg}</span>
             )}
           </div>
         </form>
+        </div></Modal>
       )}
-    </div>
+    </>
   );
 }
