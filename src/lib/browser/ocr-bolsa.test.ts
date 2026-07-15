@@ -426,6 +426,84 @@ describe("reconstructBolsaBlocks", () => {
     expect(blocks[0].nombreDetectado).toBeNull();
     expect(blocks[0].nroComitenteDetectado).toBeNull();
   });
+
+  it("OCR-46: parses an operation row with no header at all via positional fallback", () => {
+    const words: OcrWord[] = [
+      w("COMPRA", 10, 10),
+      w("10/07/2024", 100, 10),
+      w("AL30", 150, 10),
+      w("10.000", 195, 10),
+    ];
+    const blocks = reconstructBolsaBlocks(words);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].operaciones).toHaveLength(1);
+    expect(blocks[0].operaciones[0].operacionBase).toBe("COMPRA");
+    expect(blocks[0].operaciones[0].fechaConcertacion).toBe("2024-07-10");
+  });
+
+  // Synthetic full-document scenario: comitente DANIEL/11538, one table with a
+  // single-line header (7 ops), a second table whose header is split across two
+  // vertically separated rows (1 caución), a "Tipo de cambio Neto" row that must
+  // be ignored, and a third group of 3 ops with no header at all (positional
+  // fallback reusing the last known column map). Expected total: 11 operations.
+  it("OCR-47: reconstructs 11 operations across split headers, ignored rows and positional fallback", () => {
+    const words: OcrWord[] = [
+      // Comitente
+      w("DANIEL", 10, 10),
+      w("11538", 70, 10),
+
+      // Table 1 — single-row header
+      w("OPERACION", 10, 40),
+      w("FECHA", 100, 40),
+      w("BONO", 150, 40),
+      w("VN", 195, 40),
+      w("PRECIO", 225, 40),
+      w("MONTO", 275, 40),
+      w("PLAZO", 325, 40),
+      w("VTO", 375, 40),
+
+      // Table 1 — 7 operations
+      w("COMPRA", 10, 65), w("10/07/2024", 100, 65), w("AL30", 150, 65), w("10.000", 195, 65), w("65,25", 225, 65), w("652.500", 275, 65), w("48HS", 325, 65),
+      w("VENTA", 10, 85), w("10/07/2024", 100, 85), w("GD30", 150, 85), w("5.000", 195, 85), w("73,10", 225, 85), w("365.500", 275, 85), w("CI", 325, 85),
+      w("COMPRA", 10, 105), w("11/07/2024", 100, 105), w("AE38", 150, 105), w("2.000", 195, 105), w("55,00", 225, 105), w("110.000", 275, 105), w("24HS", 325, 105),
+      w("VENTA", 10, 125), w("11/07/2024", 100, 125), w("AL29", 150, 125), w("3.000", 195, 125), w("60,50", 225, 125), w("181.500", 275, 125), w("CI", 325, 125),
+      w("COMPRA", 10, 145), w("12/07/2024", 100, 145), w("AL35", 150, 145), w("1.500", 195, 145), w("70,20", 225, 145), w("105.300", 275, 145), w("48HS", 325, 145),
+      w("VENTA", 10, 165), w("12/07/2024", 100, 165), w("GD35", 150, 165), w("4.000", 195, 165), w("80,10", 225, 165), w("320.400", 275, 165), w("CI", 325, 165),
+      w("COMPRA", 10, 185), w("13/07/2024", 100, 185), w("AL41", 150, 185), w("2.500", 195, 185), w("45,75", 225, 185), w("114.375", 275, 185), w("24HS", 325, 185),
+
+      // Table 2 — header split across two vertically separated rows
+      w("OPERACION", 10, 210),
+      w("FECHA", 100, 210),
+      w("PLAZO", 325, 225),
+      w("TASA", 375, 225),
+
+      // Table 2 — 1 caución
+      w("CAUCION", 10, 250), w("COLOCADORA", 75, 250), w("14/07/2024", 100, 250), w("7", 325, 250), w("42,5", 375, 250),
+
+      // Ignored row — must not be counted
+      w("Tipo", 10, 275), w("de", 50, 275), w("cambio", 70, 275), w("Neto", 130, 275),
+
+      // Comitente repeated before a headerless group of operations — same comitente must be preserved
+      w("DANIEL", 10, 300),
+      w("11538", 70, 300),
+
+      // 3 more operations with no header — positional fallback
+      w("COMPRA", 10, 325), w("15/07/2024", 100, 325), w("AL30", 150, 325), w("1.000", 195, 325), w("66,00", 225, 325), w("66.000", 275, 325), w("48HS", 325, 325),
+      w("VENTA", 10, 345), w("15/07/2024", 100, 345), w("GD30", 150, 345), w("500", 195, 345), w("74,00", 225, 345), w("37.000", 275, 345), w("CI", 325, 345),
+      w("VENTA", 10, 365), w("16/07/2024", 100, 365), w("GD35", 150, 365), w("500", 195, 365), w("30,00", 225, 365), w("15.000", 275, 365), w("CI", 325, 365),
+    ];
+
+    const blocks = reconstructBolsaBlocks(words);
+    const allOps = blocks.flatMap((b) => b.operaciones);
+
+    expect(allOps).toHaveLength(11);
+    expect(blocks.every((b) => b.nombreDetectado?.includes("DANIEL"))).toBe(true);
+    expect(blocks.every((b) => b.nroComitenteDetectado === "11538")).toBe(true);
+    expect(allOps.every((op) => !op.rawOperacion.toLowerCase().includes("tipo"))).toBe(true);
+    expect(allOps.filter((op) => op.operacionBase.startsWith("CAUCION"))).toHaveLength(1);
+    expect(allOps.filter((op) => op.operacionBase === "COMPRA")).toHaveLength(5);
+    expect(allOps.filter((op) => op.operacionBase === "VENTA")).toHaveLength(5);
+  });
 });
 
 // ── extractOcrWords ───────────────────────────────────────────────────────────

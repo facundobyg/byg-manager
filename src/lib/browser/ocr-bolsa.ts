@@ -85,11 +85,7 @@ export function groupWordsIntoRows(words: OcrWord[], rowGap = 10): OcrWord[][] {
   return rows;
 }
 
-/**
- * Detects if a row is a table header (3+ recognized column keywords).
- * Returns the column map or null.
- */
-export function detectTableHeader(row: OcrWord[]): ColMap | null {
+function buildColMapFromRow(row: OcrWord[]): { colMap: ColMap; hits: number } {
   const colMap: ColMap = {};
   let hits = 0;
 
@@ -105,7 +101,42 @@ export function detectTableHeader(row: OcrWord[]): ColMap | null {
     }
   }
 
+  return { colMap, hits };
+}
+
+/**
+ * Detects if a row is a table header (3+ recognized column keywords).
+ * Returns the column map or null.
+ */
+export function detectTableHeader(row: OcrWord[]): ColMap | null {
+  const { colMap, hits } = buildColMapFromRow(row);
   return hits >= 3 ? colMap : null;
+}
+
+/**
+ * Merges consecutive rows that each carry a few header keywords but not
+ * enough alone to qualify (e.g. a header printed across two text lines).
+ * Only merges when the combined hits reach the header threshold.
+ */
+function mergeVerticalHeaderRows(rows: OcrWord[][]): OcrWord[][] {
+  const result: OcrWord[][] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i];
+    const { hits } = buildColMapFromRow(row);
+    if (hits > 0 && hits < 3 && i + 1 < rows.length) {
+      const merged = [...row, ...rows[i + 1]];
+      const { hits: mergedHits } = buildColMapFromRow(merged);
+      if (mergedHits >= 3) {
+        result.push(merged);
+        i += 2;
+        continue;
+      }
+    }
+    result.push(row);
+    i++;
+  }
+  return result;
 }
 
 /**
@@ -200,6 +231,55 @@ function detectOpBase(text: string): BolsaImageOpBase {
   return "DESCONOCIDA";
 }
 
+/**
+ * True when a row's own text starts an operation directly — COMPRA, VENTA,
+ * CAUCION COLOCADORA or CAUCION TOMADORA — regardless of whether a table
+ * header/column map was ever detected above it.
+ */
+function isOpCandidateRow(row: OcrWord[]): boolean {
+  const text = row.map((w) => w.text).join(" ");
+  return detectOpBase(text) !== "DESCONOCIDA";
+}
+
+const FALLBACK_COLUMN_ORDER: ColKey[] = [
+  "FECHA",
+  "TICKER",
+  "CANTIDAD",
+  "PRECIO",
+  "MONTO",
+  "PLAZO",
+  "VTO",
+  "TASA",
+];
+
+/**
+ * Builds a best-effort column map straight from one row's own word
+ * positions, for when no table header (real or reconstructed) is
+ * available at all. The leading COMPRA/VENTA/CAUCION [COLOCADORA|TOMADORA]
+ * words become OPERACION; the rest are assigned left-to-right following
+ * the conventional bolsa column order.
+ */
+function positionalColMapFromRow(row: OcrWord[]): ColMap {
+  const sorted = [...row].sort((a, b) => a.bbox.x0 - b.bbox.x0);
+  const colMap: ColMap = {};
+
+  let idx = 0;
+  const opWords: OcrWord[] = [];
+  while (idx < sorted.length && /COMPRA|VENTA|CAUCI|COLOC|^TOM/i.test(sorted[idx].text)) {
+    opWords.push(sorted[idx]);
+    idx++;
+  }
+  if (opWords.length > 0) {
+    colMap.OPERACION = { cx: xCenter(opWords[0]) };
+  }
+
+  for (let orderIdx = 0; idx < sorted.length && orderIdx < FALLBACK_COLUMN_ORDER.length; idx++, orderIdx++) {
+    colMap[FALLBACK_COLUMN_ORDER[orderIdx]] = { cx: xCenter(sorted[idx]) };
+  }
+
+  return colMap;
+}
+
 function assignToColumn(word: OcrWord, colMap: ColMap): ColKey | null {
   const cx = xCenter(word);
   let best: ColKey | null = null;
@@ -287,12 +367,16 @@ export function parseDataRow(
  */
 export function reconstructBolsaBlocks(words: OcrWord[]): BolsaImageBloque[] {
   const filtered = words.filter((w) => w.confidence >= 30 && w.text.trim().length > 0);
-  const rows = groupWordsIntoRows(filtered);
+  const rows = mergeVerticalHeaderRows(groupWordsIntoRows(filtered));
 
   const blocks: BolsaImageBloque[] = [];
   let currentNombre: string | null = null;
   let currentNumero: string | null = null;
   let currentColMap: ColMap | null = null;
+  // Last column map derived from a real (or reconstructed) header — reused
+  // as a fallback for later tables under the same comitente whose header
+  // is missing or unreadable.
+  let lastGoodColMap: ColMap | null = null;
   let currentOps: BolsaImageRawOp[] = [];
   let blockCount = 0;
   let rowNum = 0;
@@ -322,6 +406,7 @@ export function reconstructBolsaBlocks(words: OcrWord[]): BolsaImageBloque[] {
     if (header) {
       if (currentColMap !== null && currentOps.length > 0) flushBlock();
       currentColMap = header;
+      lastGoodColMap = header;
       rowNum = 0;
       continue;
     }
@@ -338,8 +423,19 @@ export function reconstructBolsaBlocks(words: OcrWord[]): BolsaImageBloque[] {
       continue;
     }
 
-    // Data row — only parse if we have a column map
+    // Data row under a known column map
     if (currentColMap !== null) {
+      rowNum++;
+      currentOps.push(parseDataRow(row, currentColMap, rowNum));
+      continue;
+    }
+
+    // No column map yet (missing/unreadable header) — a row that starts a
+    // COMPRA/VENTA/CAUCION operation directly is still a valid candidate.
+    // Reuse the last known header's columns, or reconstruct one positionally.
+    if (isOpCandidateRow(row)) {
+      currentColMap = lastGoodColMap ?? positionalColMapFromRow(row);
+      lastGoodColMap = currentColMap;
       rowNum++;
       currentOps.push(parseDataRow(row, currentColMap, rowNum));
     }
