@@ -24,6 +24,14 @@ import {
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4 MB — guarda de seguridad server-side
 
+// Oculta nombres de variables de entorno y detalles internos del error.
+function sanitizeParseError(msg: string): string {
+  if (msg.includes("ANTHROPIC_API_KEY")) {
+    return "El servicio de análisis de imágenes no está disponible. Contactá al administrador.";
+  }
+  return msg;
+}
+
 function sha256(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
@@ -310,6 +318,7 @@ export async function processBolsaImageUpload(
   return {
     ok: true,
     estado: estadoFinal,
+    ...(parseError ? { error: sanitizeParseError(parseError) } : {}),
     loteId,
     archivoId,
     nombreArchivo,

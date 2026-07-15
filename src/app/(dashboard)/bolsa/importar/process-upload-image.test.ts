@@ -225,6 +225,7 @@ describe("processBolsaImageUpload (single image per request)", () => {
 
     expect(result.ok).toBe(true);
     expect(result.estado).toBe("FALLIDO");
+    expect(result.error).toMatch(/tardó demasiado/i);
     expect(mocks.createLote).not.toHaveBeenCalled();
     expect(mocks.updateLote).toHaveBeenCalledTimes(1);
     const archivoData = mocks.createArchivo.mock.calls[0][0].data;
@@ -241,6 +242,7 @@ describe("processBolsaImageUpload (single image per request)", () => {
 
     expect(result.ok).toBe(true);
     expect(result.estado).toBe("FALLIDO");
+    expect(result.error).toMatch(/API timeout/);
     expect(mocks.createLote).toHaveBeenCalledTimes(1);
     const loteData = mocks.createLote.mock.calls[0][0].data;
     expect(loteData.estado).toBe("FALLIDO");
@@ -259,6 +261,7 @@ describe("processBolsaImageUpload (single image per request)", () => {
 
     const result = await processBolsaImageUpload(makeFormData(makeImageFile()), "user-1");
     expect(result.estado).toBe("FALLIDO");
+    expect(result.error).toMatch(/tardó demasiado/i);
     const archivoData = mocks.createArchivo.mock.calls[0][0].data;
     expect(archivoData.errorMessage).toMatch(/tardó demasiado/i);
   });
@@ -272,8 +275,23 @@ describe("processBolsaImageUpload (single image per request)", () => {
 
     const result = await processBolsaImageUpload(makeFormData(makeImageFile()), "user-1");
     expect(result.estado).toBe("FALLIDO");
+    expect(result.error).toMatch(/formato inesperado/i);
     const archivoData = mocks.createArchivo.mock.calls[0][0].data;
     expect(archivoData.errorMessage).toMatch(/formato inesperado/i);
+  });
+
+  // ── T-IMG-17: ANTHROPIC_API_KEY sanitizado en result.error ───────────────
+  it("T-IMG-17: ANTHROPIC_API_KEY is not exposed in result.error", async () => {
+    mocks.parseBolsaImage.mockRejectedValueOnce(
+      new Error("ANTHROPIC_API_KEY no configurada."),
+    );
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeFormData(makeImageFile()), "user-1");
+    expect(result.estado).toBe("FALLIDO");
+    expect(result.error).toBeDefined();
+    expect(result.error).not.toMatch(/ANTHROPIC_API_KEY/);
+    expect(result.error).toMatch(/administrador/i);
   });
 
   // ── T-IMG-13: nunca crea OperacionBolsa ──────────────────────────────────
