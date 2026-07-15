@@ -6,7 +6,11 @@ import {
   importarBolsaImagenAction,
   type ProcessBolsaResult,
 } from "./actions";
-import { resizeAndCompress } from "@/lib/browser/compress-image";
+import {
+  ocrBolsaImage,
+  createOcrWorker,
+  type TesseractWorker,
+} from "@/lib/browser/ocr-bolsa";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -14,8 +18,10 @@ type Modo = "excel" | "imagen";
 
 type ImgFase =
   | { fase: "pendiente" }
-  | { fase: "comprimiendo" }
-  | { fase: "subiendo" }
+  | { fase: "preparando" }
+  | { fase: "ocr"; msg: string }
+  | { fase: "armando" }
+  | { fase: "guardando" }
   | { fase: "ok"; result: ProcessBolsaResult }
   | { fase: "duplicado"; loteId?: string; creadoEl?: string }
   | { fase: "error"; msg: string };
@@ -33,7 +39,7 @@ export function ImportarBolsaForm() {
     FormData
   >(importarBolsaExcelAction, null);
 
-  // ── Imagen (manejo manual secuencial) ────────────────────────────────────
+  // ── Imagen (OCR local + staging) ─────────────────────────────────────────
   const [imagenes, setImagenes] = useState<ImagenEntry[]>([]);
   const [loteActual, setLoteActual] = useState<string | undefined>();
   const [imgPending, startImgTransition] = useTransition();
@@ -51,71 +57,98 @@ export function ImportarBolsaForm() {
     const files = Array.from(imagenInputRef.current?.files ?? []);
     if (files.length === 0) return;
 
-    const inicial: ImagenEntry[] = files.map((f) => ({
-      file: f,
-      estado: { fase: "pendiente" },
-    }));
-    setImagenes(inicial);
+    setImagenes(files.map((f) => ({ file: f, estado: { fase: "pendiente" } })));
     setLoteActual(undefined);
 
     let loteId: string | undefined;
 
     startImgTransition(async () => {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-
-        // Comprimir en el cliente
-        actualizarEntrada(i, { fase: "comprimiendo" });
-        let compressed: File;
-        try {
-          compressed = await resizeAndCompress(file);
-        } catch (err) {
+      let worker: TesseractWorker | null = null;
+      try {
+        worker = await createOcrWorker();
+      } catch {
+        // Si no se puede crear el worker, todos los archivos fallan
+        for (let i = 0; i < files.length; i++) {
           actualizarEntrada(i, {
             fase: "error",
-            msg:
-              err instanceof Error
-                ? err.message
-                : "Error al comprimir la imagen.",
+            msg: "No se pudo inicializar el OCR. Recargá la página.",
           });
-          continue;
         }
+        return;
+      }
 
-        // Subir al servidor
-        actualizarEntrada(i, { fase: "subiendo" });
-        const fd = new FormData();
-        fd.append("file", compressed);
-        if (loteId) fd.append("loteId", loteId);
+      try {
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
 
-        let result: ProcessBolsaResult;
-        try {
-          result = await importarBolsaImagenAction(fd);
-        } catch {
-          actualizarEntrada(i, {
-            fase: "error",
-            msg: "Error de red al subir la imagen. Intentá de nuevo.",
-          });
-          continue;
+          // OCR local en el navegador
+          let parseResult: Awaited<ReturnType<typeof ocrBolsaImage>>;
+          try {
+            parseResult = await ocrBolsaImage(file, worker, (msg) => {
+              if (msg === "Preparando imagen") {
+                actualizarEntrada(i, { fase: "preparando" });
+              } else if (msg === "Leyendo texto") {
+                actualizarEntrada(i, { fase: "ocr", msg: "Leyendo texto…" });
+              } else if (msg === "Armando operaciones") {
+                actualizarEntrada(i, { fase: "armando" });
+              }
+            });
+          } catch (err) {
+            actualizarEntrada(i, {
+              fase: "error",
+              msg:
+                err instanceof Error
+                  ? err.message
+                  : "Error al leer la imagen.",
+            });
+            continue;
+          }
+
+          // Enviar resultado JSON al servidor (la imagen nunca sale del navegador)
+          actualizarEntrada(i, { fase: "guardando" });
+          const fd = new FormData();
+          fd.append("result", JSON.stringify(parseResult));
+          fd.append("fileName", file.name);
+          fd.append("fileSize", String(file.size));
+          fd.append(
+            "mimeType",
+            file.type === "image/png" ? "image/png" : "image/jpeg",
+          );
+          if (loteId) fd.append("loteId", loteId);
+
+          let result: ProcessBolsaResult;
+          try {
+            result = await importarBolsaImagenAction(fd);
+          } catch {
+            actualizarEntrada(i, {
+              fase: "error",
+              msg: "Error de red al guardar. Intentá de nuevo.",
+            });
+            continue;
+          }
+
+          if (result.loteId && !loteId) {
+            loteId = result.loteId;
+            setLoteActual(loteId);
+          }
+
+          if (result.estado === "DUPLICADO") {
+            actualizarEntrada(i, {
+              fase: "duplicado",
+              loteId: result.archivoExistente?.loteId,
+              creadoEl: result.archivoExistente?.creadoEl,
+            });
+          } else if (!result.ok) {
+            actualizarEntrada(i, {
+              fase: "error",
+              msg: result.error ?? "Error al procesar la imagen.",
+            });
+          } else {
+            actualizarEntrada(i, { fase: "ok", result });
+          }
         }
-
-        if (result.loteId && !loteId) {
-          loteId = result.loteId;
-          setLoteActual(loteId);
-        }
-
-        if (result.estado === "DUPLICADO") {
-          actualizarEntrada(i, {
-            fase: "duplicado",
-            loteId: result.archivoExistente?.loteId,
-            creadoEl: result.archivoExistente?.creadoEl,
-          });
-        } else if (!result.ok || result.estado === "FALLIDO") {
-          actualizarEntrada(i, {
-            fase: "error",
-            msg: result.error ?? "Error al procesar la imagen.",
-          });
-        } else {
-          actualizarEntrada(i, { fase: "ok", result });
-        }
+      } finally {
+        worker.terminate().catch(() => {});
       }
     });
   }
@@ -200,10 +233,8 @@ export function ImportarBolsaForm() {
               .jpg / .jpeg / .png · podés seleccionar varias imágenes del mismo día ·
               solo crea staging, no opera realmente
             </p>
-            <p className="text-[10px] text-byg-muted/70 flex items-center gap-1.5">
-              <span className="text-byg-accent">⚠</span>
-              Las imágenes se analizan con un servicio externo de inteligencia artificial
-              para extraer las operaciones.
+            <p className="text-[10px] text-byg-muted/70">
+              La imagen se procesa localmente en tu navegador y no se envía a servicios externos.
             </p>
           </div>
           <button
@@ -211,7 +242,7 @@ export function ImportarBolsaForm() {
             disabled={imgPending}
             className="self-start px-5 py-2.5 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {imgPending ? "Procesando con IA..." : "Importar imágenes"}
+            {imgPending ? "Procesando..." : "Importar imágenes"}
           </button>
 
           {imagenes.length > 0 && (
@@ -266,7 +297,7 @@ function ResultadoExcel({ result }: { result: ProcessBolsaResult }) {
               {result.archivoExistente && (
                 <> el {new Date(result.archivoExistente.creadoEl).toLocaleString("es-AR")}</>
               )}{" "}
-              pero su procesamiento falló. Podrá reintentarse en un módulo posterior.
+              pero su procesamiento falló.
             </>
           ) : (
             <>
@@ -331,9 +362,7 @@ function ResultadoExcel({ result }: { result: ProcessBolsaResult }) {
 
 function ImagenEntryCard({ entry }: { entry: ImagenEntry }) {
   const { file, estado } = entry;
-
-  const baseClass =
-    "rounded-xl border p-3 flex flex-col gap-1.5 transition-colors";
+  const baseClass = "rounded-xl border p-3 flex flex-col gap-1.5 transition-colors";
 
   if (estado.fase === "pendiente") {
     return (
@@ -344,24 +373,38 @@ function ImagenEntryCard({ entry }: { entry: ImagenEntry }) {
     );
   }
 
-  if (estado.fase === "comprimiendo") {
+  if (estado.fase === "preparando") {
     return (
       <div className={`${baseClass} border-byg-border bg-byg-surface`}>
         <p className="text-[11px] font-black text-byg-muted">{file.name}</p>
-        <p className="text-[10px] text-byg-accent animate-pulse">
-          Comprimiendo…
-        </p>
+        <p className="text-[10px] text-byg-accent animate-pulse">Preparando imagen…</p>
       </div>
     );
   }
 
-  if (estado.fase === "subiendo") {
+  if (estado.fase === "ocr") {
     return (
       <div className={`${baseClass} border-byg-border bg-byg-surface`}>
         <p className="text-[11px] font-black text-byg-muted">{file.name}</p>
-        <p className="text-[10px] text-byg-accent animate-pulse">
-          Analizando con IA…
-        </p>
+        <p className="text-[10px] text-byg-accent animate-pulse">{estado.msg}</p>
+      </div>
+    );
+  }
+
+  if (estado.fase === "armando") {
+    return (
+      <div className={`${baseClass} border-byg-border bg-byg-surface`}>
+        <p className="text-[11px] font-black text-byg-muted">{file.name}</p>
+        <p className="text-[10px] text-byg-accent animate-pulse">Armando operaciones…</p>
+      </div>
+    );
+  }
+
+  if (estado.fase === "guardando") {
+    return (
+      <div className={`${baseClass} border-byg-border bg-byg-surface`}>
+        <p className="text-[11px] font-black text-byg-muted">{file.name}</p>
+        <p className="text-[10px] text-byg-accent animate-pulse">Guardando staging…</p>
       </div>
     );
   }
@@ -371,12 +414,8 @@ function ImagenEntryCard({ entry }: { entry: ImagenEntry }) {
       <div
         className={`${baseClass} border-red-200 bg-red-50 dark:bg-red-950/20 dark:border-red-800/40`}
       >
-        <p className="text-[11px] font-black text-red-600 dark:text-red-400">
-          {file.name}
-        </p>
-        <p className="text-[11px] text-red-700 dark:text-red-300">
-          {estado.msg}
-        </p>
+        <p className="text-[11px] font-black text-red-600 dark:text-red-400">{file.name}</p>
+        <p className="text-[11px] text-red-700 dark:text-red-300">{estado.msg}</p>
       </div>
     );
   }
@@ -386,9 +425,7 @@ function ImagenEntryCard({ entry }: { entry: ImagenEntry }) {
       <div
         className={`${baseClass} border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800/40`}
       >
-        <p className="text-[11px] font-black text-amber-600 dark:text-amber-400">
-          {file.name}
-        </p>
+        <p className="text-[11px] font-black text-amber-600 dark:text-amber-400">{file.name}</p>
         <p className="text-[11px] text-amber-700 dark:text-amber-300">
           Ya importada
           {estado.creadoEl && (
@@ -402,8 +439,7 @@ function ImagenEntryCard({ entry }: { entry: ImagenEntry }) {
 
   // fase: "ok"
   const { result } = estado;
-  const hayProblemas =
-    result.filasConError > 0 || result.filasConAdvertencia > 0;
+  const hayProblemas = result.filasConError > 0 || result.filasConAdvertencia > 0;
   return (
     <div
       className={`${baseClass} ${hayProblemas ? "border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800/40" : "border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-800/40"}`}

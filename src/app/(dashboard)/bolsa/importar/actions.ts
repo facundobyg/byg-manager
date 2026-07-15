@@ -5,42 +5,30 @@ import { revalidatePath } from "next/cache";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { processBolsaExcelUpload, type ProcessBolsaResult } from "./process-upload";
 import { processBolsaImageUpload } from "./process-upload-image";
+import type { BolsaImageParseResult, BolsaImageMime } from "@/lib/importers/bolsa-image/types";
 
 export type { ProcessBolsaResult } from "./process-upload";
 
+const EMPTY: Omit<ProcessBolsaResult, "ok"> = {
+  nombreArchivo: "",
+  totalFilas: 0,
+  filasResuelta: 0,
+  filasConAdvertencia: 0,
+  filasConError: 0,
+};
+
 /**
  * Único punto de entrada gateado para la UI — Excel.
- * La lógica real vive en process-upload.ts, que NO tiene "use server".
  */
 export async function importarBolsaExcelAction(
   _prev: ProcessBolsaResult | null,
   formData: FormData,
 ): Promise<ProcessBolsaResult> {
   const denied = await requireActionPermission("bolsa:crear");
-  if (denied) {
-    return {
-      ok: false,
-      error: denied.error,
-      nombreArchivo: "",
-      totalFilas: 0,
-      filasResuelta: 0,
-      filasConAdvertencia: 0,
-      filasConError: 0,
-    };
-  }
+  if (denied) return { ok: false, error: denied.error, ...EMPTY };
 
   const session = await auth();
-  if (!session?.user?.id) {
-    return {
-      ok: false,
-      error: "Sesión no válida.",
-      nombreArchivo: "",
-      totalFilas: 0,
-      filasResuelta: 0,
-      filasConAdvertencia: 0,
-      filasConError: 0,
-    };
-  }
+  if (!session?.user?.id) return { ok: false, error: "Sesión no válida.", ...EMPTY };
 
   const result = await processBolsaExcelUpload(formData, session.user.id);
 
@@ -48,7 +36,7 @@ export async function importarBolsaExcelAction(
     try {
       revalidatePath("/bolsa");
     } catch {
-      // nunca tirar abajo un import ya exitoso por un revalidate fallido
+      // no tirar el import por un revalidate fallido
     }
   }
 
@@ -56,49 +44,57 @@ export async function importarBolsaExcelAction(
 }
 
 /**
- * Punto de entrada gateado para la UI — una imagen por request.
- * La UI llama esto secuencialmente para cada imagen seleccionada.
- * El formData incluye:
- *   - "file": la imagen ya comprimida por el cliente
- *   - "loteId" (opcional): ID del lote creado en la primera request de la tanda
+ * Punto de entrada gateado para la UI — resultado OCR de una imagen.
  *
- * ANTHROPIC_API_KEY es server-only — nunca se expone al cliente.
+ * La imagen permanece en el navegador; el cliente envía únicamente el JSON
+ * estructurado producido por el OCR local (ocr-bolsa.ts).
+ *
+ * FormData esperado:
+ *   - "result"   : JSON de BolsaImageParseResult
+ *   - "fileName" : nombre original del archivo
+ *   - "fileSize" : tamaño en bytes (string)
+ *   - "mimeType" : "image/jpeg" | "image/png"
+ *   - "loteId"   : (opcional) ID del lote de la primera imagen de la tanda
  */
 export async function importarBolsaImagenAction(
   formData: FormData,
 ): Promise<ProcessBolsaResult> {
   const denied = await requireActionPermission("bolsa:crear");
-  if (denied) {
-    return {
-      ok: false,
-      error: denied.error,
-      nombreArchivo: "",
-      totalFilas: 0,
-      filasResuelta: 0,
-      filasConAdvertencia: 0,
-      filasConError: 0,
-    };
-  }
+  if (denied) return { ok: false, error: denied.error, ...EMPTY };
 
   const session = await auth();
-  if (!session?.user?.id) {
-    return {
-      ok: false,
-      error: "Sesión no válida.",
-      nombreArchivo: "",
-      totalFilas: 0,
-      filasResuelta: 0,
-      filasConAdvertencia: 0,
-      filasConError: 0,
-    };
+  if (!session?.user?.id) return { ok: false, error: "Sesión no válida.", ...EMPTY };
+
+  const resultJson = formData.get("result");
+  const fileName = formData.get("fileName");
+  const fileSize = formData.get("fileSize");
+  const mimeTypeRaw = formData.get("mimeType");
+  const loteIdRaw = formData.get("loteId");
+
+  if (typeof resultJson !== "string" || typeof fileName !== "string") {
+    return { ok: false, error: "Datos de imagen inválidos.", ...EMPTY };
   }
 
-  const loteId = formData.get("loteId");
+  let parseResult: BolsaImageParseResult;
+  try {
+    parseResult = JSON.parse(resultJson) as BolsaImageParseResult;
+  } catch {
+    return { ok: false, error: "Formato de resultado OCR inválido.", ...EMPTY };
+  }
+
+  const mimeType: BolsaImageMime =
+    mimeTypeRaw === "image/png" ? "image/png" : "image/jpeg";
+
   const existingLoteId =
-    typeof loteId === "string" && loteId.length > 0 ? loteId : undefined;
+    typeof loteIdRaw === "string" && loteIdRaw.length > 0 ? loteIdRaw : undefined;
 
   const result = await processBolsaImageUpload(
-    formData,
+    {
+      parseResult,
+      fileName,
+      fileSize: Number(fileSize) || 0,
+      mimeType,
+    },
     session.user.id,
     existingLoteId,
   );

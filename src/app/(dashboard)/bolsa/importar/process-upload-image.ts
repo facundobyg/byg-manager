@@ -1,19 +1,16 @@
-// Lógica de carga de una imagen bolsa — deliberadamente NO es "use server".
+// Lógica de guardado de resultado OCR de imagen bolsa — NO es "use server".
 // El único punto de entrada gateado para la UI es importarBolsaImagenAction
 // en actions.ts.
 //
-// Diseño: una imagen por request. La UI procesa secuencialmente y pasa
-// el loteId de la primera respuesta a las siguientes para agrupar todo
-// en el mismo BolsaImportLote.
+// El OCR ocurre íntegramente en el navegador (ocr-bolsa.ts).
+// Esta función recibe el resultado ya estructurado y lo persiste en staging.
 
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { parseBolsaImage } from "@/lib/importers/bolsa-image/parser";
-import type { BolsaImageMime } from "@/lib/importers/bolsa-image/types";
+import type { BolsaImageParseResult, BolsaImageMime } from "@/lib/importers/bolsa-image/types";
 import type {
   BolsaImageRawOp,
   BolsaImageBloque,
-  BolsaImageParseResult,
 } from "@/lib/importers/bolsa-image/types";
 import type { TipoOpBolsa } from "@prisma/client";
 import {
@@ -22,25 +19,38 @@ import {
   type ProcessBolsaResult,
 } from "./process-upload";
 
-const MAX_IMAGE_BYTES = 4 * 1024 * 1024; // 4 MB — guarda de seguridad server-side
-
-// Oculta nombres de variables de entorno y detalles internos del error.
-function sanitizeParseError(msg: string): string {
-  if (msg.includes("ANTHROPIC_API_KEY")) {
-    return "El servicio de análisis de imágenes no está disponible. Contactá al administrador.";
-  }
-  return msg;
+export interface BolsaImageUploadInput {
+  parseResult: BolsaImageParseResult;
+  fileName: string;
+  fileSize: number;
+  mimeType: BolsaImageMime;
 }
+
+const EMPTY_COUNTS = {
+  totalFilas: 0,
+  filasResuelta: 0,
+  filasConAdvertencia: 0,
+  filasConError: 0,
+};
 
 function sha256(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
 
-function detectMimeFromName(name: string): BolsaImageMime | null {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-  if (lower.endsWith(".png")) return "image/png";
-  return null;
+function validateParseResult(r: unknown): BolsaImageParseResult {
+  if (!r || typeof r !== "object") throw new Error("Estructura inválida.");
+  const obj = r as Record<string, unknown>;
+  if (!Array.isArray(obj.bloques)) throw new Error("Estructura inválida: bloques.");
+  for (const bloque of obj.bloques as unknown[]) {
+    const b = bloque as Record<string, unknown>;
+    if (!Array.isArray(b.operaciones)) throw new Error("Estructura inválida: operaciones.");
+    for (const op of b.operaciones as unknown[]) {
+      if (typeof (op as Record<string, unknown>).rawOperacion !== "string") {
+        throw new Error("Estructura inválida: rawOperacion.");
+      }
+    }
+  }
+  return r as BolsaImageParseResult;
 }
 
 function mapOpBaseImg(op: BolsaImageRawOp): TipoOpBolsa | null {
@@ -68,58 +78,37 @@ function computeFingerprintImg(
     .slice(0, 32);
 }
 
-const EMPTY_COUNTS = {
-  totalFilas: 0,
-  filasResuelta: 0,
-  filasConAdvertencia: 0,
-  filasConError: 0,
-};
-
 /**
- * Procesa una sola imagen y la agrega a un BolsaImportLote.
+ * Persiste el resultado OCR de una imagen en las tablas de staging.
  *
- * Si `existingLoteId` está presente, se valida que pertenezca al userId y se
- * agregan el archivo y las filas a ese lote (actualizando sus contadores).
- * Si no, se crea un lote nuevo.
+ * La imagen NO llega aquí — solo el resultado estructurado del OCR.
+ * Todas las filas quedan en ADVERTENCIA mínima (nunca RESUELTA)
+ * para forzar revisión humana antes de confirmar.
  */
 export async function processBolsaImageUpload(
-  formData: FormData,
+  input: BolsaImageUploadInput,
   userId: string,
   existingLoteId?: string,
 ): Promise<ProcessBolsaResult> {
-  const file = formData.get("file");
-  const nombreArchivo = file instanceof File ? file.name : "";
+  const { fileName, fileSize, mimeType } = input;
+  const baseResult = { nombreArchivo: fileName, ...EMPTY_COUNTS };
 
-  const baseResult = { nombreArchivo, ...EMPTY_COUNTS };
-
-  // ── Validación del archivo ────────────────────────────────────────────────
-  if (!(file instanceof File) || file.size === 0) {
-    return { ok: false, error: "No se adjuntó ninguna imagen.", ...baseResult };
-  }
-
-  const mimeType = detectMimeFromName(file.name);
-  if (!mimeType) {
+  // ── Validar estructura recibida del cliente ───────────────────────────────
+  let parseResult: BolsaImageParseResult;
+  try {
+    parseResult = validateParseResult(input.parseResult);
+  } catch (e) {
     return {
       ok: false,
-      error: `"${file.name}" no es una imagen válida — se aceptan .jpg, .jpeg y .png.`,
+      error: e instanceof Error ? e.message : "Resultado OCR inválido.",
       ...baseResult,
     };
   }
 
-  if (file.size > MAX_IMAGE_BYTES) {
-    return {
-      ok: false,
-      error: `"${file.name}" supera los 4 MB permitidos por imagen.`,
-      ...baseResult,
-    };
-  }
-
-  const buf = Buffer.from(await file.arrayBuffer());
-  const hash = sha256(buf);
-
-  // ── Deduplicación por hash ────────────────────────────────────────────────
+  // ── Deduplicación por hash de contenido ──────────────────────────────────
+  const contentHash = sha256(Buffer.from(JSON.stringify(parseResult)));
   const existing = await prisma.bolsaImportArchivo.findUnique({
-    where: { fileHashSha256: hash },
+    where: { fileHashSha256: contentHash },
   });
   if (existing) {
     return {
@@ -150,22 +139,12 @@ export async function processBolsaImageUpload(
     }
   }
 
-  // ── Parseo Vision ─────────────────────────────────────────────────────────
-  let parseResult: BolsaImageParseResult;
-  let parseError: string | null = null;
-  try {
-    parseResult = await parseBolsaImage(buf, mimeType);
-  } catch (e) {
-    parseError = e instanceof Error ? e.message : "Error al procesar la imagen.";
-    parseResult = { bloques: [], warningsGlobales: [], erroresGlobales: [parseError], totalOperaciones: 0 };
-  }
-
   // ── Resolución de comitentes ──────────────────────────────────────────────
   type FilaData = {
     op: BolsaImageRawOp;
     bloque: BolsaImageBloque;
     resolucion: ComitenteResolucion;
-    estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
+    estado: "ADVERTENCIA" | "ERROR";
     allErrors: string[];
     allWarnings: string[];
   };
@@ -181,14 +160,10 @@ export async function processBolsaImageUpload(
       const allWarnings = [...op.warnings];
       if (resolucion.errorMsg) allErrors.push(resolucion.errorMsg);
 
-      let estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
-      if (allErrors.length > 0 || resolucion.estado === "ERROR") {
-        estado = "ERROR";
-      } else if (allWarnings.length > 0 || resolucion.estado === "ADVERTENCIA") {
-        estado = "ADVERTENCIA";
-      } else {
-        estado = "RESUELTA";
-      }
+      // OCR: minimum estado = ADVERTENCIA. Never RESUELTA — always requires review.
+      const estado: "ADVERTENCIA" | "ERROR" =
+        allErrors.length > 0 || resolucion.estado === "ERROR" ? "ERROR" : "ADVERTENCIA";
+
       filaData.push({ op, bloque, resolucion, estado, allErrors, allWarnings });
     }
   }
@@ -196,10 +171,7 @@ export async function processBolsaImageUpload(
   const totalFilas = filaData.length;
   const filasConError = filaData.filter((f) => f.estado === "ERROR").length;
   const filasConAdvertencia = filaData.filter((f) => f.estado === "ADVERTENCIA").length;
-  const filasResuelta = totalFilas - filasConError - filasConAdvertencia;
-
-  const archivoEstado = parseError ? "ERROR" : "LISTO";
-  const loteEstadoNuevo = parseError && !existingLoteId ? "FALLIDO" : "REVISION_PENDIENTE";
+  const filasResuelta = 0; // always 0 for OCR imports
 
   // ── Transacción: lote (nuevo o append) + archivo + filas ─────────────────
   let loteId: string;
@@ -209,7 +181,6 @@ export async function processBolsaImageUpload(
       let loteIdTx: string;
 
       if (existingLoteId) {
-        // Agregar al lote existente y recalcular contadores
         await tx.bolsaImportLote.update({
           where: { id: existingLoteId },
           data: {
@@ -224,7 +195,7 @@ export async function processBolsaImageUpload(
         const lote = await tx.bolsaImportLote.create({
           data: {
             id: crypto.randomUUID(),
-            estado: loteEstadoNuevo,
+            estado: "REVISION_PENDIENTE",
             origen: "IMAGEN",
             creadoPorId: userId,
             totalFilas,
@@ -240,14 +211,14 @@ export async function processBolsaImageUpload(
         data: {
           id: crypto.randomUUID(),
           loteId: loteIdTx,
-          nombreOriginal: file.name,
+          nombreOriginal: fileName,
           mimeType,
-          tamano: file.size,
-          fileHashSha256: hash,
-          estado: archivoEstado,
+          tamano: fileSize,
+          fileHashSha256: contentHash,
+          estado: "LISTO",
           origen: "IMAGEN",
           rawJson: parseResult as object,
-          errorMessage: parseError ?? null,
+          errorMessage: null,
           totalFilas,
           updatedAt: new Date(),
         },
@@ -301,27 +272,23 @@ export async function processBolsaImageUpload(
     loteId = created.loteId;
     archivoId = created.archivoId;
   } catch (e) {
-    // Race en unique hash → duplicado concurrente
     if (
       e instanceof Error &&
       "code" in e &&
       (e as { code: string }).code === "P2002"
     ) {
-      return { ok: true, estado: "DUPLICADO", ...baseResult, nombreArchivo };
+      return { ok: true, estado: "DUPLICADO", ...baseResult, nombreArchivo: fileName };
     }
     const msg = e instanceof Error ? e.message : "Error desconocido.";
     return { ok: false, error: `Error al guardar: ${msg}`, ...baseResult };
   }
 
-  const estadoFinal = parseError ? "FALLIDO" : "REVISION_PENDIENTE";
-
   return {
     ok: true,
-    estado: estadoFinal,
-    ...(parseError ? { error: sanitizeParseError(parseError) } : {}),
+    estado: "REVISION_PENDIENTE",
     loteId,
     archivoId,
-    nombreArchivo,
+    nombreArchivo: fileName,
     totalFilas,
     filasResuelta,
     filasConAdvertencia,
