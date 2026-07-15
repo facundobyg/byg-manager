@@ -180,19 +180,17 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
     expect(mocks.transaction).not.toHaveBeenCalled();
   });
 
-  // ── T-IMG-7: empty bloques array creates lote with 0 filas ──────────────
-  it("T-IMG-7: empty bloques creates lote with 0 total filas", async () => {
-    setupTransaction("lote-empty");
+  // ── T-IMG-7: empty bloques returns error — never creates an empty lote ──────
+  it("T-IMG-7: empty bloques returns error without creating a lote", async () => {
     const result = await processBolsaImageUpload(
       makeInput({
         parseResult: { bloques: [], warningsGlobales: [], erroresGlobales: [], totalOperaciones: 0 },
       }),
       "user-1",
     );
-    expect(result.ok).toBe(true);
-    expect(result.totalFilas).toBe(0);
-    expect(result.filasResuelta).toBe(0);
-    expect(mocks.createFila).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/no se detectaron operaciones/i);
+    expect(mocks.transaction).not.toHaveBeenCalled();
   });
 
   // ── T-IMG-8: all rows forced to ADVERTENCIA (never RESUELTA) ─────────────
@@ -339,6 +337,31 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
     const archivoData = mocks.createArchivo.mock.calls[0][0].data;
     expect(archivoData.tamano).toBe(500_000);
     expect(archivoData).not.toHaveProperty("rawBytes");
+  });
+
+  // ── T-IMG-18: 0 operations never returns ok:true ─────────────────────────
+  it("T-IMG-18: 0 total operations returns error — REVISION_PENDIENTE never emitted", async () => {
+    // Bloque present but all operaciones arrays empty
+    const parseResult: BolsaImageParseResult = {
+      bloques: [
+        {
+          numeroBloque: 1,
+          nombreDetectado: "Juan Perez",
+          nroComitenteDetectado: "12345",
+          operaciones: [],
+          warnings: [],
+          errors: [],
+        },
+      ],
+      warningsGlobales: [],
+      erroresGlobales: [],
+      totalOperaciones: 0,
+    };
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/no se detectaron operaciones/i);
+    expect(result.estado).toBeUndefined();
+    expect(mocks.transaction).not.toHaveBeenCalled();
   });
 
   // ── T-IMG-17: multiple bloques in single result ──────────────────────────

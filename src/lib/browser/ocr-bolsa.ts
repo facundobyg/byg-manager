@@ -349,6 +349,83 @@ export function reconstructBolsaBlocks(words: OcrWord[]): BolsaImageBloque[] {
   return blocks;
 }
 
+// ── OCR word extraction — pure, testable ──────────────────────────────────────
+
+/**
+ * Minimal Page shape needed by extractOcrWords — a subset of Tesseract.Page.
+ * Exported so tests can build mock pages without importing tesseract.js.
+ */
+export interface OcrPage {
+  blocks: Array<{
+    paragraphs: Array<{
+      lines: Array<{
+        words: Array<{
+          text: string;
+          confidence: number;
+          bbox: { x0: number; y0: number; x1: number; y1: number };
+        }>;
+      }>;
+    }>;
+  }> | null;
+  text: string;
+  tsv: string | null;
+}
+
+/**
+ * Parses Tesseract TSV output into OcrWord[].
+ * TSV columns (tab-separated, header on first line):
+ *   level page_num block_num par_num line_num word_num left top width height conf text
+ * Level 5 = word; conf < 0 = non-word structural row.
+ */
+function wordsFromTsv(tsv: string): OcrWord[] {
+  const words: OcrWord[] = [];
+  const lines = tsv.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split("\t");
+    if (parts.length < 12) continue;
+    if (parseInt(parts[0], 10) !== 5) continue;
+    const conf = parseFloat(parts[10]);
+    if (conf < 0) continue;
+    const text = parts.slice(11).join("\t").trim();
+    if (!text) continue;
+    const left = parseInt(parts[6], 10);
+    const top = parseInt(parts[7], 10);
+    const width = parseInt(parts[8], 10);
+    const height = parseInt(parts[9], 10);
+    words.push({
+      text,
+      confidence: conf,
+      bbox: { x0: left, y0: top, x1: left + width, y1: top + height },
+    });
+  }
+  return words;
+}
+
+/**
+ * Extracts OcrWord[] from a Tesseract page result.
+ * Primary source: data.blocks (full bbox per word).
+ * Fallback: data.tsv (also contains bbox per word).
+ * Returns [] if neither is available — caller should validate.
+ */
+export function extractOcrWords(page: OcrPage): OcrWord[] {
+  if (page.blocks && page.blocks.length > 0) {
+    const words = page.blocks.flatMap((block) =>
+      block.paragraphs.flatMap((para) =>
+        para.lines.flatMap((line) =>
+          line.words.map((w) => ({
+            text: w.text,
+            confidence: w.confidence,
+            bbox: w.bbox,
+          })),
+        ),
+      ),
+    );
+    if (words.length > 0) return words;
+  }
+  if (page.tsv) return wordsFromTsv(page.tsv);
+  return [];
+}
+
 // ── Browser-dependent functions ─────────────────────────────────────────────
 
 /**
@@ -443,23 +520,32 @@ export async function ocrBolsaImage(
   const canvas = await preprocessImageForOcr(file);
 
   onProgress("Leyendo texto");
-  const { data } = await worker.recognize(canvas);
+  // Request blocks+tsv explicitly — in v7 these are null unless asked for.
+  const { data } = await worker.recognize(canvas, {}, { text: true, blocks: true, tsv: true });
 
   onProgress("Armando operaciones");
-  // v7: words are nested under blocks → paragraphs → lines → words
-  const words = (data.blocks ?? []).flatMap((block) =>
-    block.paragraphs.flatMap((para) =>
-      para.lines.flatMap((line) => line.words),
-    ),
-  );
-  const ocrWords: OcrWord[] = words.map((w) => ({
-    text: w.text,
-    bbox: w.bbox,
-    confidence: w.confidence,
-  }));
+  const ocrWords = extractOcrWords(data as OcrPage);
+
+  if (ocrWords.length === 0) {
+    const hasText = data.text?.trim().length > 0;
+    if (hasText) {
+      throw new Error(
+        "El OCR leyó texto, pero no pudo reconstruir la tabla (sin coordenadas de palabras). Intentá con una imagen más nítida.",
+      );
+    }
+    throw new Error(
+      "El OCR no encontró texto en la imagen. Verificá que sea una imagen clara del detalle de operaciones.",
+    );
+  }
 
   const bloques = reconstructBolsaBlocks(ocrWords);
   const totalOperaciones = bloques.reduce((s, b) => s + b.operaciones.length, 0);
+
+  if (totalOperaciones === 0) {
+    throw new Error(
+      "El OCR procesó la imagen pero no detectó operaciones de bolsa. Verificá que la imagen corresponda a un detalle de operaciones con encabezado de tabla visible.",
+    );
+  }
 
   return { bloques, warningsGlobales: [], erroresGlobales: [], totalOperaciones };
 }

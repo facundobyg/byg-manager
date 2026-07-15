@@ -169,6 +169,16 @@ export async function processBolsaImageUpload(
   }
 
   const totalFilas = filaData.length;
+
+  // Guard: never create an empty staging lote — return a clear error instead.
+  if (totalFilas === 0) {
+    return {
+      ok: false,
+      error: "La imagen fue procesada pero no se detectaron operaciones de bolsa.",
+      ...baseResult,
+    };
+  }
+
   const filasConError = filaData.filter((f) => f.estado === "ERROR").length;
   const filasConAdvertencia = filaData.filter((f) => f.estado === "ADVERTENCIA").length;
   const filasResuelta = 0; // always 0 for OCR imports

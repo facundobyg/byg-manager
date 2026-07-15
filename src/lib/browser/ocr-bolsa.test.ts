@@ -8,7 +8,9 @@ import {
   parseDate,
   parseDataRow,
   reconstructBolsaBlocks,
+  extractOcrWords,
   type OcrWord,
+  type OcrPage,
 } from "./ocr-bolsa";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -423,5 +425,84 @@ describe("reconstructBolsaBlocks", () => {
     expect(blocks).toHaveLength(1);
     expect(blocks[0].nombreDetectado).toBeNull();
     expect(blocks[0].nroComitenteDetectado).toBeNull();
+  });
+});
+
+// ── extractOcrWords ───────────────────────────────────────────────────────────
+
+describe("extractOcrWords", () => {
+  function makeBlocksPage(words: OcrWord[]): OcrPage {
+    return {
+      text: words.map((w) => w.text).join(" "),
+      tsv: null,
+      blocks: [
+        {
+          paragraphs: [
+            {
+              lines: [
+                {
+                  words: words.map((w) => ({
+                    text: w.text,
+                    confidence: w.confidence,
+                    bbox: w.bbox,
+                  })),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("OCR-42: extracts words from blocks with correct bbox and confidence", () => {
+    const input: OcrWord[] = [
+      w("OPERACION", 10, 40, 90, 54, 95),
+      w("FECHA", 100, 40, 140, 54, 92),
+    ];
+    const page = makeBlocksPage(input);
+    const result = extractOcrWords(page);
+    expect(result).toHaveLength(2);
+    expect(result[0].text).toBe("OPERACION");
+    expect(result[0].confidence).toBe(95);
+    expect(result[0].bbox).toEqual({ x0: 10, y0: 40, x1: 90, y1: 54 });
+    expect(result[1].text).toBe("FECHA");
+  });
+
+  it("OCR-43: falls back to TSV when blocks is null", () => {
+    const tsv = [
+      "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+      "1\t1\t0\t0\t0\t0\t0\t0\t850\t1100\t-1\t",
+      "5\t1\t1\t1\t1\t1\t10\t40\t80\t14\t95.5\tOPERACION",
+      "5\t1\t1\t1\t1\t2\t100\t40\t40\t14\t91.0\tFECHA",
+    ].join("\n");
+    const page: OcrPage = { text: "OPERACION FECHA", tsv, blocks: null };
+    const result = extractOcrWords(page);
+    expect(result).toHaveLength(2);
+    expect(result[0].text).toBe("OPERACION");
+    expect(result[0].bbox).toEqual({ x0: 10, y0: 40, x1: 90, y1: 54 });
+    expect(result[0].confidence).toBeCloseTo(95.5);
+    expect(result[1].text).toBe("FECHA");
+    expect(result[1].bbox).toEqual({ x0: 100, y0: 40, x1: 140, y1: 54 });
+  });
+
+  it("OCR-44: returns [] when blocks is null and tsv is null", () => {
+    const page: OcrPage = { text: "COMPRA VENTA", tsv: null, blocks: null };
+    expect(extractOcrWords(page)).toEqual([]);
+  });
+
+  it("OCR-45: TSV filters out non-word rows (level≠5) and conf=-1 structural rows", () => {
+    const tsv = [
+      "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+      "1\t1\t0\t0\t0\t0\t0\t0\t850\t1100\t-1\t",   // page row
+      "2\t1\t1\t0\t0\t0\t0\t0\t200\t100\t-1\t",    // block row
+      "4\t1\t1\t1\t1\t0\t0\t40\t200\t14\t-1\t",    // line row
+      "5\t1\t1\t1\t1\t1\t10\t40\t80\t14\t88.0\tCOMPRA", // real word
+      "5\t1\t1\t1\t1\t2\t0\t0\t0\t0\t-1\t",        // word with conf=-1 (skip)
+    ].join("\n");
+    const page: OcrPage = { text: "COMPRA", tsv, blocks: null };
+    const result = extractOcrWords(page);
+    expect(result).toHaveLength(1);
+    expect(result[0].text).toBe("COMPRA");
   });
 });
