@@ -27,3 +27,6 @@ yarn-error.log*
 
 # claude code local settings (may contain credentials)
 .claude/
+
+# Tesseract assets generados en postinstall (copiados desde node_modules / descargados desde CDN)
+public/tesseract/

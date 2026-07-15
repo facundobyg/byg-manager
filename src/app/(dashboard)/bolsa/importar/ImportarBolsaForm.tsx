@@ -66,13 +66,13 @@ export function ImportarBolsaForm() {
       let worker: TesseractWorker | null = null;
       try {
         worker = await createOcrWorker();
-      } catch {
-        // Si no se puede crear el worker, todos los archivos fallan
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        const msg = detail
+          ? `No se pudo inicializar el OCR: ${detail}`
+          : "No se pudo inicializar el OCR. Recargá la página.";
         for (let i = 0; i < files.length; i++) {
-          actualizarEntrada(i, {
-            fase: "error",
-            msg: "No se pudo inicializar el OCR. Recargá la página.",
-          });
+          actualizarEntrada(i, { fase: "error", msg });
         }
         return;
       }

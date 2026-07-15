@@ -411,10 +411,20 @@ export async function preprocessImageForOcr(file: File): Promise<HTMLCanvasEleme
 /**
  * Creates a reusable Tesseract worker (spa+eng).
  * Call `worker.terminate()` after processing the whole batch.
+ *
+ * Assets servidos desde el mismo origen (/tesseract/) para evitar dependencias
+ * de CDN externas en producción. Los archivos se copian vía postinstall
+ * (scripts/copy-tesseract-public.mjs → public/tesseract/).
  */
 export async function createOcrWorker(): Promise<TesseractWorker> {
   const { createWorker } = await import("tesseract.js");
-  return createWorker(["spa", "eng"]);
+  return createWorker(["spa", "eng"], 1, {
+    workerPath: "/tesseract/worker.min.js",
+    corePath: "/tesseract",
+    langPath: "/tesseract/lang-data",
+    workerBlobURL: false,
+    gzip: true,
+  });
 }
 
 /**
