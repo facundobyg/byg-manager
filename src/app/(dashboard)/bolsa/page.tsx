@@ -45,7 +45,7 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
     .toLocaleDateString("es-AR", { month: "long", year: "numeric", timeZone: "UTC" });
 
   // Mesa Diaria data
-  const [mesaData, carteras, comitentes, tcMepHoyData, tcMepUltimoData, canWrite] = tab !== "historial"
+  const [mesaData, carteras, comitentes, tcMepHoyData, tcMepUltimoData, canWrite, canImportar] = tab !== "historial"
     ? await Promise.all([
         getOperacionesMesaDiaria(fecha),
         prisma.cartera.findMany({
@@ -61,8 +61,9 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
         getTcMepHoy(),
         getLastTcMep(),
         canDoAction("bolsa:concertar"),
+        canDoAction("bolsa:crear"),
       ])
-    : [null, [], [], null, null, false];
+    : [null, [], [], null, null, false, false];
 
   const tcMepDefault = tcMepHoyData?.valor ?? tcMepUltimoData?.valor ?? null;
 
@@ -101,6 +102,14 @@ export default async function BolsaPage({ searchParams }: { searchParams: Search
               {tab !== "historial" ? `Mesa diaria — ${fecha}` : "Historial de operaciones"}
             </p>
           </div>
+          {tab !== "historial" && canImportar && (
+            <Link
+              href="/bolsa/importar"
+              className="shrink-0 px-4 py-2 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+            >
+              Importar operaciones del día
+            </Link>
+          )}
         </div>
       </header>
 
