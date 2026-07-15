@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack --port 2023",
-    "build": "prisma generate && next build",
+    "build": "prisma generate && node -e \"try{require('fs').rmSync('.next/diagnostics',{recursive:true,force:true})}catch{}\" && next build",
     "postinstall": "prisma generate",
     "start": "next start",
     "lint": "next lint",

@@ -32,9 +32,10 @@ export interface ProcessBolsaResult {
     creadoEl: string;
     estadoArchivo?: string;
   };
+  advertencias?: string[];
 }
 
-interface ComitenteResolucion {
+export interface ComitenteResolucion {
   estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
   comitenteResueltoId: string | null;
   carteraResueltaId: string | null;
@@ -47,7 +48,7 @@ function normalizeNombre(s: string | null | undefined): string {
   return (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-async function resolveComitente(
+export async function resolveComitente(
   nroComitenteDetectado: string | null,
   nombreDetectado: string | null,
 ): Promise<ComitenteResolucion> {
