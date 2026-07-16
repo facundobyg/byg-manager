@@ -1,6 +1,7 @@
 "use client";
 
-import { useActionState, useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
+import Link from "next/link";
 import {
   importarBolsaExcelAction,
   importarBolsaImagenAction,
@@ -35,18 +36,46 @@ export function ImportarBolsaForm() {
   const [modo, setModo] = useState<Modo>("excel");
   const [fechaOperativa, setFechaOperativa] = useState(() => todayLocalISODate());
 
-  // ── Excel (usa useActionState) ────────────────────────────────────────────
-  const [excelState, excelDispatch, isExcelPending] = useActionState<
-    ProcessBolsaResult | null,
-    FormData
-  >(importarBolsaExcelAction, null);
+  // ── Excel ──────────────────────────────────────────────────────────────────
+  const [excelState, setExcelState] = useState<ProcessBolsaResult | null>(null);
+  const [excelPending, startExcelTransition] = useTransition();
+  const excelInputRef = useRef<HTMLInputElement>(null);
 
   // ── Imagen (OCR local + staging) ─────────────────────────────────────────
   const [imagenes, setImagenes] = useState<ImagenEntry[]>([]);
   const [loteActual, setLoteActual] = useState<string | undefined>();
+  const [imgConfirming, setImgConfirming] = useState(false);
   const [imgPending, startImgTransition] = useTransition();
   const imagenInputRef = useRef<HTMLInputElement>(null);
-  const excelInputRef = useRef<HTMLInputElement>(null);
+
+  // Cambiar archivo, fecha o pestaña limpia cualquier resultado anterior —
+  // nunca mostramos el estado de una corrida vieja mientras se prepara una nueva.
+  function limpiarResultadosAnteriores() {
+    setExcelState(null);
+    setImagenes([]);
+    setLoteActual(undefined);
+    setImgConfirming(false);
+  }
+
+  function handleCambiarModo(m: Modo) {
+    setModo(m);
+    limpiarResultadosAnteriores();
+  }
+
+  function handleFechaChange(value: string) {
+    setFechaOperativa(value);
+    limpiarResultadosAnteriores();
+  }
+
+  function handleExcelSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    setExcelState(null);
+    startExcelTransition(async () => {
+      const result = await importarBolsaExcelAction(null, fd);
+      setExcelState(result);
+    });
+  }
 
   function actualizarEntrada(idx: number, estado: ImgFase) {
     setImagenes((prev) =>
@@ -54,8 +83,20 @@ export function ImportarBolsaForm() {
     );
   }
 
-  async function procesarImagenes(e: React.FormEvent<HTMLFormElement>) {
+  function handleImagenesSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const files = Array.from(imagenInputRef.current?.files ?? []);
+    if (files.length === 0) return;
+    // Primer click: solo pedir confirmación — no procesa nada todavía.
+    setImgConfirming(true);
+  }
+
+  function cancelarConfirmacionImagenes() {
+    setImgConfirming(false);
+  }
+
+  async function confirmarProcesarImagenes() {
+    setImgConfirming(false);
     const files = Array.from(imagenInputRef.current?.files ?? []);
     if (files.length === 0) return;
 
@@ -156,6 +197,8 @@ export function ImportarBolsaForm() {
     });
   }
 
+  const cantidadImagenesSeleccionadas = imagenInputRef.current?.files?.length ?? 0;
+
   return (
     <div className="flex flex-col gap-6 max-w-xl">
       {/* Fecha de operaciones — compartida entre Excel e Imagen */}
@@ -171,7 +214,7 @@ export function ImportarBolsaForm() {
           type="date"
           required
           value={fechaOperativa}
-          onChange={(e) => setFechaOperativa(e.target.value)}
+          onChange={(e) => handleFechaChange(e.target.value)}
           className="w-fit rounded-lg border border-byg-border bg-byg-surface px-3 py-2 text-sm text-byg-text"
         />
         <p className="text-[11px] text-byg-muted">
@@ -186,7 +229,7 @@ export function ImportarBolsaForm() {
           <button
             key={m}
             type="button"
-            onClick={() => setModo(m)}
+            onClick={() => handleCambiarModo(m)}
             className={`px-4 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all ${
               modo === m
                 ? "bg-byg-accent text-white shadow-sm"
@@ -200,7 +243,7 @@ export function ImportarBolsaForm() {
 
       {/* ── Formulario Excel ─────────────────────────────────────────────── */}
       {modo === "excel" && (
-        <form action={excelDispatch} className="flex flex-col gap-4">
+        <form onSubmit={handleExcelSubmit} className="flex flex-col gap-4">
           <input type="hidden" name="fechaOperativa" value={fechaOperativa} />
           <div className="flex flex-col gap-1.5">
             <label
@@ -216,7 +259,8 @@ export function ImportarBolsaForm() {
               name="file"
               accept=".xlsx"
               required
-              disabled={isExcelPending}
+              disabled={excelPending}
+              onChange={limpiarResultadosAnteriores}
               className="block w-full text-sm text-byg-text file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-[11px] file:font-black file:bg-byg-accent file:text-white hover:file:opacity-90 file:cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             />
             <p className="text-[11px] text-byg-muted">
@@ -225,10 +269,10 @@ export function ImportarBolsaForm() {
           </div>
           <button
             type="submit"
-            disabled={isExcelPending}
+            disabled={excelPending}
             className="self-start px-5 py-2.5 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {isExcelPending ? "Procesando..." : "Importar Excel"}
+            {excelPending ? "Analizando..." : "Analizar Excel"}
           </button>
           {excelState && <ResultadoExcel result={excelState} />}
         </form>
@@ -236,7 +280,7 @@ export function ImportarBolsaForm() {
 
       {/* ── Formulario Imágenes ──────────────────────────────────────────── */}
       {modo === "imagen" && (
-        <form onSubmit={procesarImagenes} className="flex flex-col gap-4">
+        <form onSubmit={handleImagenesSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
             <label
               htmlFor="bolsa-imgs"
@@ -253,6 +297,7 @@ export function ImportarBolsaForm() {
               multiple
               required
               disabled={imgPending}
+              onChange={limpiarResultadosAnteriores}
               className="block w-full text-sm text-byg-text file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-[11px] file:font-black file:bg-byg-accent file:text-white hover:file:opacity-90 file:cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             />
             <p className="text-[11px] text-byg-muted">
@@ -263,13 +308,40 @@ export function ImportarBolsaForm() {
               La imagen se procesa localmente en tu navegador y no se envía a servicios externos.
             </p>
           </div>
-          <button
-            type="submit"
-            disabled={imgPending}
-            className="self-start px-5 py-2.5 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {imgPending ? "Procesando..." : "Importar imágenes"}
-          </button>
+
+          {!imgConfirming ? (
+            <button
+              type="submit"
+              disabled={imgPending}
+              className="self-start px-5 py-2.5 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {imgPending ? "Analizando..." : "Analizar imágenes"}
+            </button>
+          ) : (
+            <div className="rounded-xl border border-byg-accent/30 bg-byg-accent/5 p-4 flex flex-col gap-3">
+              <p className="text-sm text-byg-text">
+                Se analizarán <strong>{cantidadImagenesSeleccionadas}</strong>{" "}
+                {cantidadImagenesSeleccionadas === 1 ? "imagen" : "imágenes"} y se creará un
+                lote de revisión.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={confirmarProcesarImagenes}
+                  className="px-4 py-2 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+                >
+                  Confirmar
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelarConfirmacionImagenes}
+                  className="px-4 py-2 rounded-lg border border-byg-border text-byg-muted text-[11px] font-black uppercase tracking-wider hover:text-byg-text transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
 
           {imagenes.length > 0 && (
             <div className="flex flex-col gap-2">
@@ -277,9 +349,15 @@ export function ImportarBolsaForm() {
                 <ImagenEntryCard key={i} entry={entry} />
               ))}
               {loteActual && (
-                <p className="text-[11px] text-byg-muted font-mono mt-1">
-                  Lote: {loteActual}
-                </p>
+                <div className="flex items-center justify-between mt-1">
+                  <p className="text-[11px] text-byg-muted font-mono">Lote: {loteActual}</p>
+                  <Link
+                    href={`/bolsa/importar/${loteActual}`}
+                    className="px-4 py-2 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+                  >
+                    Revisar lote
+                  </Link>
+                </div>
               )}
             </div>
           )}
@@ -305,6 +383,7 @@ function ResultadoExcel({ result }: { result: ProcessBolsaResult }) {
 
   if (result.estado === "DUPLICADO") {
     const previoFalló = result.archivoExistente?.estadoArchivo === "ERROR";
+    const loteParaRevisar = result.loteId ?? result.archivoExistente?.loteId;
     return (
       <div
         className={`rounded-xl border p-4 ${previoFalló ? "border-red-200 bg-red-50 dark:bg-red-950/20 dark:border-red-800/40" : "border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800/40"}`}
@@ -334,12 +413,22 @@ function ResultadoExcel({ result }: { result: ProcessBolsaResult }) {
             </>
           )}
         </p>
-        {result.loteId && (
-          <p
-            className={`text-[11px] mt-2 font-mono ${previoFalló ? "text-red-600 dark:text-red-500" : "text-amber-600 dark:text-amber-500"}`}
-          >
-            Lote: {result.loteId}
-          </p>
+        {loteParaRevisar && (
+          <div className="flex items-center justify-between mt-2">
+            <p
+              className={`text-[11px] font-mono ${previoFalló ? "text-red-600 dark:text-red-500" : "text-amber-600 dark:text-amber-500"}`}
+            >
+              Lote: {loteParaRevisar}
+            </p>
+            {!previoFalló && (
+              <Link
+                href={`/bolsa/importar/${loteParaRevisar}`}
+                className="px-4 py-2 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+              >
+                Revisar lote
+              </Link>
+            )}
+          </div>
         )}
       </div>
     );
@@ -373,9 +462,15 @@ function ResultadoExcel({ result }: { result: ProcessBolsaResult }) {
         </p>
         <StatRow result={result} />
         {result.loteId && (
-          <p className="text-[11px] text-byg-muted mt-3 font-mono">
-            Lote: {result.loteId}
-          </p>
+          <div className="flex items-center justify-between mt-3">
+            <p className="text-[11px] text-byg-muted font-mono">Lote: {result.loteId}</p>
+            <Link
+              href={`/bolsa/importar/${result.loteId}`}
+              className="px-4 py-2 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+            >
+              Revisar lote
+            </Link>
+          </div>
         )}
       </div>
     );
