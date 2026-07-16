@@ -18,12 +18,15 @@ import {
   type ComitenteResolucion,
   type ProcessBolsaResult,
 } from "./process-upload";
+import { isoDateString } from "./fecha-operativa";
 
 export interface BolsaImageUploadInput {
   parseResult: BolsaImageParseResult;
   fileName: string;
   fileSize: number;
   mimeType: BolsaImageMime;
+  /** Fecha operativa del lote — reemplaza la fechaConcertacion de cada fila. */
+  fechaOperativa: Date;
 }
 
 const EMPTY_COUNTS = {
@@ -136,8 +139,9 @@ export async function processBolsaImageUpload(
   userId: string,
   existingLoteId?: string,
 ): Promise<ProcessBolsaResult> {
-  const { fileName, fileSize, mimeType } = input;
+  const { fileName, fileSize, mimeType, fechaOperativa } = input;
   const baseResult = { nombreArchivo: fileName, ...EMPTY_COUNTS };
+  const fechaOperativaISO = isoDateString(fechaOperativa);
 
   // ── Validar estructura recibida del cliente ───────────────────────────────
   let parseResult: BolsaImageParseResult;
@@ -203,8 +207,18 @@ export async function processBolsaImageUpload(
     );
     for (const rawOp of bloque.operaciones) {
       const { op, extraErrors } = sanitizeNumericFields(rawOp);
-      const allErrors = [...op.errors, ...extraErrors];
+      // La fecha operativa del lote reemplaza la fechaConcertacion de cada
+      // fila, así que "Fecha no detectada" del OCR deja de ser un error real.
+      const allErrors = [
+        ...op.errors.filter((e) => e !== "Fecha no detectada."),
+        ...extraErrors,
+      ];
       const allWarnings = [...op.warnings];
+      if (op.fechaConcertacion && op.fechaConcertacion !== fechaOperativaISO) {
+        allWarnings.push(
+          `Fecha detectada (${op.fechaConcertacion}) difiere de la fecha operativa seleccionada (${fechaOperativaISO}).`,
+        );
+      }
       if (resolucion.errorMsg) allErrors.push(resolucion.errorMsg);
 
       // OCR: minimum estado = ADVERTENCIA. Never RESUELTA — always requires review.
@@ -254,6 +268,7 @@ export async function processBolsaImageUpload(
             id: crypto.randomUUID(),
             estado: "REVISION_PENDIENTE",
             origen: "IMAGEN",
+            fechaOperativa,
             creadoPorId: userId,
             totalFilas,
             filasConAdvertencia,
@@ -305,9 +320,9 @@ export async function processBolsaImageUpload(
             cantidad: op.cantidad ?? undefined,
             precio: op.precio ?? undefined,
             montoNetoReferencia: op.montoNetoReferencia ?? undefined,
-            fechaConcertacion: op.fechaConcertacion
-              ? new Date(op.fechaConcertacion)
-              : undefined,
+            // La fila siempre usa la fecha operativa del lote, no la detectada
+            // por el OCR — esa queda solo en rawJson como referencia.
+            fechaConcertacion: fechaOperativa,
             plazo: op.plazoNormalizado ?? op.plazo ?? undefined,
             fechaVencimiento: op.fechaVencimiento
               ? new Date(op.fechaVencimiento)

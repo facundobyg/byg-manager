@@ -6,6 +6,7 @@ import {
   importarBolsaImagenAction,
   type ProcessBolsaResult,
 } from "./actions";
+import { todayLocalISODate } from "./fecha-operativa";
 import {
   ocrBolsaImage,
   createOcrWorker,
@@ -32,6 +33,7 @@ type ImagenEntry = { file: File; estado: ImgFase };
 
 export function ImportarBolsaForm() {
   const [modo, setModo] = useState<Modo>("excel");
+  const [fechaOperativa, setFechaOperativa] = useState(() => todayLocalISODate());
 
   // ── Excel (usa useActionState) ────────────────────────────────────────────
   const [excelState, excelDispatch, isExcelPending] = useActionState<
@@ -114,6 +116,7 @@ export function ImportarBolsaForm() {
             "mimeType",
             file.type === "image/png" ? "image/png" : "image/jpeg",
           );
+          fd.append("fechaOperativa", fechaOperativa);
           if (loteId) fd.append("loteId", loteId);
 
           let result: ProcessBolsaResult;
@@ -155,6 +158,28 @@ export function ImportarBolsaForm() {
 
   return (
     <div className="flex flex-col gap-6 max-w-xl">
+      {/* Fecha de operaciones — compartida entre Excel e Imagen */}
+      <div className="flex flex-col gap-1.5">
+        <label
+          htmlFor="bolsa-fecha-operativa"
+          className="text-[10px] font-black uppercase tracking-[0.25em] text-byg-muted"
+        >
+          Fecha de operaciones
+        </label>
+        <input
+          id="bolsa-fecha-operativa"
+          type="date"
+          required
+          value={fechaOperativa}
+          onChange={(e) => setFechaOperativa(e.target.value)}
+          className="w-fit rounded-lg border border-byg-border bg-byg-surface px-3 py-2 text-sm text-byg-text"
+        />
+        <p className="text-[11px] text-byg-muted">
+          Todas las operaciones del lote quedan con esta fecha de concertación. La fecha que
+          detecte el Excel o el OCR se guarda solo como referencia.
+        </p>
+      </div>
+
       {/* Selector de modo */}
       <div className="flex gap-1 p-1 rounded-xl bg-byg-border/30 self-start">
         {(["excel", "imagen"] as const).map((m) => (
@@ -176,6 +201,7 @@ export function ImportarBolsaForm() {
       {/* ── Formulario Excel ─────────────────────────────────────────────── */}
       {modo === "excel" && (
         <form action={excelDispatch} className="flex flex-col gap-4">
+          <input type="hidden" name="fechaOperativa" value={fechaOperativa} />
           <div className="flex flex-col gap-1.5">
             <label
               htmlFor="bolsa-xlsx"

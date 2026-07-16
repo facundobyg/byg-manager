@@ -37,9 +37,10 @@ function makeXlsxFile(name = "ops.xlsx", size = 1024): File {
   });
 }
 
-function makeFormData(file: File): FormData {
+function makeFormData(file: File, fechaOperativa: string | null = "2026-07-14"): FormData {
   const fd = new FormData();
   fd.set("file", file);
+  if (fechaOperativa !== null) fd.set("fechaOperativa", fechaOperativa);
   return fd;
 }
 
@@ -543,5 +544,99 @@ describe("processBolsaExcelUpload — archivo válido sin operaciones", () => {
         data: expect.objectContaining({ estado: "REVISION_PENDIENTE", totalFilas: 0 }),
       }),
     );
+  });
+});
+
+// ── Fecha operativa del lote (E4.5C) ──────────────────────────────────────────
+
+describe("processBolsaExcelUpload — fecha operativa del lote", () => {
+  it("T-U16 — Excel sin fecha operativa → error, sin tocar la DB", async () => {
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile(), null), "user-1");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/fecha de operaciones/i);
+    expect(mocks.findUniqueArchivo).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  it("T-U17 — fecha operativa anterior a hoy es aceptada y queda en el lote", async () => {
+    mocks.findManyComitente.mockResolvedValue([COMITENTE_UNO]);
+    const bloque = makeBloque({ operaciones: [makeRawOp()] });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(
+      makeFormData(makeXlsxFile(), "2020-01-15"),
+      "user-1",
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mocks.createLote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ fechaOperativa: new Date("2020-01-15T00:00:00.000Z") }),
+      }),
+    );
+  });
+
+  it("T-U18 — todas las filas reciben la fechaConcertacion del lote, no la detectada por el Excel", async () => {
+    mocks.findManyComitente.mockResolvedValue([COMITENTE_UNO]);
+    const bloque = makeBloque({
+      operaciones: [
+        makeRawOp({ fechaConcertacion: "2026-07-01" }),
+        makeRawOp({ fechaConcertacion: "2026-07-14" }),
+        makeRawOp({ fechaConcertacion: null }),
+      ],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    await processBolsaExcelUpload(makeFormData(makeXlsxFile(), "2026-07-14"), "user-1");
+
+    expect(mocks.createFila).toHaveBeenCalledTimes(3);
+    for (const call of mocks.createFila.mock.calls) {
+      expect(call[0].data.fechaConcertacion).toEqual(new Date("2026-07-14T00:00:00.000Z"));
+    }
+  });
+
+  it("T-U19 — fecha detectada distinta de la operativa agrega warning, no error", async () => {
+    mocks.findManyComitente.mockResolvedValue([COMITENTE_UNO]);
+    const bloque = makeBloque({
+      operaciones: [makeRawOp({ fechaConcertacion: "2026-07-01", errors: [] })],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(
+      makeFormData(makeXlsxFile(), "2026-07-14"),
+      "user-1",
+    );
+
+    expect(result.filasConError).toBe(0);
+    expect(result.filasConAdvertencia).toBe(1);
+
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.estado).toBe("ADVERTENCIA");
+    expect(filaData.warningsJson).toEqual(
+      expect.arrayContaining([expect.stringMatching(/fecha detectada.*difiere/i)]),
+    );
+  });
+
+  it("T-U20 — 'Fecha no detectada' del parser ya no genera error de fila cuando hay fechaOperativa", async () => {
+    mocks.findManyComitente.mockResolvedValue([COMITENTE_UNO]);
+    const bloque = makeBloque({
+      operaciones: [
+        makeRawOp({ fechaConcertacion: null, errors: ["Fecha no detectada."] }),
+      ],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(
+      makeFormData(makeXlsxFile(), "2026-07-14"),
+      "user-1",
+    );
+
+    expect(result.filasConError).toBe(0);
+    expect(result.filasResuelta).toBe(1);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.estado).toBe("RESUELTA");
+    expect(filaData.erroresJson).toBeUndefined();
+    expect(filaData.fechaConcertacion).toEqual(new Date("2026-07-14T00:00:00.000Z"));
   });
 });

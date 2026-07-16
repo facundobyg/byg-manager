@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { processBolsaExcelUpload, type ProcessBolsaResult } from "./process-upload";
 import { processBolsaImageUpload } from "./process-upload-image";
+import { parseFechaOperativa } from "./fecha-operativa";
 import type { BolsaImageParseResult, BolsaImageMime } from "@/lib/importers/bolsa-image/types";
 
 export type { ProcessBolsaResult } from "./process-upload";
@@ -75,6 +76,15 @@ export async function importarBolsaImagenAction(
     return { ok: false, error: "Datos de imagen inválidos.", ...EMPTY };
   }
 
+  const fechaOperativa = parseFechaOperativa(formData.get("fechaOperativa"));
+  if (!fechaOperativa) {
+    return {
+      ok: false,
+      error: "La fecha de operaciones es obligatoria y debe tener formato válido (YYYY-MM-DD).",
+      ...EMPTY,
+    };
+  }
+
   let parseResult: BolsaImageParseResult;
   try {
     parseResult = JSON.parse(resultJson) as BolsaImageParseResult;
@@ -94,6 +104,7 @@ export async function importarBolsaImagenAction(
       fileName,
       fileSize: Number(fileSize) || 0,
       mimeType,
+      fechaOperativa,
     },
     session.user.id,
     existingLoteId,

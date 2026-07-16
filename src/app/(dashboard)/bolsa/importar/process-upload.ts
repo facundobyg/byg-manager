@@ -9,6 +9,7 @@ import { prisma } from "@/lib/prisma";
 import { parseBolsaExcel } from "@/lib/importers/bolsa-excel/parser";
 import type { BolsaExcelBloque, BolsaExcelRawOp } from "@/lib/importers/bolsa-excel/types";
 import type { TipoOpBolsa } from "@prisma/client";
+import { parseFechaOperativa, isoDateString } from "./fecha-operativa";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
 
@@ -165,6 +166,17 @@ export async function processBolsaExcelUpload(
     return { ok: false, error: `El archivo supera los 5 MB permitidos.`, ...baseResult };
   }
 
+  // ── Fecha operativa del lote (obligatoria) ────────────────────────────────────
+  const fechaOperativa = parseFechaOperativa(formData.get("fechaOperativa"));
+  if (!fechaOperativa) {
+    return {
+      ok: false,
+      error: "La fecha de operaciones es obligatoria y debe tener formato válido (YYYY-MM-DD).",
+      ...baseResult,
+    };
+  }
+  const fechaOperativaISO = isoDateString(fechaOperativa);
+
   const buf = Buffer.from(await file.arrayBuffer());
 
   // ── Deduplicación SHA-256 ─────────────────────────────────────────────────────
@@ -204,6 +216,7 @@ export async function processBolsaExcelUpload(
             id: crypto.randomUUID(),
             estado: "FALLIDO",
             origen: "EXCEL",
+            fechaOperativa,
             creadoPorId: userId,
             updatedAt: new Date(),
           },
@@ -253,8 +266,15 @@ export async function processBolsaExcelUpload(
   for (const bloque of parseResult.bloques) {
     const resolucion = await resolveComitente(bloque.nroComitenteDetectado, bloque.nombreDetectado);
     for (const op of bloque.operaciones) {
-      const allErrors = [...op.errors];
+      // La fecha operativa del lote reemplaza la fechaConcertacion de cada fila,
+      // así que "Fecha no detectada" del parser deja de ser un error real.
+      const allErrors = op.errors.filter((e) => e !== "Fecha no detectada.");
       const allWarnings = [...op.warnings];
+      if (op.fechaConcertacion && op.fechaConcertacion !== fechaOperativaISO) {
+        allWarnings.push(
+          `Fecha detectada (${op.fechaConcertacion}) difiere de la fecha operativa seleccionada (${fechaOperativaISO}).`,
+        );
+      }
       if (resolucion.errorMsg) allErrors.push(resolucion.errorMsg);
 
       let estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
@@ -285,6 +305,7 @@ export async function processBolsaExcelUpload(
           id: crypto.randomUUID(),
           estado: "REVISION_PENDIENTE",
           origen: "EXCEL",
+          fechaOperativa,
           creadoPorId: userId,
           totalFilas,
           filasConAdvertencia,
@@ -336,7 +357,9 @@ export async function processBolsaExcelUpload(
             cantidad: op.cantidad ?? undefined,
             precio: op.precio ?? undefined,
             montoNetoReferencia: op.montoNetoReferencia ?? undefined,
-            fechaConcertacion: op.fechaConcertacion ? new Date(op.fechaConcertacion) : undefined,
+            // La fila siempre usa la fecha operativa del lote, no la detectada
+            // por el parser — esa queda solo en rawJson como referencia.
+            fechaConcertacion: fechaOperativa,
             plazo: op.plazoNormalizado ?? op.plazo ?? undefined,
             fechaVencimiento: op.fechaVencimiento ? new Date(op.fechaVencimiento) : undefined,
             tasaCaucion: op.tasaCaucion ?? undefined,

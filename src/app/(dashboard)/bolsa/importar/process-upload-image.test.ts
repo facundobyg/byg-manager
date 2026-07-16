@@ -68,12 +68,22 @@ function makeParseResult(nOps = 1): BolsaImageParseResult {
   };
 }
 
-function makeInput(overrides?: Partial<{ parseResult: BolsaImageParseResult; fileName: string; fileSize: number }>) {
+const FECHA_OPERATIVA_DEFAULT = new Date("2024-07-10T00:00:00.000Z");
+
+function makeInput(
+  overrides?: Partial<{
+    parseResult: BolsaImageParseResult;
+    fileName: string;
+    fileSize: number;
+    fechaOperativa: Date;
+  }>,
+) {
   return {
     parseResult: overrides?.parseResult ?? makeParseResult(1),
     fileName: overrides?.fileName ?? "ops.jpg",
     fileSize: overrides?.fileSize ?? 1024,
     mimeType: "image/jpeg" as const,
+    fechaOperativa: overrides?.fechaOperativa ?? FECHA_OPERATIVA_DEFAULT,
   };
 }
 
@@ -108,7 +118,13 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
   // ── T-IMG-1: invalid parseResult structure ────────────────────────────────
   it("T-IMG-1: returns error for invalid parseResult structure", async () => {
     const result = await processBolsaImageUpload(
-      { parseResult: { bloques: "wrong" } as unknown as BolsaImageParseResult, fileName: "x.jpg", fileSize: 0, mimeType: "image/jpeg" },
+      {
+        parseResult: { bloques: "wrong" } as unknown as BolsaImageParseResult,
+        fileName: "x.jpg",
+        fileSize: 0,
+        mimeType: "image/jpeg",
+        fechaOperativa: FECHA_OPERATIVA_DEFAULT,
+      },
       "user-1",
     );
     expect(result.ok).toBe(false);
@@ -241,7 +257,13 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
   it("T-IMG-12: PNG mimeType is stored in archivo", async () => {
     setupTransaction();
     await processBolsaImageUpload(
-      { parseResult: makeParseResult(1), fileName: "screenshot.png", fileSize: 2048, mimeType: "image/png" },
+      {
+        parseResult: makeParseResult(1),
+        fileName: "screenshot.png",
+        fileSize: 2048,
+        mimeType: "image/png",
+        fechaOperativa: FECHA_OPERATIVA_DEFAULT,
+      },
       "user-1",
     );
     const archivoData = mocks.createArchivo.mock.calls[0][0].data;
@@ -329,6 +351,7 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
         fileName: "ops.jpg",
         fileSize: 500_000,
         mimeType: "image/jpeg",
+        fechaOperativa: FECHA_OPERATIVA_DEFAULT,
       },
       "user-1",
     );
@@ -473,5 +496,62 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
     expect(result.error).not.toMatch(/numeric field overflow/i);
     expect(result.error).not.toMatch(/postgres/i);
     expect(result.error).not.toMatch(/tasaCaucion/i);
+  });
+
+  // ── Fecha operativa del lote (E4.5C) ─────────────────────────────────────
+  // La validación de "obligatoria"/"formato inválido" para imágenes vive en
+  // actions.ts (parseFechaOperativa) — cubierta en actions.test.ts (ACT-1/2).
+
+  it("T-IMG-22: todas las filas reciben la fechaConcertacion del lote, no la detectada por el OCR", async () => {
+    const parseResult = makeParseResult(2);
+    parseResult.bloques[0].operaciones[0].fechaConcertacion = "2024-06-01";
+    parseResult.bloques[0].operaciones[1].fechaConcertacion = null;
+    setupTransaction();
+
+    await processBolsaImageUpload(
+      makeInput({ parseResult, fechaOperativa: new Date("2024-07-10T00:00:00.000Z") }),
+      "user-1",
+    );
+
+    expect(mocks.createFila).toHaveBeenCalledTimes(2);
+    for (const call of mocks.createFila.mock.calls) {
+      expect(call[0].data.fechaConcertacion).toEqual(new Date("2024-07-10T00:00:00.000Z"));
+    }
+  });
+
+  it("T-IMG-23: fecha detectada por OCR distinta de la operativa agrega warning, no error", async () => {
+    const parseResult = makeParseResult(1);
+    parseResult.bloques[0].operaciones[0].fechaConcertacion = "2024-06-01";
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(
+      makeInput({ parseResult, fechaOperativa: new Date("2024-07-10T00:00:00.000Z") }),
+      "user-1",
+    );
+
+    // La fila sigue siendo ADVERTENCIA mínima (OCR nunca es RESUELTA), pero
+    // NO pasa a ERROR solo por la diferencia de fecha.
+    expect(result.filasConError).toBe(0);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.estado).toBe("ADVERTENCIA");
+    expect(filaData.warningsJson).toEqual(
+      expect.arrayContaining([expect.stringMatching(/fecha detectada.*difiere/i)]),
+    );
+  });
+
+  it("T-IMG-24: 'Fecha no detectada' del OCR ya no marca la fila ERROR cuando hay fechaOperativa", async () => {
+    const parseResult = makeParseResult(1);
+    parseResult.bloques[0].operaciones[0].fechaConcertacion = null;
+    parseResult.bloques[0].operaciones[0].errors = ["Fecha no detectada."];
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(result.filasConError).toBe(0);
+    expect(result.filasConAdvertencia).toBe(1);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.estado).toBe("ADVERTENCIA");
+    expect(filaData.erroresJson).toBeUndefined();
+    expect(filaData.fechaConcertacion).toEqual(FECHA_OPERATIVA_DEFAULT);
   });
 });
