@@ -53,6 +53,52 @@ function validateParseResult(r: unknown): BolsaImageParseResult {
   return r as BolsaImageParseResult;
 }
 
+// Precisión/escala real de las columnas Decimal de BolsaImportFila (ver
+// prisma/schema.prisma). Un valor que no entra ahí haría fallar el INSERT
+// con "numeric field overflow" — se valida y descarta acá, antes de Prisma.
+const DECIMAL_LIMITS: Partial<
+  Record<keyof BolsaImageRawOp, { precision: number; scale: number; label: string }>
+> = {
+  cantidad: { precision: 18, scale: 6, label: "Cantidad" },
+  precio: { precision: 18, scale: 6, label: "Precio" },
+  montoNetoReferencia: { precision: 18, scale: 2, label: "Monto neto" },
+  tasaCaucion: { precision: 8, scale: 4, label: "Tasa de caución" },
+  montoCobrarReferencia: { precision: 18, scale: 2, label: "Monto a cobrar" },
+  montoPagarReferencia: { precision: 18, scale: 2, label: "Monto a pagar" },
+};
+
+function fitsDecimal(value: string, precision: number, scale: number): boolean {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return false;
+  const maxIntDigits = precision - scale;
+  const max = Math.pow(10, maxIntDigits) - Math.pow(10, -scale);
+  return Math.abs(n) <= max;
+}
+
+/**
+ * Valida cantidad/precio/montos/tasa contra la precisión real de sus
+ * columnas Decimal antes de construir el `data` de Prisma. Cualquier campo
+ * fuera de rango se anula y queda registrado como error de la fila —
+ * nunca se deja pasar un valor que Prisma vaya a rechazar.
+ */
+function sanitizeNumericFields(op: BolsaImageRawOp): { op: BolsaImageRawOp; extraErrors: string[] } {
+  const extraErrors: string[] = [];
+  const sanitized: BolsaImageRawOp = { ...op };
+
+  for (const [key, limit] of Object.entries(DECIMAL_LIMITS) as Array<
+    [keyof BolsaImageRawOp, { precision: number; scale: number; label: string }]
+  >) {
+    const value = sanitized[key];
+    if (typeof value !== "string" || value === "") continue;
+    if (!fitsDecimal(value, limit.precision, limit.scale)) {
+      extraErrors.push(`${limit.label} fuera de rango válido y fue descartado.`);
+      (sanitized as unknown as Record<string, unknown>)[key] = null;
+    }
+  }
+
+  return { op: sanitized, extraErrors };
+}
+
 function mapOpBaseImg(op: BolsaImageRawOp): TipoOpBolsa | null {
   if (op.operacionBase === "CAUCION_COLOCADORA") return "CAUCION_COLOCADORA";
   if (op.operacionBase === "CAUCION_TOMADORA") return "CAUCION_TOMADORA";
@@ -155,8 +201,9 @@ export async function processBolsaImageUpload(
       bloque.nroComitenteDetectado,
       bloque.nombreDetectado,
     );
-    for (const op of bloque.operaciones) {
-      const allErrors = [...op.errors];
+    for (const rawOp of bloque.operaciones) {
+      const { op, extraErrors } = sanitizeNumericFields(rawOp);
+      const allErrors = [...op.errors, ...extraErrors];
       const allWarnings = [...op.warnings];
       if (resolucion.errorMsg) allErrors.push(resolucion.errorMsg);
 
@@ -289,8 +336,15 @@ export async function processBolsaImageUpload(
     ) {
       return { ok: true, estado: "DUPLICADO", ...baseResult, nombreArchivo: fileName };
     }
-    const msg = e instanceof Error ? e.message : "Error desconocido.";
-    return { ok: false, error: `Error al guardar: ${msg}`, ...baseResult };
+    // Nunca exponer el mensaje crudo de Prisma/Postgres a la UI — puede
+    // incluir detalles de esquema o datos. El detalle técnico queda solo
+    // en el log del servidor para diagnóstico.
+    console.error("[processBolsaImageUpload] Error al guardar filas de staging:", e);
+    return {
+      ok: false,
+      error: "No se pudo guardar una de las filas detectadas.",
+      ...baseResult,
+    };
   }
 
   return {

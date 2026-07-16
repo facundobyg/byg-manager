@@ -25,7 +25,9 @@ type ColKey =
   | "MONTO"
   | "PLAZO"
   | "VTO"
-  | "TASA";
+  | "TASA"
+  | "MONTO_INICIAL"
+  | "MONTO_COBRAR_PAGAR";
 
 type ColMap = Partial<Record<ColKey, { cx: number }>>;
 
@@ -105,12 +107,63 @@ function buildColMapFromRow(row: OcrWord[]): { colMap: ColMap; hits: number } {
 }
 
 /**
+ * Cauciones print two distinct "MONTO" columns — "MONTO COL./TOM." (monto
+ * colocado/tomado, the principal) and "MONTO A COBRAR/PAGAR" (settlement
+ * amount incl. interest). The generic keyword matcher above only keeps the
+ * first "MONTO" it sees, so the second one is invisible to it — leaving its
+ * data column unmapped and at risk of bleeding into TASA or elsewhere.
+ * This scans for MONTO-family header words and disambiguates each by the
+ * qualifier words immediately to its right, stopping as soon as another
+ * recognized column keyword appears so the bounding box never bleeds into
+ * the next real column.
+ */
+function detectCaucionMontoColumns(
+  row: OcrWord[],
+): Partial<Record<"MONTO_INICIAL" | "MONTO_COBRAR_PAGAR", { cx: number }>> {
+  const sorted = [...row].sort((a, b) => a.bbox.x0 - b.bbox.x0);
+  const result: Partial<Record<"MONTO_INICIAL" | "MONTO_COBRAR_PAGAR", { cx: number }>> = {};
+
+  for (let i = 0; i < sorted.length; i++) {
+    const word = sorted[i];
+    if (!/^(MONTO|NETO|IMPORTE)$/i.test(word.text)) continue;
+
+    const span = [word];
+    let j = i + 1;
+    while (j < sorted.length && span.length <= 2) {
+      const next = sorted[j];
+      const isOtherKeyword = COL_KEYWORDS.some(({ patterns }) => patterns.some((p) => p.test(next.text)));
+      if (isOtherKeyword) break;
+      span.push(next);
+      j++;
+    }
+
+    const qualifierText = span
+      .slice(1)
+      .map((w) => w.text)
+      .join(" ")
+      .toUpperCase();
+    const x0 = Math.min(...span.map((w) => w.bbox.x0));
+    const x1 = Math.max(...span.map((w) => w.bbox.x1));
+    const cx = (x0 + x1) / 2;
+
+    if (/COL|TOM/.test(qualifierText) && !result.MONTO_INICIAL) {
+      result.MONTO_INICIAL = { cx };
+    } else if (/COBRAR|PAGAR/.test(qualifierText) && !result.MONTO_COBRAR_PAGAR) {
+      result.MONTO_COBRAR_PAGAR = { cx };
+    }
+  }
+
+  return result;
+}
+
+/**
  * Detects if a row is a table header (3+ recognized column keywords).
  * Returns the column map or null.
  */
 export function detectTableHeader(row: OcrWord[]): ColMap | null {
   const { colMap, hits } = buildColMapFromRow(row);
-  return hits >= 3 ? colMap : null;
+  if (hits < 3) return null;
+  return { ...colMap, ...detectCaucionMontoColumns(row) };
 }
 
 /**
@@ -216,6 +269,16 @@ function normalizePlazoOcr(s: string | null): string | null {
   if (/^72\s*H/.test(u)) return "72HS";
   if (/^\d+$/.test(u)) return u; // caución days
   return s.trim();
+}
+
+// Decimal(8,4) column capacity in BolsaImportFila.tasaCaucion — 4 integer
+// digits + 4 decimals. Anything beyond this can only be a misassigned monto,
+// never a real caución rate, so it must be rejected before it reaches Prisma.
+const TASA_CAUCION_MAX = 9999.9999;
+
+function isTasaCaucionValid(value: string): boolean {
+  const n = Number(value);
+  return Number.isFinite(n) && Math.abs(n) <= TASA_CAUCION_MAX;
 }
 
 function detectOpBase(text: string): BolsaImageOpBase {
@@ -335,9 +398,27 @@ export function parseDataRow(
   const plazoRaw = get("PLAZO") || null;
   const plazoNorm = normalizePlazoOcr(plazoRaw);
 
+  const isCaucion = operacionBase === "CAUCION_COLOCADORA" || operacionBase === "CAUCION_TOMADORA";
+
+  // Cauciones report their principal under "MONTO COL./TOM." rather than the
+  // CANTIDAD column used by compra/venta — fall back to CANTIDAD when the
+  // dedicated column wasn't detected (e.g. older/simpler caución layouts).
+  const montoInicialText = get("MONTO_INICIAL");
+  const cantidad = parseArgNumber(isCaucion && montoInicialText ? montoInicialText : get("CANTIDAD"));
+
+  const montoCobrarPagarValue = isCaucion ? parseArgNumber(get("MONTO_COBRAR_PAGAR")) : null;
+
   const errors: string[] = [];
   if (!fechaConcertacion) errors.push("Fecha no detectada.");
   if (operacionBase === "DESCONOCIDA") errors.push("Tipo de operación no reconocido.");
+
+  // Never let a stray monto (or any corrupted/out-of-range value) reach
+  // Prisma's Decimal(8,4) tasaCaucion column — null it out and flag the row.
+  let tasaCaucion = parseArgNumber(get("TASA"));
+  if (tasaCaucion !== null && !isTasaCaucionValid(tasaCaucion)) {
+    errors.push("Tasa de caución fuera de rango válido.");
+    tasaCaucion = null;
+  }
 
   return {
     numeroFila: rowNum,
@@ -345,16 +426,16 @@ export function parseDataRow(
     operacionBase,
     fechaConcertacion,
     ticker,
-    cantidad: parseArgNumber(get("CANTIDAD")),
+    cantidad,
     precio: parseArgNumber(get("PRECIO")),
     monedaDetectada: null,
     montoNetoReferencia: parseArgNumber(get("MONTO")),
     plazo: plazoRaw,
     plazoNormalizado: plazoNorm,
     fechaVencimiento: parseDate(get("VTO")),
-    tasaCaucion: parseArgNumber(get("TASA")),
-    montoCobrarReferencia: null,
-    montoPagarReferencia: null,
+    tasaCaucion,
+    montoCobrarReferencia: operacionBase === "CAUCION_COLOCADORA" ? montoCobrarPagarValue : null,
+    montoPagarReferencia: operacionBase === "CAUCION_TOMADORA" ? montoCobrarPagarValue : null,
     instrumentoHint: null,
     warnings: [],
     errors,

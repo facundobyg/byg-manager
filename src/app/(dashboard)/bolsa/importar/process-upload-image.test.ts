@@ -404,4 +404,74 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
     expect(result.totalFilas).toBe(3);
     expect(mocks.createFila).toHaveBeenCalledTimes(3);
   });
+
+  // ── T-IMG-19: out-of-range tasaCaucion never reaches prisma.create ───────
+  it("T-IMG-19: a tasaCaucion that doesn't fit Decimal(8,4) is nulled before Prisma, row marked ERROR", async () => {
+    const parseResult: BolsaImageParseResult = {
+      bloques: [
+        {
+          numeroBloque: 1,
+          nombreDetectado: "Daniel",
+          nroComitenteDetectado: "11538",
+          operaciones: [
+            {
+              numeroFila: 1,
+              rawOperacion: "CAUCION COLOCADORA",
+              operacionBase: "CAUCION_COLOCADORA",
+              fechaConcertacion: "2026-07-14",
+              ticker: null,
+              cantidad: "87440200.00",
+              precio: null,
+              monedaDetectada: null,
+              montoNetoReferencia: null,
+              plazo: null,
+              plazoNormalizado: null,
+              fechaVencimiento: "2026-07-15",
+              // Corrupted upstream value — a monto that leaked into tasaCaucion.
+              tasaCaucion: "87440200.00",
+              montoCobrarReferencia: "87492602.86",
+              montoPagarReferencia: null,
+              instrumentoHint: null,
+              warnings: [],
+              errors: [],
+            },
+          ],
+          warnings: [],
+          errors: [],
+        },
+      ],
+      warningsGlobales: [],
+      erroresGlobales: [],
+      totalOperaciones: 1,
+    };
+    setupTransaction();
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(result.ok).toBe(true);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.tasaCaucion).toBeUndefined();
+    expect(filaData.estado).toBe("ERROR");
+    expect(filaData.erroresJson).toEqual(
+      expect.arrayContaining([expect.stringMatching(/tasa de caución fuera de rango/i)]),
+    );
+    // The valid fields must pass through untouched.
+    expect(filaData.cantidad).toBe("87440200.00");
+    expect(filaData.montoCobrarReferencia).toBe("87492602.86");
+  });
+
+  // ── T-IMG-20: Prisma/Postgres errors are never exposed verbatim to the UI ─
+  it("T-IMG-20: a raw Prisma/Postgres error is sanitized before reaching result.error", async () => {
+    mocks.transaction.mockRejectedValue(
+      new Error(
+        'invalid input syntax for type numeric: "87440200.00" — numeric field overflow in column "tasaCaucion" (Postgres)',
+      ),
+    );
+    const result = await processBolsaImageUpload(makeInput(), "user-1");
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("No se pudo guardar una de las filas detectadas.");
+    expect(result.error).not.toMatch(/numeric field overflow/i);
+    expect(result.error).not.toMatch(/postgres/i);
+    expect(result.error).not.toMatch(/tasaCaucion/i);
+  });
 });

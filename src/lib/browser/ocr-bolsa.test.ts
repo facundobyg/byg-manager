@@ -506,6 +506,97 @@ describe("reconstructBolsaBlocks", () => {
   });
 });
 
+// ── Caución column mapping (MONTO COL./TOM. vs MONTO A COBRAR/PAGAR) ────────
+//
+// Real-world bug: cauciones print OPERACIÓN | FECHA CONC. | VTO |
+// MONTO COL./TOM. | TASA | MONTO A COBRAR/PAGAR. The generic header matcher
+// only keeps the FIRST "MONTO" it sees, so the second "MONTO" column (monto a
+// cobrar/pagar) had no dedicated slot and its data bled into TASA, producing
+// a Decimal(8,4) numeric field overflow when persisted.
+
+describe("caución column mapping", () => {
+  // Header row: OPERACION | FECHA | VTO | MONTO COL./TOM. | TASA | MONTO A COBRAR/PAGAR
+  const caucionHeaderRow: OcrWord[] = [
+    w("OPERACION", 10, 40, 90, 54),
+    w("FECHA", 110, 40, 160, 54),
+    w("VTO", 180, 40, 215, 54),
+    w("MONTO", 235, 40, 275, 54),
+    w("COL./TOM.", 278, 40, 320, 54),
+    w("TASA", 340, 40, 380, 54),
+    w("MONTO", 400, 40, 440, 54),
+    w("A", 443, 40, 455, 54),
+    w("COBRAR/PAGAR", 458, 40, 520, 54),
+  ];
+
+  it("OCR-48: detectTableHeader splits the two MONTO columns into MONTO_INICIAL and MONTO_COBRAR_PAGAR", () => {
+    const colMap = detectTableHeader(caucionHeaderRow);
+    expect(colMap).not.toBeNull();
+    expect(colMap?.MONTO_INICIAL).toBeDefined();
+    expect(colMap?.MONTO_COBRAR_PAGAR).toBeDefined();
+    // MONTO_INICIAL must stay clear of TASA's column, and MONTO_COBRAR_PAGAR of MONTO_INICIAL's.
+    expect(colMap!.MONTO_INICIAL!.cx).toBeLessThan(colMap!.TASA!.cx);
+    expect(colMap!.TASA!.cx).toBeLessThan(colMap!.MONTO_COBRAR_PAGAR!.cx);
+  });
+
+  // Real fixture reported in E4.5B: DANIEL/11538, CAUCION_COLOCADORA.
+  it("OCR-49: real caución fixture — monto colocado never lands in tasaCaucion, montoCobrarReferencia parsed correctly", () => {
+    const dataRow: OcrWord[] = [
+      w("CAUCION", 10, 70, 60, 84),
+      w("COLOCADORA", 55, 70, 105, 84),
+      w("14/07/2026", 115, 70, 175, 84),
+      w("15/07/2026", 180, 70, 240, 84),
+      w("87.440.200,00", 250, 70, 330, 84),
+      w("22,90", 345, 70, 375, 84),
+      w("87.492.602,86", 430, 70, 510, 84),
+    ];
+    const colMap = detectTableHeader(caucionHeaderRow)!;
+    const op = parseDataRow(dataRow, colMap, 1);
+
+    expect(op.operacionBase).toBe("CAUCION_COLOCADORA");
+    expect(op.fechaConcertacion).toBe("2026-07-14");
+    expect(op.fechaVencimiento).toBe("2026-07-15");
+    expect(op.cantidad).toBe("87440200.00");
+    expect(op.tasaCaucion).toBe("22.90");
+    expect(op.montoCobrarReferencia).toBe("87492602.86");
+    expect(op.montoPagarReferencia).toBeNull();
+    expect(op.errors).toHaveLength(0);
+  });
+
+  it("OCR-50: a monto misassigned to TASA is rejected as out-of-range, never reaches tasaCaucion", () => {
+    // Simulates a degraded column map (e.g. fallback path) where TASA is the
+    // only recognized column near a large monto value — the safety net must
+    // null it out and flag an error regardless of how it got there.
+    const degradedColMap = {
+      OPERACION: { cx: 30 },
+      FECHA: { cx: 130 },
+      TASA: { cx: 300 },
+    };
+    const row: OcrWord[] = [
+      w("CAUCION", 10, 10, 60, 24),
+      w("COLOCADORA", 65, 10, 145, 24),
+      w("14/07/2026", 100, 10, 165, 24),
+      w("87.440.200,00", 275, 10, 355, 24),
+    ];
+    const op = parseDataRow(row, degradedColMap, 1);
+
+    expect(op.tasaCaucion).toBeNull();
+    expect(op.errors).toContain("Tasa de caución fuera de rango válido.");
+  });
+
+  it("OCR-51: a valid small tasa (22,90%) is never rejected", () => {
+    const colMap = { OPERACION: { cx: 30 }, FECHA: { cx: 130 }, TASA: { cx: 300 } };
+    const row: OcrWord[] = [
+      w("CAUCION", 10, 10, 60, 24),
+      w("COLOCADORA", 65, 10, 145, 24),
+      w("14/07/2026", 100, 10, 165, 24),
+      w("22,90", 280, 10, 320, 24),
+    ];
+    const op = parseDataRow(row, colMap, 1);
+    expect(op.tasaCaucion).toBe("22.90");
+    expect(op.errors).not.toContain("Tasa de caución fuera de rango válido.");
+  });
+});
+
 // ── extractOcrWords ───────────────────────────────────────────────────────────
 
 describe("extractOcrWords", () => {
