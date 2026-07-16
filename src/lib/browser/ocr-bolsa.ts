@@ -513,12 +513,23 @@ export function reconstructBolsaBlocks(words: OcrWord[]): BolsaImageBloque[] {
 
     // No column map yet (missing/unreadable header) — a row that starts a
     // COMPRA/VENTA/CAUCION operation directly is still a valid candidate.
-    // Reuse the last known header's columns, or reconstruct one positionally.
     if (isOpCandidateRow(row)) {
-      currentColMap = lastGoodColMap ?? positionalColMapFromRow(row);
-      lastGoodColMap = currentColMap;
       rowNum++;
-      currentOps.push(parseDataRow(row, currentColMap, rowNum));
+      if (lastGoodColMap !== null) {
+        // A real header was found earlier (this table or a previous one) —
+        // its columns are table-wide and safe to reuse across rows.
+        currentColMap = lastGoodColMap;
+        currentOps.push(parseDataRow(row, currentColMap, rowNum));
+      } else {
+        // No real header was ever found — build a one-off positional guess
+        // from THIS row's own word positions. This must NOT be cached as
+        // currentColMap/lastGoodColMap: it only reflects where this row's
+        // own words happen to sit, and a differently-shaped row (e.g. a
+        // caución row followed by compra/venta rows, or vice versa) reused
+        // under it would have its dates/montos misassigned by nearest-x
+        // distance to the wrong columns entirely.
+        currentOps.push(parseDataRow(row, positionalColMapFromRow(row), rowNum));
+      }
     }
   }
 

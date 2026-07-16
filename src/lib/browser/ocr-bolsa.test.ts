@@ -597,6 +597,71 @@ describe("caución column mapping", () => {
   });
 });
 
+// ── Positional-fallback caching regression (real lote dca3f66b…, 13/13 ERROR) ─
+//
+// Root cause found auditing lote dca3f66b-c954-4aea-9266-c991381d6206: when no
+// real header is ever detected, reconstructBolsaBlocks used to build a
+// positional column map from the FIRST op-candidate row and cache it as
+// currentColMap/lastGoodColMap for every row that followed — including rows
+// with a completely different shape (a 2-word "CAUCION COLOCADORA" label vs a
+// 1-word "COMPRA" label, different column counts). Reusing one row's word
+// positions as another row's columns glued dates into OPERACION (→ "Fecha no
+// detectada" on every row) and, because the "known column map" branch accepts
+// ANY row unconditionally, swept non-operational lines in as phantom
+// DESCONOCIDA operations too.
+
+describe("positional fallback must not leak across differently-shaped rows", () => {
+  it("OCR-52: a caución row's ad hoc column map must not corrupt a later, differently-shaped compra row, and non-operational rows must never become phantom operations", () => {
+    const words: OcrWord[] = [
+      // Row 1: CAUCION COLOCADORA — no header anywhere in this document.
+      w("CAUCION", 10, 10, 60, 24),
+      w("COLOCADORA", 65, 10, 145, 24),
+      w("14/07/2026", 160, 10, 220, 24),
+      w("87.440.200,00", 235, 10, 320, 24),
+      w("22,90", 335, 10, 375, 24),
+      w("87.492.602,86", 390, 10, 470, 24),
+
+      // Row 2: a non-operational line — must never become a phantom "operation".
+      w("Saldo", 10, 40, 60, 54),
+      w("anterior", 65, 40, 125, 54),
+      w("0,00", 130, 40, 170, 54),
+
+      // Row 3: COMPRA — a single-word label and a different trailing column
+      // count than row 1, i.e. structurally unrelated to it.
+      w("COMPRA", 10, 70, 60, 84),
+      w("15/07/2026", 70, 70, 130, 84),
+      w("AL30", 140, 70, 180, 84),
+      w("10.000", 190, 70, 230, 84),
+      w("65,25", 240, 70, 280, 84),
+      w("652.500", 290, 70, 330, 84),
+      w("48HS", 340, 70, 380, 84),
+    ];
+
+    const blocks = reconstructBolsaBlocks(words);
+    const ops = blocks.flatMap((b) => b.operaciones);
+
+    // Only the 2 real operations must survive — "Saldo anterior" must never
+    // surface as a phantom DESCONOCIDA operation.
+    expect(ops).toHaveLength(2);
+    expect(ops.every((op) => op.operacionBase !== "DESCONOCIDA")).toBe(true);
+
+    const [caucion, compra] = ops;
+
+    expect(caucion.operacionBase).toBe("CAUCION_COLOCADORA");
+    expect(caucion.fechaConcertacion).toBe("2026-07-14");
+    expect(caucion.errors).not.toContain("Fecha no detectada.");
+
+    // The date must land in its own FECHA slot, not get glued into OPERACION.
+    expect(compra.operacionBase).toBe("COMPRA");
+    expect(compra.rawOperacion).not.toMatch(/\d{2}\/\d{2}\/\d{4}/);
+    expect(compra.ticker).toBe("AL30");
+    expect(compra.fechaConcertacion).toBe("2026-07-15");
+    expect(compra.errors).not.toContain("Fecha no detectada.");
+    expect(compra.cantidad).toBe("10000");
+    expect(compra.precio).toBe("65.25");
+  });
+});
+
 // ── extractOcrWords ───────────────────────────────────────────────────────────
 
 describe("extractOcrWords", () => {
