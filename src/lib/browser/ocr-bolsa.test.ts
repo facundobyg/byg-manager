@@ -10,9 +10,20 @@ import {
   parseDataRow,
   reconstructBolsaBlocks,
   extractOcrWords,
+  buildOpFromGridRow,
+  parseComitenteHeaderText,
   type OcrWord,
   type OcrPage,
+  type GridCellTexts,
 } from "./ocr-bolsa";
+import {
+  planGridFromGray,
+  trimBlankEdgeBands,
+  trimColumnBandsToCount,
+  CAUCION_COLUMN_ORDER,
+  COMPRA_VENTA_COLUMN_ORDER,
+  type GrayscaleGrid,
+} from "./grid-detect";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -382,6 +393,269 @@ describe("parseDataRow", () => {
     ];
     const op = parseDataRow(row, colMap, 1);
     expect(op.precio).toBeNull(); // GARBAGE excluded, no valid PRECIO
+  });
+});
+
+// ── buildOpFromGridRow / parseComitenteHeaderText (modo GRID, E4.6C) ───────
+//
+// En modo GRID cada celda ya llega OCR'd por separado según su banda de
+// columna real — no hay palabras sueltas que agrupar por cercanía. Estas
+// pruebas ejercitan la misma lógica de negocio que parseDataRow pero con el
+// texto de celda ya resuelto por campo.
+
+describe("buildOpFromGridRow", () => {
+  it("GRID-21: arma una operación COMPRA completa a partir de celdas ya separadas", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "GGAL",
+      CANTIDAD: "408",
+      PRECIO: "8.205,000",
+      MONTO: "$3.352.996,07",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.operacionBase).toBe("COMPRA");
+    expect(op.ticker).toBe("GGAL");
+    expect(op.cantidad).toBe("408");
+    expect(op.precio).toBe("8205.000");
+    expect(op.monedaDetectada).toBe("ARS");
+    expect(op.fechaConcertacion).toBe("2026-07-14");
+    expect(op.plazoNormalizado).toBe("24HS");
+    expect(op.errors).toHaveLength(0);
+  });
+
+  it("GRID-22: arma una CAUCION_COLOCADORA completa desde sus celdas dedicadas", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "CAUCION COL.",
+      FECHA_CONC: "14-07-26",
+      VTO: "15-07-26",
+      MONTO_INICIAL: "$87.440.200,00",
+      TASA: "22,90%",
+      MONTO_COBRAR_PAGAR: "$87.492.602,86",
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.operacionBase).toBe("CAUCION_COLOCADORA");
+    expect(op.fechaConcertacion).toBe("2026-07-14");
+    expect(op.fechaVencimiento).toBe("2026-07-15");
+    expect(op.cantidad).toBe("87440200.00");
+    expect(op.tasaCaucion).toBe("22.90");
+    expect(op.montoCobrarReferencia).toBe("87492602.86");
+    expect(op.errors).toHaveLength(0);
+  });
+
+  it("GRID-22b (E4.6C.1): OPERACION de la celda de CAUCION resuelve CAUCION_COLOCADORA sin exigir ticker, sea cual sea el recorte de columnas usado para llegar a ese texto", () => {
+    // Sea que el recorte de columnas haya usado trimBlankEdgeBands (caso real
+    // — un margen vacío tan ancho como una columna real) o mergeLeadingBandsToCount
+    // (caso de una celda genuinamente fusionada), el resultado final de
+    // buildOpFromGridRow es el mismo: basta con que OPERACION contenga
+    // "CAUCION COL." para resolver correctamente.
+    const cells: GridCellTexts = {
+      OPERACION: "CAUCION COL.",
+      FECHA_CONC: "14-07-26",
+      VTO: "15-07-26",
+      MONTO_INICIAL: "$87.440.200,00",
+      TASA: "22,90%",
+      MONTO_COBRAR_PAGAR: "$87.492.602,86",
+      TICKER: undefined,
+    };
+    const op = buildOpFromGridRow(cells, 1);
+
+    expect(op.operacionBase).toBe("CAUCION_COLOCADORA");
+    expect(op.ticker).toBeNull();
+    expect(op.errors).not.toContain("Ticker no detectado.");
+    expect(op.fechaConcertacion).toBe("2026-07-14");
+    expect(op.fechaVencimiento).toBe("2026-07-15");
+    expect(op.cantidad).toBe("87440200.00");
+    expect(op.tasaCaucion).toBe("22.90");
+    expect(op.montoCobrarReferencia).toBe("87492602.86");
+  });
+
+  it("GRID-23: fila parcialmente ilegible (celda de ticker vacía) se conserva con ticker=null y error puntual, nunca se descarta", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "", // celda de ticker ilegible/vacía tras el OCR
+      CANTIDAD: "1.000",
+      PRECIO: "41.200,000",
+      MONTO: "$41.265.910,20",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 4);
+    expect(op.numeroFila).toBe(4);
+    expect(op.operacionBase).toBe("COMPRA"); // la fila existe, con su tipo
+    expect(op.ticker).toBeNull();
+    expect(op.cantidad).toBe("1000"); // el resto de los campos no se pierde
+    expect(op.precio).toBe("41200.000");
+    expect(op.errors).toContain("Ticker no detectado.");
+  });
+
+  it("GRID-24: MELI (compra/venta) nunca recibe una tasaCaucion — esa celda no existe en su tipo de fila", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "MELI",
+      CANTIDAD: "64",
+      PRECIO: "24.400,000",
+      MONTO: "$1.564.098,07",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 6);
+    expect(op.ticker).toBe("MELI");
+    expect(op.tasaCaucion).toBeNull();
+  });
+});
+
+describe("parseComitenteHeaderText", () => {
+  it("GRID-25: extrae nombre y número de un encabezado limpio", () => {
+    const result = parseComitenteHeaderText("DANIEL 11538");
+    expect(result).toEqual({ nombre: "DANIEL", numero: "11538" });
+  });
+
+  it("GRID-26: devuelve null cuando no hay un número de 5-6 dígitos", () => {
+    expect(parseComitenteHeaderText("DANIEL")).toBeNull();
+    expect(parseComitenteHeaderText("")).toBeNull();
+  });
+});
+
+// ── Integración GRID de punta a punta: 11 filas conservadas (E4.6C.1) ───────
+//
+// Reproduce el layout físico real de la imagen fixture (mismo grid que
+// planGridFromGray ya segmenta en GRID-17/18/19: caución 1 fila + compra/
+// venta 7 filas + compra/venta 3 filas = 11) y completa el resto del
+// pipeline — fusión/recorte de columnas según el tipo de tabla y armado de
+// cada operación — con texto de celda ya "OCR'd" (simulado, sin Canvas/
+// Tesseract reales). Verifica que ninguna de las 11 filas visuales se pierde,
+// incluida una con ticker ilegible.
+
+function makeRealLayoutGridForIntegration(): GrayscaleGrid {
+  const width = 1090;
+  const height = 563;
+  const data = new Array(width * height).fill(255);
+  const drawH = (y: number) => {
+    for (let x = 0; x < width; x++) data[y * width + x] = 0;
+  };
+  const drawV = (x: number, y0: number, y1: number) => {
+    for (let y = y0; y < y1; y++) data[y * width + x] = 0;
+  };
+  /** Simula texto real: unos pocos píxeles oscuros dentro de la banda,
+   * lejos de los bordes horizontales — para que trimBlankEdgeBands pueda
+   * distinguir contenido real de un margen vacío. */
+  const drawInk = (xStart: number, xEnd: number, yStart: number, yEnd: number) => {
+    for (let y = yStart + 5; y < yEnd - 5; y += 3) {
+      for (let x = xStart + 4; x < xEnd - 4; x += 5) data[y * width + x] = 0;
+    }
+  };
+
+  // Tabla 1 — caución: header 39-63, 1 fila de datos 63-109. El margen
+  // izquierdo {0-58} y el sobrante final {893-1090} quedan sin tinta — igual
+  // que en la imagen real, donde "CAUCION COL." entra en una sola columna.
+  [39, 63, 109].forEach(drawH);
+  [58, 206, 332, 457, 609, 748, 893].forEach((x) => drawV(x, 39, 109));
+  [
+    [58, 206],
+    [206, 332],
+    [332, 457],
+    [457, 609],
+    [609, 748],
+    [748, 893],
+  ].forEach(([x0, x1]) => drawInk(x0, x1, 63, 109));
+
+  // Tabla 2 — compra/venta: header 131-155, 7 filas de datos 155-323.
+  [131, 155, 179, 203, 227, 251, 275, 299, 323].forEach(drawH);
+  [58, 206, 332, 457, 609, 748, 893, 1031].forEach((x) => drawV(x, 131, 323));
+
+  // Tabla 3 — compra/venta: header 417-441, 3 filas de datos 441-513.
+  [417, 441, 465, 489, 513].forEach(drawH);
+  [58, 206, 332, 457, 609, 748, 893, 1031].forEach((x) => drawV(x, 417, 513));
+
+  return { data, width, height };
+}
+
+describe("integración GRID — 11 filas visuales conservadas de punta a punta (E4.6C.1)", () => {
+  it("GRID-29: caución (1) + compra/venta (7) + compra/venta (3) producen exactamente 11 BolsaImageRawOp, ninguna perdida", () => {
+    const grid = makeRealLayoutGridForIntegration();
+    const plan = planGridFromGray(grid);
+    expect(plan).not.toBeNull();
+    expect(plan!.tables).toHaveLength(3);
+
+    // Tabla 1: CAUCION — 8 bandas físicas, se recortan por contenido real
+    // (no por ancho: el margen sobrante {893-1090} es más ancho que las
+    // columnas con datos, así que un recorte por ancho elegiría mal). La
+    // tinta se suma fila por fila (rowBands) para no confundir la línea
+    // divisoria entre encabezado y datos con contenido real.
+    const caucionTable = plan!.tables[0];
+    const caucionCols = trimBlankEdgeBands(
+      caucionTable.columnBands,
+      grid,
+      caucionTable.dataRowBands,
+      CAUCION_COLUMN_ORDER.length,
+    );
+    expect(caucionCols).toHaveLength(6);
+    expect(caucionCols).toEqual([
+      { start: 58, end: 206 },
+      { start: 206, end: 332 },
+      { start: 332, end: 457 },
+      { start: 457, end: 609 },
+      { start: 609, end: 748 },
+      { start: 748, end: 893 },
+    ]);
+    const caucionCells: Record<string, string> = {
+      OPERACION: "CAUCION COL.",
+      FECHA_CONC: "14-07-26",
+      VTO: "15-07-26",
+      MONTO_INICIAL: "$87.440.200,00",
+      TASA: "22,90%",
+      MONTO_COBRAR_PAGAR: "$87.492.602,86",
+    };
+    const caucionOps = plan!.tables[0].dataRowBands.map((_, i) => buildOpFromGridRow(caucionCells, i + 1));
+
+    // Tabla 2: COMPRA_VENTA — 9 bandas físicas recortadas a 7 columnas reales.
+    // La primera "fila de datos" geométrica es en realidad un espaciador en
+    // blanco entre el cierre de la caución y el propio encabezado de esta
+    // tabla (mismo caso real que resuelve el fallback de header vacío en
+    // ocrBolsaImageGrid: si el encabezado asumido da texto vacío, se usa la
+    // banda siguiente como encabezado real) — acá se replica ese corrimiento.
+    const table2Cols = trimColumnBandsToCount(plan!.tables[1].columnBands, COMPRA_VENTA_COLUMN_ORDER.length);
+    expect(table2Cols).toHaveLength(7);
+    const table2DataRows = plan!.tables[1].dataRowBands.slice(1);
+    const tabla2Filas: Array<Record<string, string>> = [
+      { OPERACION: "COMPRA", FECHA_CONC: "14-07-26", TICKER: "GGAL", CANTIDAD: "408", PRECIO: "8.205,000", MONTO: "$3.352.996,07", PLAZO: "24hs" },
+      { OPERACION: "VENTA", FECHA_CONC: "14-07-26", TICKER: "GGALD", CANTIDAD: "408", PRECIO: "5,46000", MONTO: "USD2.226,12", PLAZO: "24hs" },
+      // Fila con ticker ilegible — se conserva igual, nunca se pierde.
+      { OPERACION: "COMPRA", FECHA_CONC: "14-07-26", TICKER: "", CANTIDAD: "1.000", PRECIO: "41.200,000", MONTO: "$41.265.910,20", PLAZO: "24hs" },
+      { OPERACION: "VENTA", FECHA_CONC: "14-07-26", TICKER: "TSLAD", CANTIDAD: "1.000", PRECIO: "27,43000", MONTO: "USD27.410,80", PLAZO: "24hs" },
+      { OPERACION: "COMPRA", FECHA_CONC: "14-07-26", TICKER: "MELI", CANTIDAD: "64", PRECIO: "24.400,000", MONTO: "$1.564.098,07", PLAZO: "24hs" },
+      { OPERACION: "VENTA", FECHA_CONC: "14-07-26", TICKER: "MELID", CANTIDAD: "64", PRECIO: "16,20000", MONTO: "USD1.036,07", PLAZO: "24hs" },
+      { OPERACION: "VENTA", FECHA_CONC: "14-07-26", TICKER: "AL41D", CANTIDAD: "50.000", PRECIO: "0,76534", MONTO: "USD38.267,16", PLAZO: "24hs" },
+    ];
+    expect(tabla2Filas).toHaveLength(table2DataRows.length);
+    const tabla2Ops = tabla2Filas.map((cells, i) => buildOpFromGridRow(cells, i + 1));
+
+    // Tabla 3: COMPRA_VENTA — 3 filas.
+    const tabla3Filas: Array<Record<string, string>> = [
+      { OPERACION: "VENTA", FECHA_CONC: "14-07-26", TICKER: "AL30", CANTIDAD: "54.625", PRECIO: "849,100", MONTO: "$46.276.115,16", PLAZO: "24hs" },
+      { OPERACION: "COMPRA", FECHA_CONC: "14-07-26", TICKER: "AL30D", CANTIDAD: "54.625", PRECIO: "0,56150", MONTO: "USD30.673,03", PLAZO: "24hs" },
+      { OPERACION: "COMPRA", FECHA_CONC: "14-07-26", TICKER: "AL41D", CANTIDAD: "50.000", PRECIO: "0,76436", MONTO: "USD38.217,92", PLAZO: "24hs" },
+    ];
+    expect(tabla3Filas).toHaveLength(plan!.tables[2].dataRowBands.length);
+    const tabla3Ops = tabla3Filas.map((cells, i) => buildOpFromGridRow(cells, i + 1));
+
+    const allOps = [...caucionOps, ...tabla2Ops, ...tabla3Ops];
+    expect(allOps).toHaveLength(11);
+    expect(allOps.every((op) => op.operacionBase !== "DESCONOCIDA")).toBe(true);
+
+    // La fila con ticker ilegible sigue presente, no se descarta.
+    const sinTicker = tabla2Ops.filter((op) => op.ticker === null);
+    expect(sinTicker).toHaveLength(1);
+    expect(sinTicker[0].errors).toContain("Ticker no detectado.");
+    expect(sinTicker[0].cantidad).toBe("1000"); // el resto de los datos no se pierde
+
+    // La caución nunca exige ticker ni recibe tasaCaucion cruzada con MELI.
+    expect(caucionOps[0].operacionBase).toBe("CAUCION_COLOCADORA");
+    expect(caucionOps[0].ticker).toBeNull();
+    const meliOp = tabla2Ops.find((op) => op.ticker === "MELI");
+    expect(meliOp?.tasaCaucion).toBeNull();
   });
 });
 

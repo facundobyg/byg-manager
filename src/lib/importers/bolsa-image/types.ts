@@ -40,6 +40,9 @@ export interface BolsaImageParseResult {
   warningsGlobales: string[];
   erroresGlobales: string[];
   totalOperaciones: number;
+  /** E4.6C: qué motor de lectura produjo este resultado — grilla visual
+   * (lectura por celda) o el OCR genérico de página completa (fallback). */
+  modo?: "GRID" | "GENERIC_OCR";
 }
 
 export type BolsaImageMime = "image/jpeg" | "image/png";

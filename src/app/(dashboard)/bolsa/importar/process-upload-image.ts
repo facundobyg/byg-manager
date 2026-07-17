@@ -141,7 +141,75 @@ type FilaDataImg = {
   estado: "ADVERTENCIA" | "ERROR";
   allErrors: string[];
   allWarnings: string[];
+  /** Ticker efectivo para la columna `ticker` — null si no pasó la
+   * validación de catálogo (E4.6C.1). El OCR original queda intacto en
+   * `op`/rawJson de todas formas. */
+  tickerResuelto: string | null;
 };
+
+// E4.6C.1 — endurecimiento SOLO del flujo GRID (lectura por celda): un valor
+// financiero corrupto (separador/cero perdido por el OCR, ticker inexistente)
+// nunca debe quedar como fila lista para enviar sin revisión humana. El flujo
+// GENERIC_OCR (fallback de página completa) no se toca acá.
+const MAGNITUDE_TOLERANCE_MIN = 0.5;
+const MAGNITUDE_TOLERANCE_MAX = 2;
+
+async function validateFinancialCoherenceGrid(
+  op: BolsaImageRawOp,
+): Promise<{ tickerResuelto: string | null; extraErrors: string[] }> {
+  const extraErrors: string[] = [];
+  let tickerResuelto = op.ticker;
+
+  if (op.operacionBase !== "COMPRA" && op.operacionBase !== "VENTA") {
+    // Las cauciones no llevan ticker ni esta validación — solo compra/venta.
+    return { tickerResuelto, extraErrors };
+  }
+
+  if (tickerResuelto) {
+    const activo = await prisma.activo.findUnique({ where: { ticker: tickerResuelto }, select: { id: true } });
+    if (!activo) {
+      extraErrors.push(`Ticker no reconocido: ${tickerResuelto}`);
+      tickerResuelto = null;
+    }
+  }
+
+  const cantidadNum = op.cantidad !== null ? Number(op.cantidad) : null;
+  const precioNum = op.precio !== null ? Number(op.precio) : null;
+  const montoNum = op.montoNetoReferencia !== null ? Number(op.montoNetoReferencia) : null;
+
+  if (cantidadNum !== null && (!Number.isFinite(cantidadNum) || cantidadNum <= 0)) {
+    extraErrors.push("Cantidad inválida.");
+  }
+  if (precioNum !== null && (!Number.isFinite(precioNum) || precioNum <= 0)) {
+    extraErrors.push("Precio inválido.");
+  }
+
+  // Coherencia cantidad × precio ≈ monto neto, con tolerancia amplia por
+  // gastos/comisiones (hasta 2x en cualquier sentido) — un desvío de magnitud
+  // (separador de miles o decimal perdido por el OCR) cae muy por fuera de
+  // esa banda y debe bloquear la fila. Nunca se corrige automáticamente.
+  if (
+    cantidadNum !== null &&
+    precioNum !== null &&
+    montoNum !== null &&
+    Number.isFinite(cantidadNum) &&
+    Number.isFinite(precioNum) &&
+    Number.isFinite(montoNum) &&
+    cantidadNum > 0 &&
+    precioNum > 0 &&
+    montoNum > 0
+  ) {
+    const esperado = cantidadNum * precioNum;
+    const ratio = esperado / montoNum;
+    if (ratio < MAGNITUDE_TOLERANCE_MIN || ratio > MAGNITUDE_TOLERANCE_MAX) {
+      extraErrors.push(
+        `Inconsistencia entre cantidad × precio (${esperado.toFixed(2)}) y monto neto (${montoNum.toFixed(2)}).`,
+      );
+    }
+  }
+
+  return { tickerResuelto, extraErrors };
+}
 
 /**
  * Resuelve comitentes y prepara las filas a persistir — usado tanto por el
@@ -151,14 +219,24 @@ async function buildFilaDataImagen(
   parseResult: BolsaImageParseResult,
   fechaOperativaISO: string,
 ): Promise<FilaDataImg[]> {
+  const esGrid = parseResult.modo === "GRID";
   const filaData: FilaDataImg[] = [];
   for (const bloque of parseResult.bloques) {
     const resolucion = await resolveComitente(bloque.nroComitenteDetectado, bloque.nombreDetectado);
     for (const rawOp of bloque.operaciones) {
-      const { op, extraErrors } = sanitizeNumericFields(rawOp);
+      const { op, extraErrors: sanitizeErrors } = sanitizeNumericFields(rawOp);
+
+      let tickerResuelto = op.ticker;
+      let financialErrors: string[] = [];
+      if (esGrid) {
+        const result = await validateFinancialCoherenceGrid(op);
+        tickerResuelto = result.tickerResuelto;
+        financialErrors = result.extraErrors;
+      }
+
       // La fecha operativa del lote reemplaza la fechaConcertacion de cada
       // fila, así que "Fecha no detectada" del OCR deja de ser un error real.
-      const allErrors = [...op.errors.filter((e) => e !== "Fecha no detectada."), ...extraErrors];
+      const allErrors = [...op.errors.filter((e) => e !== "Fecha no detectada."), ...sanitizeErrors, ...financialErrors];
       const allWarnings = [...op.warnings];
       if (op.fechaConcertacion && op.fechaConcertacion !== fechaOperativaISO) {
         allWarnings.push(
@@ -166,12 +244,13 @@ async function buildFilaDataImagen(
         );
       }
       if (resolucion.errorMsg) allErrors.push(resolucion.errorMsg);
+      if (resolucion.warningMsg) allWarnings.push(resolucion.warningMsg);
 
       // OCR: minimum estado = ADVERTENCIA. Never RESUELTA — always requires review.
       const estado: "ADVERTENCIA" | "ERROR" =
         allErrors.length > 0 || resolucion.estado === "ERROR" ? "ERROR" : "ADVERTENCIA";
 
-      filaData.push({ op, bloque, resolucion, estado, allErrors, allWarnings });
+      filaData.push({ op, bloque, resolucion, estado, allErrors, allWarnings, tickerResuelto });
     }
   }
   return filaData;
@@ -183,7 +262,7 @@ function filaCreateDataImg(
   archivoId: string,
   fechaOperativa: Date,
 ) {
-  const { op, bloque, resolucion, estado, allErrors, allWarnings } = f;
+  const { op, bloque, resolucion, estado, allErrors, allWarnings, tickerResuelto } = f;
   return {
     id: crypto.randomUUID(),
     loteId,
@@ -191,6 +270,8 @@ function filaCreateDataImg(
     estado,
     numeroBloque: bloque.numeroBloque,
     numeroFila: op.numeroFila,
+    // El texto OCR original (incluido un ticker que no pasó el catálogo)
+    // siempre queda intacto acá, aunque la columna `ticker` resuelta sea null.
     rawJson: op as object,
     nombreDetectado: bloque.nombreDetectado ?? undefined,
     nroComitenteDetectado: bloque.nroComitenteDetectado ?? undefined,
@@ -200,7 +281,7 @@ function filaCreateDataImg(
     tipoSujeto: resolucion.tipoSujeto ?? undefined,
     conflictoNombre: resolucion.conflictoNombre,
     tipoOperacionResuelta: mapOpBaseImg(op) ?? undefined,
-    ticker: op.ticker ?? undefined,
+    ticker: tickerResuelto ?? undefined,
     instrumento: op.instrumentoHint ?? undefined,
     moneda: (op.monedaDetectada as "ARS" | "USD" | null) ?? undefined,
     cantidad: op.cantidad ?? undefined,

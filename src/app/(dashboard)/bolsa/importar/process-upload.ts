@@ -54,10 +54,103 @@ export interface ComitenteResolucion {
   tipoSujeto: "COMITENTE" | "CARTERA" | null;
   conflictoNombre: boolean;
   errorMsg: string | null;
+  /** Mensaje informativo cuando la resolución vino de la coincidencia
+   * aproximada por nombre (ver findComitenteByNameFallback) — nunca se
+   * pierde silenciosamente que el número no matcheó de forma exacta. */
+  warningMsg?: string | null;
 }
 
 function normalizeNombre(s: string | null | undefined): string {
   return (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] =
+        a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+interface ComitenteNameCandidate {
+  numero: string;
+  nombre: string;
+  tipoSujeto: "COMITENTE" | "CARTERA";
+  comitenteId: string | null;
+  carteraId: string | null;
+}
+
+/**
+ * Último recurso cuando NINGÚN registro (ComitenteInversion ni Cartera)
+ * coincide exactamente con el número detectado por OCR — busca, entre TODOS
+ * los registros activos de ambas tablas, aquellos cuyo nombre normalizado
+ * coincida EXACTAMENTE con el nombre detectado. Solo resuelve si:
+ *   - el número detectado tiene al menos 4 dígitos (un número corto tiene
+ *     demasiadas coincidencias casuales posibles — nunca se aproxima);
+ *   - existe un único candidato con ese nombre (nunca por aproximación si hay
+ *     más de uno — ambigüedad real nunca se adivina);
+ *   - el número real y el detectado tienen la MISMA longitud de dígitos;
+ *   - la distancia de edición entre ambos números es <= 1 (un solo dígito
+ *     mal leído por el OCR, nunca una transposición mayor).
+ * Nunca hardcodea ningún nombre o número — es un fallback genérico que opera
+ * sobre cualquier registro real de la base.
+ */
+async function findComitenteByNameFallback(
+  nroComitenteDetectado: string,
+  nombreDetectado: string | null,
+): Promise<ComitenteNameCandidate | null> {
+  if (nroComitenteDetectado.length < 4) return null;
+
+  const normNombre = normalizeNombre(nombreDetectado);
+  if (!normNombre) return null;
+
+  const [comitentes, carteras] = await Promise.all([
+    prisma.comitenteInversion.findMany({
+      where: { activo: true },
+      select: { id: true, nombre: true, nroComitente: true },
+    }),
+    prisma.cartera.findMany({
+      where: { activa: true, comitenteNumber: { not: null } },
+      select: { id: true, nombre: true, comitenteNumber: true },
+    }),
+  ]);
+
+  const candidates: ComitenteNameCandidate[] = [
+    ...comitentes
+      .filter((c) => normalizeNombre(c.nombre) === normNombre)
+      .map((c) => ({
+        numero: c.nroComitente,
+        nombre: c.nombre,
+        tipoSujeto: "COMITENTE" as const,
+        comitenteId: c.id,
+        carteraId: null,
+      })),
+    ...carteras
+      .filter((c) => normalizeNombre(c.nombre) === normNombre)
+      .map((c) => ({
+        numero: c.comitenteNumber!,
+        nombre: c.nombre,
+        tipoSujeto: "CARTERA" as const,
+        comitenteId: null,
+        carteraId: c.id,
+      })),
+  ];
+
+  // Nunca resolver por aproximación si hay más de un candidato con ese nombre.
+  if (candidates.length !== 1) return null;
+
+  const candidate = candidates[0];
+  if (candidate.numero.length !== nroComitenteDetectado.length) return null;
+  if (levenshteinDistance(candidate.numero, nroComitenteDetectado) > 1) return null;
+
+  return candidate;
 }
 
 export async function resolveComitente(
@@ -125,6 +218,25 @@ export async function resolveComitente(
         errorMsg: `Cartera ambigua: ${carteras.length} registros con comitenteNumber=${nroComitenteDetectado}`,
       };
     }
+
+    // Último recurso: ningún número coincide exactamente — buscar un único
+    // candidato por nombre exacto cuyo número real difiera del detectado por
+    // a lo sumo 1 dígito (mismo largo). Nunca se resuelve así si hay más de
+    // un candidato o la diferencia es mayor — queda en ADVERTENCIA, no LISTA,
+    // hasta revisión explícita.
+    const fallback = await findComitenteByNameFallback(nroComitenteDetectado, nombreDetectado);
+    if (fallback) {
+      return {
+        estado: "ADVERTENCIA",
+        comitenteResueltoId: fallback.comitenteId,
+        carteraResueltaId: fallback.carteraId,
+        tipoSujeto: fallback.tipoSujeto,
+        conflictoNombre: false,
+        errorMsg: null,
+        warningMsg: `Número detectado ${nroComitenteDetectado}; asociado a ${fallback.nombre} / ${fallback.numero} por coincidencia de nombre. Requiere revisión.`,
+      };
+    }
+
     return { ...errorBase, errorMsg: `Comitente no encontrado: nro ${nroComitenteDetectado}` };
   }
 
@@ -205,6 +317,7 @@ async function buildFilaDataExcel(
         );
       }
       if (resolucion.errorMsg) allErrors.push(resolucion.errorMsg);
+      if (resolucion.warningMsg) allWarnings.push(resolucion.warningMsg);
 
       let estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
       if (allErrors.length > 0 || resolucion.estado === "ERROR") {

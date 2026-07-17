@@ -5,6 +5,16 @@ import type {
   BolsaImageParseResult,
   BolsaImageOpBase,
 } from "@/lib/importers/bolsa-image/types";
+import {
+  planGridFromGray,
+  classifyTableHeader,
+  trimColumnBandsToCount,
+  trimBlankEdgeBands,
+  CAUCION_COLUMN_ORDER,
+  COMPRA_VENTA_COLUMN_ORDER,
+  type GrayscaleGrid,
+  type Band,
+} from "./grid-detect";
 
 export type { Worker as TesseractWorker } from "tesseract.js";
 
@@ -575,6 +585,118 @@ export function parseDataRow(
   };
 }
 
+// ── Grid mode (E4.6C) — lectura por celda, sin agrupar por proximidad ──────
+//
+// A diferencia de parseDataRow (que arma una fila juntando palabras sueltas
+// por cercanía X a un colMap), en modo GRID cada celda ya viene OCR'd por
+// separado según su banda de columna real (ver grid-detect.ts) — así que acá
+// no hace falta agrupar nada: cada campo llega directo en su propia clave.
+// Nunca se infiere una columna por cercanía entre palabras de filas
+// distintas; la geometría de la grilla ya resolvió eso.
+
+export interface GridCellTexts {
+  OPERACION?: string;
+  FECHA_CONC?: string;
+  TICKER?: string;
+  CANTIDAD?: string;
+  PRECIO?: string;
+  MONTO?: string;
+  PLAZO?: string;
+  VTO?: string;
+  TASA?: string;
+  MONTO_INICIAL?: string;
+  MONTO_COBRAR_PAGAR?: string;
+}
+
+/**
+ * Construye una operación a partir de las celdas ya recortadas y OCR'd de una
+ * fila de grilla. Reutiliza exactamente las mismas reglas de negocio que
+ * parseDataRow (parseo de fecha/número, detección de moneda, validación de
+ * tasa, error de ticker faltante) — la única diferencia es el origen del
+ * texto por campo.
+ */
+export function buildOpFromGridRow(cells: GridCellTexts, rowNum: number): BolsaImageRawOp {
+  const operacionText = (cells.OPERACION ?? "").trim();
+  const tickerText = (cells.TICKER ?? "").trim();
+  const rawOperacion = [operacionText, tickerText].filter(Boolean).join(" ") || operacionText;
+  const operacionBase = detectOpBase(operacionText || rawOperacion);
+
+  const fechaConcertacion = parseDate(cells.FECHA_CONC ?? "");
+
+  const tickerUpper = tickerText.toUpperCase();
+  const tickerMatch = tickerUpper.match(/\b([A-Z][A-Z0-9]{1,5})\b/);
+  const ticker = tickerMatch ? tickerMatch[1] : null;
+
+  const plazoRaw = cells.PLAZO?.trim() || null;
+  const plazoNorm = normalizePlazoOcr(plazoRaw);
+
+  const isCaucion = operacionBase === "CAUCION_COLOCADORA" || operacionBase === "CAUCION_TOMADORA";
+
+  const montoInicialText = cells.MONTO_INICIAL ?? "";
+  const cantidad = parseArgNumber(isCaucion && montoInicialText ? montoInicialText : (cells.CANTIDAD ?? ""));
+
+  const montoCobrarPagarText = cells.MONTO_COBRAR_PAGAR ?? "";
+  const montoCobrarPagarValue = isCaucion ? parseArgNumber(montoCobrarPagarText) : null;
+
+  const monedaDetectada =
+    detectMonedaFromText(cells.MONTO ?? "") ??
+    detectMonedaFromText(montoInicialText) ??
+    detectMonedaFromText(montoCobrarPagarText);
+
+  const errors: string[] = [];
+  if (!fechaConcertacion) errors.push("Fecha no detectada.");
+  if (operacionBase === "DESCONOCIDA") errors.push("Tipo de operación no reconocido.");
+  if ((operacionBase === "COMPRA" || operacionBase === "VENTA") && !ticker) {
+    errors.push("Ticker no detectado.");
+  }
+
+  let tasaCaucion = parseArgNumber(cells.TASA ?? "");
+  if (tasaCaucion !== null && !isTasaCaucionValid(tasaCaucion)) {
+    errors.push("Tasa de caución fuera de rango válido.");
+    tasaCaucion = null;
+  }
+
+  return {
+    numeroFila: rowNum,
+    rawOperacion,
+    operacionBase,
+    fechaConcertacion,
+    ticker,
+    cantidad,
+    precio: parseArgNumber(cells.PRECIO ?? ""),
+    monedaDetectada,
+    montoNetoReferencia: parseArgNumber(cells.MONTO ?? ""),
+    plazo: plazoRaw,
+    plazoNormalizado: plazoNorm,
+    fechaVencimiento: parseDate(cells.VTO ?? ""),
+    tasaCaucion,
+    montoCobrarReferencia: operacionBase === "CAUCION_COLOCADORA" ? montoCobrarPagarValue : null,
+    montoPagarReferencia: operacionBase === "CAUCION_TOMADORA" ? montoCobrarPagarValue : null,
+    instrumentoHint: null,
+    warnings: [],
+    errors,
+  };
+}
+
+/**
+ * Extrae "NOMBRE NUMERO" de un único texto OCR'd (el encabezado del
+ * comitente, leído como una sola celda por encima de la primera tabla) — el
+ * comitente solo se toma de esta franja, nunca de una fila financiera.
+ */
+export function parseComitenteHeaderText(text: string): { nombre: string; numero: string } | null {
+  const numMatch = text.match(/\b(\d{5,6})\b/);
+  if (!numMatch) return null;
+
+  const numero = numMatch[1];
+  const nombre = text
+    .replace(numMatch[0], "")
+    .replace(/[\/\-_|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return nombre.length >= 2 ? { nombre, numero } : null;
+}
+
 /**
  * Reconstructs bolsa blocks from a flat array of OCR words with bounding boxes.
  * Pure function — no browser or Tesseract dependencies.
@@ -837,13 +959,14 @@ export async function createOcrWorker(): Promise<TesseractWorker> {
 }
 
 /**
- * OCRs a single image using the provided worker.
- * The image is NOT sent to any server — all processing is local.
+ * OCR genérico de página completa (modo GENERIC_OCR) — el pipeline original,
+ * ahora usado solo como fallback cuando el modo GRID no logra detectar una
+ * grilla de tabla válida en la imagen.
  *
- * @param onProgress - callback with one of:
+ * @param onProgress - callback con uno de:
  *   "Preparando imagen" | "Leyendo texto" | "Armando operaciones"
  */
-export async function ocrBolsaImage(
+export async function ocrBolsaImageGeneric(
   file: File,
   worker: TesseractWorker,
   onProgress: (msg: string) => void,
@@ -879,5 +1002,255 @@ export async function ocrBolsaImage(
     );
   }
 
-  return { bloques, warningsGlobales: [], erroresGlobales: [], totalOperaciones };
+  return { bloques, warningsGlobales: [], erroresGlobales: [], totalOperaciones, modo: "GENERIC_OCR" };
+}
+
+// ── Grid mode (E4.6C) — Canvas + OCR por celda ──────────────────────────────
+
+const TESS_PSM_SINGLE_LINE = "7";
+const TESS_PSM_SINGLE_WORD = "8";
+const TESS_PSM_SPARSE_TEXT = "11";
+
+// Letras que efectivamente aparecen en el vocabulario de operación —
+// COMPRA/VENTA/CAUCION/COLOCADORA/TOMADORA/COL./TOM. — más espacio y punto
+// para las abreviaturas. Restringir el whitelist a esto reduce falsos
+// reconocimientos frente a un alfabeto completo.
+const WHITELIST_OPERACION = "ACDEILMNOPRTUV. ";
+const WHITELIST_FECHA = "0123456789-/";
+const WHITELIST_NUMERICO = "0123456789,.$%";
+const WHITELIST_TICKER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/";
+const WHITELIST_COMITENTE = "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ0123456789 ";
+const WHITELIST_HEADER = "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ./ ";
+
+function fieldWhitelist(field: string): string {
+  switch (field) {
+    case "OPERACION":
+      return WHITELIST_OPERACION;
+    case "FECHA_CONC":
+    case "VTO":
+      return WHITELIST_FECHA;
+    case "TICKER":
+      return WHITELIST_TICKER;
+    case "PLAZO":
+      return WHITELIST_OPERACION + "0123456789";
+    default:
+      return WHITELIST_NUMERICO;
+  }
+}
+
+/** Carga la imagen a su resolución NATIVA (sin upscale) — el upscale global
+ * emborrona las líneas finas de la grilla; el modo GRID necesita la
+ * resolución original para detectarlas, y solo escala cada celda recortada. */
+async function loadOriginalCanvas(file: File): Promise<HTMLCanvasElement> {
+  const url = URL.createObjectURL(file);
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(el);
+    };
+    el.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("No se pudo cargar la imagen."));
+    };
+    el.src = url;
+  });
+
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D no disponible.");
+  ctx.drawImage(img, 0, 0);
+  return canvas;
+}
+
+function grayscaleGridFromCanvas(canvas: HTMLCanvasElement): GrayscaleGrid {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D no disponible.");
+  const { width, height } = canvas;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const d = imageData.data;
+  const gray = new Uint8ClampedArray(width * height);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    gray[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  }
+  return { data: gray, width, height };
+}
+
+function cropCanvasRegion(
+  source: HTMLCanvasElement,
+  rect: { x0: number; y0: number; x1: number; y1: number },
+  upscale: number,
+): HTMLCanvasElement {
+  const w = Math.max(1, rect.x1 - rect.x0);
+  const h = Math.max(1, rect.y1 - rect.y0);
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(w * upscale));
+  out.height = Math.max(1, Math.round(h * upscale));
+  const ctx = out.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D no disponible.");
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(source, rect.x0, rect.y0, w, h, 0, 0, out.width, out.height);
+  return out;
+}
+
+async function ocrCellText(
+  worker: TesseractWorker,
+  cellCanvas: HTMLCanvasElement,
+  whitelist: string,
+  psm: string,
+): Promise<string> {
+  await worker.setParameters({
+    tessedit_char_whitelist: whitelist,
+    tessedit_pageseg_mode: psm as never,
+  });
+  const { data } = await worker.recognize(cellCanvas, {}, { text: true });
+  return (data.text ?? "").trim();
+}
+
+/**
+ * Modo principal (E4.6C): detecta la grilla visual de la tabla (líneas
+ * horizontales/verticales vía proyección de píxeles) y lee cada celda por
+ * separado con Tesseract — nunca agrupa palabras por cercanía entre filas
+ * distintas. Devuelve null cuando la imagen no tiene líneas suficientes para
+ * reconstruir al menos una tabla válida; la llamadora cae al OCR genérico.
+ */
+export async function ocrBolsaImageGrid(
+  file: File,
+  worker: TesseractWorker,
+  onProgress: (msg: string) => void,
+): Promise<BolsaImageParseResult | null> {
+  onProgress("Detectando grilla");
+  const canvas = await loadOriginalCanvas(file);
+  const gray = grayscaleGridFromCanvas(canvas);
+  const plan = planGridFromGray(gray);
+  if (!plan) return null;
+
+  onProgress("Leyendo encabezado de comitente");
+  const headerCanvas = cropCanvasRegion(
+    canvas,
+    { x0: 0, y0: Math.max(0, plan.comitenteHeaderBand.start), x1: gray.width, y1: plan.comitenteHeaderBand.end },
+    3,
+  );
+  const comitenteText = await ocrCellText(worker, headerCanvas, WHITELIST_COMITENTE, TESS_PSM_SINGLE_LINE);
+  const comitente = parseComitenteHeaderText(comitenteText);
+
+  const bloques: BolsaImageBloque[] = [];
+
+  const ocrHeaderBand = (band: Band) =>
+    ocrCellText(
+      worker,
+      cropCanvasRegion(canvas, { x0: 0, y0: band.start, x1: gray.width, y1: band.end }, 2),
+      WHITELIST_HEADER,
+      TESS_PSM_SINGLE_LINE,
+    );
+
+  for (const table of plan.tables) {
+    onProgress("Leyendo tabla");
+    let headerBand = table.headerBand;
+    let dataRowBands = table.dataRowBands;
+    let headerText = await ocrHeaderBand(headerBand);
+    let kind = classifyTableHeader([headerText]);
+
+    // Una banda vacía (espacio en blanco entre el borde de cierre de la tabla
+    // anterior y el borde de apertura de esta, sin línea de separación
+    // suficientemente grande entre ambas) a veces queda asignada como si
+    // fuera el encabezado — el OCR sobre una celda casi en blanco puede
+    // alucinar 1-2 caracteres de ruido, así que un texto muy corto cuenta
+    // igual como "sin encabezado real". Se prueba la banda siguiente antes
+    // de descartar la tabla entera.
+    if (kind === "DESCONOCIDA" && headerText.trim().length <= 4 && dataRowBands.length > 0) {
+      headerBand = dataRowBands[0];
+      dataRowBands = dataRowBands.slice(1);
+      headerText = await ocrHeaderBand(headerBand);
+      kind = classifyTableHeader([headerText]);
+    }
+
+    // Tabla no clasificable (encabezado ilegible o ninguna palabra clave
+    // reconocida) — nunca se inventan operaciones sin saber qué columnas son.
+    if (kind === "DESCONOCIDA") continue;
+
+    const columnOrder = kind === "CAUCION" ? CAUCION_COLUMN_ORDER : COMPRA_VENTA_COLUMN_ORDER;
+    // CAUCION comparte la grilla física con las tablas de compra/venta pero
+    // tiene menos columnas reales — el margen sobrante a recortar puede ser
+    // TAN ANCHO O MÁS que una columna real (nunca el más angosto), así que un
+    // recorte por ancho puro elegiría el lado equivocado. Se decide por
+    // contenido real (tinta) en cada extremo en vez de por ancho.
+    // COMPRA/VENTA: el margen sobrante sí es angosto — el recorte por ancho
+    // ya alcanza.
+    const rowBandsForInk = dataRowBands.length > 0 ? dataRowBands : [headerBand];
+    const columnBands =
+      kind === "CAUCION"
+        ? trimBlankEdgeBands(table.columnBands, gray, rowBandsForInk, columnOrder.length)
+        : trimColumnBandsToCount(table.columnBands, columnOrder.length);
+    const ops: BolsaImageRawOp[] = [];
+    let rowNum = 0;
+
+    for (const rowBand of dataRowBands) {
+      const cells: GridCellTexts = {};
+      const lastCol = Math.min(columnOrder.length, columnBands.length);
+      for (let colIdx = 0; colIdx < lastCol; colIdx++) {
+        const field = columnOrder[colIdx];
+        const colBand = columnBands[colIdx];
+        const cellCanvas = cropCanvasRegion(
+          canvas,
+          { x0: colBand.start, y0: rowBand.start, x1: colBand.end, y1: rowBand.end },
+          3,
+        );
+        const whitelist = fieldWhitelist(field);
+        const psm = field === "OPERACION" ? TESS_PSM_SINGLE_LINE : TESS_PSM_SINGLE_WORD;
+        cells[field as keyof GridCellTexts] = await ocrCellText(worker, cellCanvas, whitelist, psm);
+      }
+
+      // "Tipo de cambio Neto", "Resultado pesos/USD" y subtotales a veces
+      // viven en su propia caja con borde (detectada geométricamente como una
+      // fila de datos más) — nunca se convierten en operación, a diferencia
+      // de una fila real con datos ilegibles, que sí se conserva.
+      const rowText = Object.values(cells).join(" ");
+      if (IGNORED_PATTERNS.some((p) => p.test(rowText))) continue;
+
+      // Cada fila visual real detectada por la grilla se conserva siempre —
+      // si falta un dato, el campo queda null con su error puntual, nunca se
+      // descarta la fila.
+      rowNum++;
+      ops.push(buildOpFromGridRow(cells, rowNum));
+    }
+
+    bloques.push({
+      numeroBloque: bloques.length + 1,
+      nombreDetectado: comitente?.nombre ?? null,
+      nroComitenteDetectado: comitente?.numero ?? null,
+      operaciones: ops,
+      warnings: [],
+      errors: [],
+    });
+  }
+
+  const totalOperaciones = bloques.reduce((s, b) => s + b.operaciones.length, 0);
+  if (totalOperaciones === 0) return null;
+
+  return { bloques, warningsGlobales: [], erroresGlobales: [], totalOperaciones, modo: "GRID" };
+}
+
+/**
+ * OCRs a single image using the provided worker.
+ * The image is NOT sent to any server — all processing is local.
+ *
+ * Modo principal: lectura por grilla visual (GRID). Si la imagen no tiene
+ * líneas de tabla suficientes para reconstruir una grilla válida, cae al OCR
+ * genérico de página completa (GENERIC_OCR) — el resultado siempre indica
+ * `modo` para que quede trazado qué motor produjo el staging.
+ *
+ * @param onProgress - callback con mensajes de progreso.
+ */
+export async function ocrBolsaImage(
+  file: File,
+  worker: TesseractWorker,
+  onProgress: (msg: string) => void,
+): Promise<BolsaImageParseResult> {
+  const gridResult = await ocrBolsaImageGrid(file, worker, onProgress).catch(() => null);
+  if (gridResult) return gridResult;
+
+  return ocrBolsaImageGeneric(file, worker, onProgress);
 }

@@ -662,6 +662,140 @@ describe("processBolsaExcelUpload — resolución de comitentes", () => {
   });
 });
 
+describe("processBolsaExcelUpload — resolución aproximada por nombre (E4.6C.1)", () => {
+  it("T-U14 — número 11838 sin match exacto + nombre DANIEL resuelve al único candidato 11538 con warning y ADVERTENCIA", async () => {
+    // Ni ComitenteInversion ni Cartera tienen 11838 exacto.
+    mocks.findManyComitente.mockResolvedValueOnce([]); // lookup exacto por nroComitente
+    mocks.findManyCartera.mockResolvedValueOnce([]); // lookup exacto por comitenteNumber
+    // Fallback: búsqueda amplia por nombre — DANIEL/11538 es cartera propia.
+    mocks.findManyComitente.mockResolvedValueOnce([]); // ningún ComitenteInversion se llama DANIEL
+    mocks.findManyCartera.mockResolvedValueOnce([{ id: "cart-daniel", nombre: "DANIEL", comitenteNumber: "11538" }]);
+
+    const bloque = makeBloque({
+      nombreDetectado: "DANIEL",
+      nroComitenteDetectado: "11838",
+      operaciones: [makeRawOp()],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasConAdvertencia).toBe(1);
+    expect(result.filasResuelta).toBe(0);
+    expect(result.filasConError).toBe(0);
+
+    expect(mocks.createFila).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          estado: "ADVERTENCIA",
+          tipoSujeto: "CARTERA",
+          carteraResueltaId: "cart-daniel",
+          comitenteResueltoId: undefined,
+        }),
+      }),
+    );
+    const callData = mocks.createFila.mock.calls[0][0].data;
+    expect(callData.warningsJson).toEqual(
+      expect.arrayContaining([
+        "Número detectado 11838; asociado a DANIEL / 11538 por coincidencia de nombre. Requiere revisión.",
+      ]),
+    );
+  });
+
+  it("T-U15 — más de un candidato con el mismo nombre nunca resuelve por aproximación → fila ERROR", async () => {
+    mocks.findManyComitente.mockResolvedValueOnce([]);
+    mocks.findManyCartera.mockResolvedValueOnce([]);
+    // Dos comitentes distintos, casualmente ambos llamados "DANIEL".
+    mocks.findManyComitente.mockResolvedValueOnce([
+      { id: "com-a", nombre: "DANIEL", nroComitente: "11538" },
+      { id: "com-b", nombre: "DANIEL", nroComitente: "99999" },
+    ]);
+    mocks.findManyCartera.mockResolvedValueOnce([]);
+
+    const bloque = makeBloque({
+      nombreDetectado: "DANIEL",
+      nroComitenteDetectado: "11838",
+      operaciones: [makeRawOp()],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasConError).toBe(1);
+    expect(result.filasConAdvertencia).toBe(0);
+    const callData = mocks.createFila.mock.calls[0][0].data;
+    expect(callData.carteraResueltaId == null).toBe(true);
+    expect(callData.comitenteResueltoId == null).toBe(true);
+  });
+
+  it("T-U16 — distancia de edición mayor a 1 nunca resuelve por aproximación → fila ERROR", async () => {
+    mocks.findManyComitente.mockResolvedValueOnce([]);
+    mocks.findManyCartera.mockResolvedValueOnce([]);
+    mocks.findManyComitente.mockResolvedValueOnce([]);
+    // "12345" vs "11838" difieren en más de 1 posición.
+    mocks.findManyCartera.mockResolvedValueOnce([{ id: "cart-x", nombre: "DANIEL", comitenteNumber: "12345" }]);
+
+    const bloque = makeBloque({
+      nombreDetectado: "DANIEL",
+      nroComitenteDetectado: "11838",
+      operaciones: [makeRawOp()],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasConError).toBe(1);
+    const callData = mocks.createFila.mock.calls[0][0].data;
+    expect(callData.carteraResueltaId == null).toBe(true);
+  });
+
+  it("T-U17 — largo de número distinto nunca resuelve por aproximación → fila ERROR", async () => {
+    mocks.findManyComitente.mockResolvedValueOnce([]);
+    mocks.findManyCartera.mockResolvedValueOnce([]);
+    mocks.findManyComitente.mockResolvedValueOnce([]);
+    // "1538" (4 dígitos) vs "11838" (5 dígitos) — largo distinto, nunca aproxima.
+    mocks.findManyCartera.mockResolvedValueOnce([{ id: "cart-x", nombre: "DANIEL", comitenteNumber: "1538" }]);
+
+    const bloque = makeBloque({
+      nombreDetectado: "DANIEL",
+      nroComitenteDetectado: "11838",
+      operaciones: [makeRawOp()],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasConError).toBe(1);
+  });
+
+  it("T-U18 — número detectado de menos de 4 dígitos nunca resuelve por aproximación, aunque el nombre y la distancia coincidan → fila ERROR", async () => {
+    mocks.findManyComitente.mockResolvedValueOnce([]);
+    mocks.findManyCartera.mockResolvedValueOnce([]);
+    // El fallback amplio corta ANTES de volver a consultar la base: "153"
+    // tiene menos de 4 dígitos, nunca llega a buscar candidatos por nombre.
+    // Solo se consumen las 2 respuestas de arriba (lookup exacto); si el
+    // código llegara a consultar de nuevo, estos mocks quedarían agotados y
+    // Prisma real fallaría — más seguro que dejar valores de más sin usar.
+
+    const bloque = makeBloque({
+      nombreDetectado: "DANIEL",
+      nroComitenteDetectado: "153", // 3 dígitos — por debajo del mínimo
+      operaciones: [makeRawOp()],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasConError).toBe(1);
+    expect(result.filasConAdvertencia).toBe(0);
+    const callData = mocks.createFila.mock.calls[0][0].data;
+    expect(callData.carteraResueltaId == null).toBe(true);
+    expect(callData.erroresJson).toEqual(
+      expect.arrayContaining([expect.stringMatching(/comitente no encontrado/i)]),
+    );
+  });
+});
+
 describe("processBolsaExcelUpload — contadores y lote", () => {
   it("T-U13 — contadores totalFilas/resueltas/advertencias/errores exactos", async () => {
     mocks.findManyComitente.mockResolvedValue([COMITENTE_UNO]);

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   findUniqueUser: vi.fn(),
   findManyComitente: vi.fn(),
   findManyCartera: vi.fn(),
+  findUniqueActivo: vi.fn(),
   transaction: vi.fn(),
   createLote: vi.fn(),
   updateLote: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock("@/lib/prisma", () => ({
     user: { findUnique: mocks.findUniqueUser },
     comitenteInversion: { findMany: mocks.findManyComitente },
     cartera: { findMany: mocks.findManyCartera },
+    activo: { findUnique: mocks.findUniqueActivo },
     $transaction: mocks.transaction,
   },
 }));
@@ -135,6 +137,7 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
       { id: "comitente-1", nombre: "Juan Perez", esPropioBYG: false, carteraId: null },
     ]);
     mocks.findManyCartera.mockResolvedValue([]);
+    mocks.findUniqueActivo.mockResolvedValue({ id: "activo-1" });
   });
 
   // ── T-IMG-1: invalid parseResult structure ────────────────────────────────
@@ -651,5 +654,145 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
     expect(filaData.estado).toBe("ADVERTENCIA");
     expect(filaData.erroresJson).toBeUndefined();
     expect(filaData.fechaConcertacion).toEqual(FECHA_OPERATIVA_DEFAULT);
+  });
+});
+
+describe("processBolsaImageUpload — endurecimiento financiero modo GRID (E4.6C.1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.findUniqueArchivo.mockResolvedValue(null);
+    mocks.findFirstLote.mockResolvedValue(null);
+    mocks.findUniqueLote.mockResolvedValue(null);
+    mocks.findManyComitente.mockResolvedValue([
+      { id: "comitente-1", nombre: "Juan Perez", esPropioBYG: false, carteraId: null },
+    ]);
+    mocks.findManyCartera.mockResolvedValue([]);
+    mocks.findUniqueActivo.mockResolvedValue({ id: "activo-1" });
+  });
+
+  function makeGridParseResult(opOverrides: Partial<BolsaImageParseResult["bloques"][0]["operaciones"][0]>) {
+    const parseResult = makeParseResult(1);
+    parseResult.modo = "GRID";
+    Object.assign(parseResult.bloques[0].operaciones[0], opOverrides);
+    return parseResult;
+  }
+
+  it("E-1: ticker inexistente en el catálogo (Activo) queda null y agrega error puntual — fila ERROR", async () => {
+    mocks.findUniqueActivo.mockResolvedValue(null); // "GAAL" no existe en Activo
+    const parseResult = makeGridParseResult({ ticker: "GAAL", cantidad: "408", precio: "8.205", montoNetoReferencia: "3348.84" });
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(result.filasConError).toBe(1);
+    expect(mocks.findUniqueActivo).toHaveBeenCalledWith(expect.objectContaining({ where: { ticker: "GAAL" } }));
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.ticker).toBeUndefined(); // columna resuelta: null → undefined en el create data
+    expect(filaData.erroresJson).toContain("Ticker no reconocido: GAAL");
+    // El texto OCR original se conserva intacto en rawJson pese a que la columna quedó null.
+    expect((filaData.rawJson as { ticker: string | null }).ticker).toBe("GAAL");
+  });
+
+  it("E-2: cantidad × precio muy por fuera del monto neto (separador perdido) bloquea la fila", async () => {
+    // 408 × 8.205.000 (separador decimal perdido por el OCR) vs monto real 3.352.996 — 1000x de diferencia.
+    const parseResult = makeGridParseResult({
+      ticker: "GGAL",
+      cantidad: "408",
+      precio: "8205000",
+      montoNetoReferencia: "3352996.07",
+    });
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(result.filasConError).toBe(1);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.erroresJson).toEqual(
+      expect.arrayContaining([expect.stringMatching(/inconsistencia entre cantidad × precio/i)]),
+    );
+    // Los valores originales quedan intactos — nunca se corrige automáticamente.
+    expect(filaData.cantidad).toBe("408");
+    expect(filaData.precio).toBe("8205000");
+  });
+
+  it("E-3: cantidad reportada muy por debajo de la real (100 en vez de 1.000) también bloquea por magnitud", async () => {
+    // 100 unidades declaradas, pero el monto neto corresponde a 1.000 unidades reales.
+    const parseResult = makeGridParseResult({
+      ticker: "GGAL",
+      cantidad: "100",
+      precio: "41200",
+      montoNetoReferencia: "41265910.20", // corresponde a ~1.000 unidades, no 100
+    });
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(result.filasConError).toBe(1);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.erroresJson).toEqual(
+      expect.arrayContaining([expect.stringMatching(/inconsistencia entre cantidad × precio/i)]),
+    );
+  });
+
+  it("E-4: cantidad y precio coherentes con el monto (dentro de tolerancia por gastos) no agregan error", async () => {
+    // 408 × 8.205,000 ≈ 3.347.640 vs monto 3.352.996,07 — diferencia ~0.16%, normal por comisión.
+    const parseResult = makeGridParseResult({
+      ticker: "GGAL",
+      cantidad: "408",
+      precio: "8205.000",
+      montoNetoReferencia: "3352996.07",
+    });
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(result.filasConError).toBe(0);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.erroresJson).toBeUndefined();
+    expect(filaData.ticker).toBe("GGAL");
+  });
+
+  it("E-5: CAUCION nunca pasa por la validación de ticker/coherencia (no aplica)", async () => {
+    const parseResult = makeGridParseResult({
+      rawOperacion: "CAUCION COLOCADORA",
+      operacionBase: "CAUCION_COLOCADORA",
+      ticker: null,
+      cantidad: "87440200.00",
+      precio: null,
+      montoNetoReferencia: null,
+      tasaCaucion: "22.90",
+      montoCobrarReferencia: "87492602.86",
+    });
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(mocks.findUniqueActivo).not.toHaveBeenCalled();
+    expect(result.filasConError).toBe(0);
+  });
+
+  it("E-6: fuera del modo GRID (modo GENERIC_OCR o ausente), el mismo ticker inexistente NO se valida contra el catálogo", async () => {
+    const parseResult = makeParseResult(1);
+    // Sin modo === "GRID" — el endurecimiento de E4.6C.1 no aplica a este flujo.
+    parseResult.bloques[0].operaciones[0].ticker = "GAAL";
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(mocks.findUniqueActivo).not.toHaveBeenCalled();
+    expect(result.filasConError).toBe(0);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.ticker).toBe("GAAL");
+  });
+
+  it("E-7: cantidad negativa o cero queda ERROR con 'Cantidad inválida.'", async () => {
+    const parseResult = makeGridParseResult({ ticker: "GGAL", cantidad: "0", precio: "100", montoNetoReferencia: null });
+    setupTransaction();
+
+    const result = await processBolsaImageUpload(makeInput({ parseResult }), "user-1");
+
+    expect(result.filasConError).toBe(1);
+    const filaData = mocks.createFila.mock.calls[0][0].data;
+    expect(filaData.erroresJson).toContain("Cantidad inválida.");
   });
 });
