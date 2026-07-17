@@ -33,13 +33,17 @@ type ColMap = Partial<Record<ColKey, { cx: number }>>;
 
 // ── Column keyword patterns ────────────────────────────────────────────────
 
+// FECHA y MONTO usan un patrón "empieza con" (no anclado al final) porque en
+// tablas reales el OCR frecuentemente funde el encabezado de dos palabras con
+// la siguiente ("FECHA CONC." → "FECHACONC.", "MONTO NETO" → "MONTONETO") por
+// el kerning ajustado de la celda — el anclado exacto perdía la columna entera.
 const COL_KEYWORDS: Array<{ key: ColKey; patterns: RegExp[] }> = [
   { key: "OPERACION", patterns: [/OPERACI/i, /^OPERAC$/i] },
-  { key: "FECHA", patterns: [/^FECHA$/i, /^FEC\.?$/i] },
+  { key: "FECHA", patterns: [/^FECHA/i, /^FEC\.?$/i] },
   { key: "TICKER", patterns: [/^BONO$/i, /^TICKER$/i, /^INSTRUM/i, /^ESPECIE$/i] },
   { key: "CANTIDAD", patterns: [/^VN$/i, /^CANT\.?$/i, /^NOMINAL$/i, /^VN\.?$/i] },
   { key: "PRECIO", patterns: [/^PRECIO$/i, /^PX$/i] },
-  { key: "MONTO", patterns: [/^MONTO$/i, /^NETO$/i, /^IMPORTE$/i] },
+  { key: "MONTO", patterns: [/^MONTO/i, /^NETO$/i, /^IMPORTE$/i] },
   { key: "PLAZO", patterns: [/^PLAZO$/i, /^PLZO\.?$/i] },
   { key: "VTO", patterns: [/^VTO\.?$/i, /^VCTO\.?$/i, /^VENC\.?$/i, /^VCTO$/i] },
   { key: "TASA", patterns: [/^TASA$/i, /^TNA$/i, /^TASA\.?$/i] },
@@ -125,20 +129,30 @@ function detectCaucionMontoColumns(
 
   for (let i = 0; i < sorted.length; i++) {
     const word = sorted[i];
-    if (!/^(MONTO|NETO|IMPORTE)$/i.test(word.text)) continue;
+    if (!/^MONTO/i.test(word.text) && !/^(NETO|IMPORTE)$/i.test(word.text)) continue;
 
     const span = [word];
     let j = i + 1;
     while (j < sorted.length && span.length <= 2) {
       const next = sorted[j];
-      const isOtherKeyword = COL_KEYWORDS.some(({ patterns }) => patterns.some((p) => p.test(next.text)));
+      // Una nueva palabra que arranca con "MONTO" es una SEGUNDA columna
+      // monto (p.ej. caución con MONTO COL. y MONTO A COBRAR), nunca una
+      // continuación del calificador — hay que cortar ahí. "NETO"/"IMPORTE"
+      // sueltos sí matchean la clave MONTO pero son parte del mismo rótulo
+      // ("MONTO NETO"), así que esos no cortan el span.
+      const startsNewMonto = /^MONTO/i.test(next.text);
+      const isOtherKeyword =
+        startsNewMonto ||
+        COL_KEYWORDS.some(({ key, patterns }) => key !== "MONTO" && patterns.some((p) => p.test(next.text)));
       if (isOtherKeyword) break;
       span.push(next);
       j++;
     }
 
+    // El calificador puede venir en palabras separadas ("MONTO" + "COL.") o
+    // fundido en la misma palabra por el OCR ("MONTOCOL.") — se busca en todo
+    // el span, incluida la propia palabra "MONTO".
     const qualifierText = span
-      .slice(1)
       .map((w) => w.text)
       .join(" ")
       .toUpperCase();
@@ -163,7 +177,24 @@ function detectCaucionMontoColumns(
 export function detectTableHeader(row: OcrWord[]): ColMap | null {
   const { colMap, hits } = buildColMapFromRow(row);
   if (hits < 3) return null;
-  return { ...colMap, ...detectCaucionMontoColumns(row) };
+  const merged: ColMap = { ...colMap, ...detectCaucionMontoColumns(row) };
+
+  // Inferencia posicional de VTO/TASA: en cauciones reales el OCR a veces no
+  // logra leer esas dos palabras de encabezado en absoluto (celda ilegible),
+  // aunque sí reconoce OPERACION/FECHA/MONTO_INICIAL/MONTO_COBRAR_PAGAR. Se
+  // asume el orden estándar de la tabla — OPERACION | FECHA | VTO | MONTO
+  // COL./TOM. | TASA | MONTO A COBRAR/PAGAR — y se ubica cada columna faltante
+  // en el punto medio entre sus dos vecinas ya conocidas.
+  if (merged.FECHA && merged.MONTO_INICIAL && merged.MONTO_COBRAR_PAGAR) {
+    if (!merged.VTO) {
+      merged.VTO = { cx: (merged.FECHA.cx + merged.MONTO_INICIAL.cx) / 2 };
+    }
+    if (!merged.TASA) {
+      merged.TASA = { cx: (merged.MONTO_INICIAL.cx + merged.MONTO_COBRAR_PAGAR.cx) / 2 };
+    }
+  }
+
+  return merged;
 }
 
 /**
@@ -177,7 +208,12 @@ function mergeVerticalHeaderRows(rows: OcrWord[][]): OcrWord[][] {
   while (i < rows.length) {
     const row = rows[i];
     const { hits } = buildColMapFromRow(row);
-    if (hits > 0 && hits < 3 && i + 1 < rows.length) {
+    // Una fila ignorada (p.ej. "Tipo de cambio Neto" — "Neto" matchea la
+    // keyword MONTO) nunca debe fusionarse con el encabezado siguiente: si se
+    // fusionara, el texto "tipo de cambio" seguiría estando en la fila
+    // resultante y isIgnoredRow() la descartaría entera — destruyendo el
+    // encabezado real que iba pegado.
+    if (hits > 0 && hits < 3 && i + 1 < rows.length && !isIgnoredRow(row)) {
       const merged = [...row, ...rows[i + 1]];
       const { hits: mergedHits } = buildColMapFromRow(merged);
       if (mergedHits >= 3) {
@@ -229,7 +265,9 @@ export function isIgnoredRow(row: OcrWord[]): boolean {
  */
 export function parseArgNumber(s: string): string | null {
   if (!s) return null;
-  const clean = s.replace(/\$/g, "").replace(/\s/g, "").trim();
+  // La tasa de caución real viene como "22,90%" — el % es ruido alrededor
+  // del valor, igual que "$", nunca parte de la cantidad.
+  const clean = s.replace(/[\$%]/g, "").replace(/\s/g, "").trim();
   if (!clean) return null;
 
   // Argentine thousands+decimal: "1.234.567,89" or "1.234,56"
@@ -247,16 +285,37 @@ export function parseArgNumber(s: string): string | null {
 }
 
 /**
- * Parses a date in DD/MM/YYYY, DD-MM-YYYY, or YYYY-MM-DD to ISO YYYY-MM-DD.
+ * Detects the currency straight from a monto cell's raw text — "USD" marks
+ * dollars, "$" marks pesos. Never inferred from the ticker or any other
+ * column. Returns null when the cell has neither marker.
+ */
+export function detectMonedaFromText(s: string): "ARS" | "USD" | null {
+  if (/USD/i.test(s)) return "USD";
+  if (/\$/.test(s)) return "ARS";
+  return null;
+}
+
+/**
+ * Parses a date in DD/MM/YYYY, DD-MM-YYYY, DD-MM-YY, or YYYY-MM-DD to ISO
+ * YYYY-MM-DD. Bolsa boletas real-world use a 2-digit year ("14-07-26" for
+ * 2026-07-14) — assumed 20XX since these are always recent operations.
  */
 export function parseDate(s: string): string | null {
-  const m = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  // ISO primero: "2024-07-10" contiene la subcadena "24-07-10", que la regex
+  // DD-MM-YY de abajo matchearía mal (día 24, año 2010) si se probara antes.
+  const trimmed = s.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+
+  // \b evita matchear en medio de una tira de dígitos más larga (como la del
+  // ISO de arriba). El año va primero como \d{4} en la alternancia: la regex
+  // prueba las alternativas en orden, así que \d{2}|\d{4} truncaría "2024" a "20".
+  const m = s.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4}|\d{2})\b/);
   if (m) {
     const d = m[1].padStart(2, "0");
     const mo = m[2].padStart(2, "0");
-    return `${m[3]}-${mo}-${d}`;
+    const year = m[3].length === 2 ? `20${m[3]}` : m[3];
+    return `${year}-${mo}-${d}`;
   }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s.trim())) return s.trim();
   return null;
 }
 
@@ -387,7 +446,7 @@ export function parseDataRow(
   const fechaConcertacion =
     parseDate(fechaRaw) ??
     (() => {
-      const m = allRowText.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/);
+      const m = allRowText.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4}|\d{2})\b/);
       return m ? parseDate(m[0]) : null;
     })();
 
@@ -406,11 +465,25 @@ export function parseDataRow(
   const montoInicialText = get("MONTO_INICIAL");
   const cantidad = parseArgNumber(isCaucion && montoInicialText ? montoInicialText : get("CANTIDAD"));
 
-  const montoCobrarPagarValue = isCaucion ? parseArgNumber(get("MONTO_COBRAR_PAGAR")) : null;
+  const montoCobrarPagarText = get("MONTO_COBRAR_PAGAR");
+  const montoCobrarPagarValue = isCaucion ? parseArgNumber(montoCobrarPagarText) : null;
+
+  // La moneda se lee de la celda de monto misma ("$" → ARS, "USD" → USD),
+  // nunca inferida del ticker ni de otra columna.
+  const monedaDetectada =
+    detectMonedaFromText(get("MONTO")) ??
+    detectMonedaFromText(montoInicialText) ??
+    detectMonedaFromText(montoCobrarPagarText);
 
   const errors: string[] = [];
   if (!fechaConcertacion) errors.push("Fecha no detectada.");
   if (operacionBase === "DESCONOCIDA") errors.push("Tipo de operación no reconocido.");
+  // Compra/venta sin ticker legible: la fila se conserva igual en staging con
+  // ticker=null (nunca se descarta) para que pueda corregirse manualmente
+  // desde la revisión del lote — el error bloqueante marca su estado ERROR.
+  if ((operacionBase === "COMPRA" || operacionBase === "VENTA") && !ticker) {
+    errors.push("Ticker no detectado.");
+  }
 
   // Never let a stray monto (or any corrupted/out-of-range value) reach
   // Prisma's Decimal(8,4) tasaCaucion column — null it out and flag the row.
@@ -428,7 +501,7 @@ export function parseDataRow(
     ticker,
     cantidad,
     precio: parseArgNumber(get("PRECIO")),
-    monedaDetectada: null,
+    monedaDetectada,
     montoNetoReferencia: parseArgNumber(get("MONTO")),
     plazo: plazoRaw,
     plazoNormalizado: plazoNorm,
@@ -636,8 +709,12 @@ export async function preprocessImageForOcr(file: File): Promise<HTMLCanvasEleme
     el.src = url;
   });
 
-  const MAX_DIM = 2400;
-  const MIN_DIM = 1200;
+  // Bumped from 2400/1200 after a real dry-run: at ~1200px Tesseract fuses
+  // tightly-kerned two-word headers ("FECHA CONC." → "FECHACONC.") and drops
+  // whole cells (a VTO date read as empty); at ~2600-4000px those separate
+  // and read correctly.
+  const MAX_DIM = 3600;
+  const MIN_DIM = 2600;
   let tw = img.naturalWidth;
   let th = img.naturalHeight;
   const longSide = Math.max(tw, th);

@@ -4,12 +4,19 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mocks = vi.hoisted(() => ({
   findUniqueArchivo: vi.fn(),
   findFirstLote: vi.fn(),
+  findUniqueLote: vi.fn(),
+  findUniqueUser: vi.fn(),
   findManyComitente: vi.fn(),
+  findManyCartera: vi.fn(),
   transaction: vi.fn(),
   createLote: vi.fn(),
   updateLote: vi.fn(),
   createArchivo: vi.fn(),
+  updateArchivo: vi.fn(),
   createFila: vi.fn(),
+  deleteManyFila: vi.fn(),
+  findManyFila: vi.fn(),
+  createAuditLog: vi.fn(),
 }));
 
 // Transitive dep: process-upload.ts → resolveComitente → parseBolsaExcel
@@ -19,9 +26,12 @@ vi.mock("@/lib/importers/bolsa-excel/parser", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    bolsaImportArchivo: { findUnique: mocks.findUniqueArchivo },
-    bolsaImportLote: { findFirst: mocks.findFirstLote },
+    bolsaImportArchivo: { findUnique: mocks.findUniqueArchivo, update: mocks.updateArchivo },
+    bolsaImportLote: { findFirst: mocks.findFirstLote, findUnique: mocks.findUniqueLote },
+    bolsaImportFila: { deleteMany: mocks.deleteManyFila, findMany: mocks.findManyFila },
+    user: { findUnique: mocks.findUniqueUser },
     comitenteInversion: { findMany: mocks.findManyComitente },
+    cartera: { findMany: mocks.findManyCartera },
     $transaction: mocks.transaction,
   },
 }));
@@ -76,6 +86,7 @@ function makeInput(
     fileName: string;
     fileSize: number;
     fechaOperativa: Date;
+    reanalizar: boolean;
   }>,
 ) {
   return {
@@ -84,6 +95,7 @@ function makeInput(
     fileSize: overrides?.fileSize ?? 1024,
     mimeType: "image/jpeg" as const,
     fechaOperativa: overrides?.fechaOperativa ?? FECHA_OPERATIVA_DEFAULT,
+    reanalizar: overrides?.reanalizar,
   };
 }
 
@@ -96,8 +108,16 @@ function setupTransaction(loteId = "lote-img-1", archivoId = "archivo-img-1") {
         create: mocks.createLote.mockResolvedValue(lote),
         update: mocks.updateLote.mockResolvedValue(lote),
       },
-      bolsaImportArchivo: { create: mocks.createArchivo.mockResolvedValue(archivo) },
-      bolsaImportFila: { create: mocks.createFila.mockResolvedValue({ id: "fila-x" }) },
+      bolsaImportArchivo: {
+        create: mocks.createArchivo.mockResolvedValue(archivo),
+        update: mocks.updateArchivo.mockResolvedValue(archivo),
+      },
+      bolsaImportFila: {
+        create: mocks.createFila.mockResolvedValue({ id: "fila-x" }),
+        deleteMany: mocks.deleteManyFila.mockResolvedValue({ count: 0 }),
+        findMany: mocks.findManyFila.mockResolvedValue([]),
+      },
+      auditLog: { create: mocks.createAuditLog },
     }),
   );
   return { lote, archivo };
@@ -110,9 +130,11 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
     vi.clearAllMocks();
     mocks.findUniqueArchivo.mockResolvedValue(null);
     mocks.findFirstLote.mockResolvedValue(null);
+    mocks.findUniqueLote.mockResolvedValue(null);
     mocks.findManyComitente.mockResolvedValue([
       { id: "comitente-1", nombre: "Juan Perez", esPropioBYG: false, carteraId: null },
     ]);
+    mocks.findManyCartera.mockResolvedValue([]);
   });
 
   // ── T-IMG-1: invalid parseResult structure ────────────────────────────────
@@ -145,6 +167,82 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
     expect(result.estado).toBe("DUPLICADO");
     expect(result.archivoExistente?.loteId).toBe("lote-prev");
     expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  // ── Reanálisis de un archivo duplicado (E4.6A) ───────────────────────────
+  describe("reanálisis", () => {
+    const ARCHIVO_EXISTENTE = {
+      id: "archivo-prev",
+      loteId: "lote-prev",
+      createdAt: new Date("2024-07-01T00:00:00Z"),
+      estado: "LISTO",
+    };
+
+    it("T-IMG-2b: duplicado sin reanalizar=true nunca toca la transacción", async () => {
+      mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "REVISION_PENDIENTE", creadoPorId: "user-1" });
+
+      const result = await processBolsaImageUpload(makeInput(), "user-1");
+
+      expect(result.estado).toBe("DUPLICADO");
+      expect(result.archivoExistente?.reanalizable).toBe(true);
+      expect(mocks.transaction).not.toHaveBeenCalled();
+    });
+
+    it("T-IMG-2c: reanalizar=true en un lote REVISION_PENDIENTE reemplaza las filas de ESE archivo en una sola transacción", async () => {
+      mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "REVISION_PENDIENTE", creadoPorId: "user-1" });
+      setupTransaction();
+
+      const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
+
+      expect(result.ok).toBe(true);
+      expect(result.estado).toBe("REVISION_PENDIENTE");
+      expect(result.loteId).toBe("lote-prev");
+      expect(result.archivoId).toBe("archivo-prev");
+      expect(mocks.transaction).toHaveBeenCalledTimes(1);
+      expect(mocks.deleteManyFila).toHaveBeenCalledWith({ where: { archivoId: "archivo-prev" } });
+      expect(mocks.updateArchivo).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "archivo-prev" } }));
+      expect(mocks.createFila).toHaveBeenCalledTimes(1);
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ accion: "LOTE_REANALIZADO" }) }),
+      );
+    });
+
+    it("T-IMG-2d: reanalizar=true en un lote EN_VALIDACION es rechazado, nunca reemplaza filas", async () => {
+      mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "EN_VALIDACION", creadoPorId: "user-1" });
+
+      const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
+
+      expect(result.estado).toBe("DUPLICADO");
+      expect(result.archivoExistente?.reanalizable).toBe(false);
+      expect(mocks.transaction).not.toHaveBeenCalled();
+      expect(mocks.deleteManyFila).not.toHaveBeenCalled();
+    });
+
+    it("T-IMG-2e: reanalizar=true por un usuario que no creó el lote y no es ADMIN es rechazado", async () => {
+      mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "REVISION_PENDIENTE", creadoPorId: "otro-user" });
+      mocks.findUniqueUser.mockResolvedValue({ role: "EMPLEADO" });
+
+      const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/permisos/i);
+      expect(mocks.deleteManyFila).not.toHaveBeenCalled();
+    });
+
+    it("T-IMG-2f: reanalizar=true en un lote DEVUELTO sí se admite", async () => {
+      mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "DEVUELTO", creadoPorId: "user-1" });
+      setupTransaction();
+
+      const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
+
+      expect(result.ok).toBe(true);
+      expect(result.estado).toBe("REVISION_PENDIENTE");
+    });
   });
 
   // ── T-IMG-3: valid result creates lote REVISION_PENDIENTE ────────────────

@@ -25,7 +25,7 @@ type ImgFase =
   | { fase: "armando" }
   | { fase: "guardando" }
   | { fase: "ok"; result: ProcessBolsaResult }
-  | { fase: "duplicado"; loteId?: string; creadoEl?: string }
+  | { fase: "duplicado"; loteId?: string; creadoEl?: string; reanalizable?: boolean }
   | { fase: "error"; msg: string };
 
 type ImagenEntry = { file: File; estado: ImgFase };
@@ -39,12 +39,14 @@ export function ImportarBolsaForm() {
   // ── Excel ──────────────────────────────────────────────────────────────────
   const [excelState, setExcelState] = useState<ProcessBolsaResult | null>(null);
   const [excelPending, startExcelTransition] = useTransition();
+  const [excelConfirmandoReanalisis, setExcelConfirmandoReanalisis] = useState(false);
   const excelInputRef = useRef<HTMLInputElement>(null);
 
   // ── Imagen (OCR local + staging) ─────────────────────────────────────────
   const [imagenes, setImagenes] = useState<ImagenEntry[]>([]);
   const [loteActual, setLoteActual] = useState<string | undefined>();
   const [imgConfirming, setImgConfirming] = useState(false);
+  const [confirmandoReanalisisIdx, setConfirmandoReanalisisIdx] = useState<number | null>(null);
   const [imgPending, startImgTransition] = useTransition();
   const imagenInputRef = useRef<HTMLInputElement>(null);
 
@@ -52,9 +54,11 @@ export function ImportarBolsaForm() {
   // nunca mostramos el estado de una corrida vieja mientras se prepara una nueva.
   function limpiarResultadosAnteriores() {
     setExcelState(null);
+    setExcelConfirmandoReanalisis(false);
     setImagenes([]);
     setLoteActual(undefined);
     setImgConfirming(false);
+    setConfirmandoReanalisisIdx(null);
   }
 
   function handleCambiarModo(m: Modo) {
@@ -71,6 +75,28 @@ export function ImportarBolsaForm() {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     setExcelState(null);
+    startExcelTransition(async () => {
+      const result = await importarBolsaExcelAction(null, fd);
+      setExcelState(result);
+    });
+  }
+
+  function pedirReanalizarExcel() {
+    setExcelConfirmandoReanalisis(true);
+  }
+
+  function cancelarReanalizarExcel() {
+    setExcelConfirmandoReanalisis(false);
+  }
+
+  function confirmarReanalizarExcel() {
+    setExcelConfirmandoReanalisis(false);
+    const file = excelInputRef.current?.files?.[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.set("file", file);
+    fd.set("fechaOperativa", fechaOperativa);
+    fd.set("reanalizar", "true");
     startExcelTransition(async () => {
       const result = await importarBolsaExcelAction(null, fd);
       setExcelState(result);
@@ -181,6 +207,7 @@ export function ImportarBolsaForm() {
               fase: "duplicado",
               loteId: result.archivoExistente?.loteId,
               creadoEl: result.archivoExistente?.creadoEl,
+              reanalizable: result.archivoExistente?.reanalizable,
             });
           } else if (!result.ok) {
             actualizarEntrada(i, {
@@ -191,6 +218,76 @@ export function ImportarBolsaForm() {
             actualizarEntrada(i, { fase: "ok", result });
           }
         }
+      } finally {
+        worker.terminate().catch(() => {});
+      }
+    });
+  }
+
+  function pedirReanalizarImagen(idx: number) {
+    setConfirmandoReanalisisIdx(idx);
+  }
+
+  function cancelarReanalizarImagen() {
+    setConfirmandoReanalisisIdx(null);
+  }
+
+  function confirmarReanalizarImagen(idx: number) {
+    setConfirmandoReanalisisIdx(null);
+    const file = imagenes[idx].file;
+
+    startImgTransition(async () => {
+      let worker: TesseractWorker | null = null;
+      try {
+        worker = await createOcrWorker();
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        actualizarEntrada(idx, {
+          fase: "error",
+          msg: detail ? `No se pudo inicializar el OCR: ${detail}` : "No se pudo inicializar el OCR.",
+        });
+        return;
+      }
+
+      try {
+        let parseResult: Awaited<ReturnType<typeof ocrBolsaImage>>;
+        try {
+          parseResult = await ocrBolsaImage(file, worker, (msg) => {
+            if (msg === "Preparando imagen") actualizarEntrada(idx, { fase: "preparando" });
+            else if (msg === "Leyendo texto") actualizarEntrada(idx, { fase: "ocr", msg: "Leyendo texto…" });
+            else if (msg === "Armando operaciones") actualizarEntrada(idx, { fase: "armando" });
+          });
+        } catch (err) {
+          actualizarEntrada(idx, {
+            fase: "error",
+            msg: err instanceof Error ? err.message : "Error al leer la imagen.",
+          });
+          return;
+        }
+
+        actualizarEntrada(idx, { fase: "guardando" });
+        const fd = new FormData();
+        fd.append("result", JSON.stringify(parseResult));
+        fd.append("fileName", file.name);
+        fd.append("fileSize", String(file.size));
+        fd.append("mimeType", file.type === "image/png" ? "image/png" : "image/jpeg");
+        fd.append("fechaOperativa", fechaOperativa);
+        fd.append("reanalizar", "true");
+
+        let result: ProcessBolsaResult;
+        try {
+          result = await importarBolsaImagenAction(fd);
+        } catch {
+          actualizarEntrada(idx, { fase: "error", msg: "Error de red al guardar. Intentá de nuevo." });
+          return;
+        }
+
+        if (!result.ok) {
+          actualizarEntrada(idx, { fase: "error", msg: result.error ?? "No se pudo reanalizar el lote." });
+          return;
+        }
+        if (result.loteId) setLoteActual(result.loteId);
+        actualizarEntrada(idx, { fase: "ok", result });
       } finally {
         worker.terminate().catch(() => {});
       }
@@ -274,7 +371,15 @@ export function ImportarBolsaForm() {
           >
             {excelPending ? "Analizando..." : "Analizar Excel"}
           </button>
-          {excelState && <ResultadoExcel result={excelState} />}
+          {excelState && (
+            <ResultadoExcel
+              result={excelState}
+              confirmandoReanalisis={excelConfirmandoReanalisis}
+              onPedirReanalizar={pedirReanalizarExcel}
+              onConfirmarReanalizar={confirmarReanalizarExcel}
+              onCancelarReanalizar={cancelarReanalizarExcel}
+            />
+          )}
         </form>
       )}
 
@@ -346,7 +451,14 @@ export function ImportarBolsaForm() {
           {imagenes.length > 0 && (
             <div className="flex flex-col gap-2">
               {imagenes.map((entry, i) => (
-                <ImagenEntryCard key={i} entry={entry} />
+                <ImagenEntryCard
+                  key={i}
+                  entry={entry}
+                  confirmandoReanalisis={confirmandoReanalisisIdx === i}
+                  onPedirReanalizar={() => pedirReanalizarImagen(i)}
+                  onConfirmarReanalizar={() => confirmarReanalizarImagen(i)}
+                  onCancelarReanalizar={cancelarReanalizarImagen}
+                />
               ))}
               {loteActual && (
                 <div className="flex items-center justify-between mt-1">
@@ -369,7 +481,19 @@ export function ImportarBolsaForm() {
 
 // ── Resultado Excel ────────────────────────────────────────────────────────────
 
-function ResultadoExcel({ result }: { result: ProcessBolsaResult }) {
+function ResultadoExcel({
+  result,
+  confirmandoReanalisis,
+  onPedirReanalizar,
+  onConfirmarReanalizar,
+  onCancelarReanalizar,
+}: {
+  result: ProcessBolsaResult;
+  confirmandoReanalisis: boolean;
+  onPedirReanalizar: () => void;
+  onConfirmarReanalizar: () => void;
+  onCancelarReanalizar: () => void;
+}) {
   if (!result.ok && !result.estado) {
     return (
       <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/20 dark:border-red-800/40 p-4">
@@ -420,14 +544,49 @@ function ResultadoExcel({ result }: { result: ProcessBolsaResult }) {
             >
               Lote: {loteParaRevisar}
             </p>
-            {!previoFalló && (
-              <Link
-                href={`/bolsa/importar/${loteParaRevisar}`}
-                className="px-4 py-2 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+            <div className="flex gap-2">
+              {result.archivoExistente?.reanalizable && !confirmandoReanalisis && (
+                <button
+                  type="button"
+                  onClick={onPedirReanalizar}
+                  className="px-4 py-2 rounded-lg border border-amber-400 text-amber-700 dark:text-amber-400 text-[11px] font-black uppercase tracking-wider hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+                >
+                  Reanalizar lote
+                </button>
+              )}
+              {!previoFalló && (
+                <Link
+                  href={`/bolsa/importar/${loteParaRevisar}`}
+                  className="px-4 py-2 rounded-lg bg-byg-accent text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+                >
+                  Revisar lote
+                </Link>
+              )}
+            </div>
+          </div>
+        )}
+        {confirmandoReanalisis && (
+          <div className="mt-3 p-3 rounded-lg border border-amber-300 bg-amber-100/50 dark:bg-amber-900/20 flex flex-col gap-2">
+            <p className="text-[12px] text-amber-800 dark:text-amber-300">
+              Se va a reemplazar el contenido del lote <strong>{loteParaRevisar}</strong> con este
+              archivo y la fecha seleccionada. Las filas actuales del lote se pierden.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onConfirmarReanalizar}
+                className="px-4 py-2 rounded-lg bg-amber-600 text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
               >
-                Revisar lote
-              </Link>
-            )}
+                Confirmar reanálisis
+              </button>
+              <button
+                type="button"
+                onClick={onCancelarReanalizar}
+                className="px-4 py-2 rounded-lg border border-byg-border text-byg-muted text-[11px] font-black uppercase tracking-wider hover:text-byg-text transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -481,7 +640,19 @@ function ResultadoExcel({ result }: { result: ProcessBolsaResult }) {
 
 // ── Card de estado por imagen ─────────────────────────────────────────────────
 
-function ImagenEntryCard({ entry }: { entry: ImagenEntry }) {
+function ImagenEntryCard({
+  entry,
+  confirmandoReanalisis,
+  onPedirReanalizar,
+  onConfirmarReanalizar,
+  onCancelarReanalizar,
+}: {
+  entry: ImagenEntry;
+  confirmandoReanalisis: boolean;
+  onPedirReanalizar: () => void;
+  onConfirmarReanalizar: () => void;
+  onCancelarReanalizar: () => void;
+}) {
   const { file, estado } = entry;
   const baseClass = "rounded-xl border p-3 flex flex-col gap-1.5 transition-colors";
 
@@ -554,6 +725,39 @@ function ImagenEntryCard({ entry }: { entry: ImagenEntry }) {
           )}
           .
         </p>
+        {estado.reanalizable && !confirmandoReanalisis && (
+          <button
+            type="button"
+            onClick={onPedirReanalizar}
+            className="self-start px-3 py-1.5 rounded-lg border border-amber-400 text-amber-700 dark:text-amber-400 text-[10px] font-black uppercase tracking-wider hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+          >
+            Reanalizar lote
+          </button>
+        )}
+        {confirmandoReanalisis && (
+          <div className="flex flex-col gap-2 mt-1">
+            <p className="text-[11px] text-amber-800 dark:text-amber-300">
+              Se van a reemplazar las filas de este archivo en el lote {estado.loteId} con esta
+              imagen y la fecha seleccionada.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={onConfirmarReanalizar}
+                className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-[10px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+              >
+                Confirmar
+              </button>
+              <button
+                type="button"
+                onClick={onCancelarReanalizar}
+                className="px-3 py-1.5 rounded-lg border border-byg-border text-byg-muted text-[10px] font-black uppercase tracking-wider hover:text-byg-text transition-colors"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

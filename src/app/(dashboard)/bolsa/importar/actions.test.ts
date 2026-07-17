@@ -87,3 +87,21 @@ describe("importarBolsaImagenAction — fecha operativa (E4.5C)", () => {
     expect(input.fechaOperativa).toEqual(new Date("2026-07-14T00:00:00.000Z"));
   });
 });
+
+describe("importarBolsaImagenAction — reanálisis (E4.6A)", () => {
+  it("ACT-4: sin campo 'reanalizar' en el FormData, se reenvía reanalizar=false", async () => {
+    await importarBolsaImagenAction(makeImagenFormData());
+    const [input] = mocks.processBolsaImageUpload.mock.calls[0];
+    expect(input.reanalizar).toBe(false);
+  });
+
+  it("ACT-5: reanalizar='true' en el FormData se reenvía como reanalizar=true", async () => {
+    const fd = makeImagenFormData();
+    fd.set("reanalizar", "true");
+
+    await importarBolsaImagenAction(fd);
+
+    const [input] = mocks.processBolsaImageUpload.mock.calls[0];
+    expect(input.reanalizar).toBe(true);
+  });
+});

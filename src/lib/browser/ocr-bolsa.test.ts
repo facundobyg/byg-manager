@@ -6,6 +6,7 @@ import {
   isIgnoredRow,
   parseArgNumber,
   parseDate,
+  detectMonedaFromText,
   parseDataRow,
   reconstructBolsaBlocks,
   extractOcrWords,
@@ -258,6 +259,38 @@ describe("parseDate", () => {
 
   it("OCR-25: returns null for unparseable string", () => {
     expect(parseDate("notadate")).toBeNull();
+  });
+
+  // Boletas reales de bolsa usan año de 2 dígitos ("14-07-26" = 2026-07-14),
+  // confirmado por un dry-run real de OCR — bug real encontrado en E4.6A.
+  it("OCR-25b: parses DD-MM-YY (2-digit year) assuming 20XX", () => {
+    expect(parseDate("14-07-26")).toBe("2026-07-14");
+    expect(parseDate("15-07-26")).toBe("2026-07-15");
+  });
+
+  it("OCR-25c: a 4-digit year is never truncated to its first 2 digits", () => {
+    expect(parseDate("10/07/2024")).toBe("2024-07-10");
+  });
+
+  it("OCR-25d: an already-ISO date is never re-parsed as DD-MM-YY from a digit substring", () => {
+    // "2024-07-10" contains the substring "24-07-10" — must not be read as
+    // día=24, mes=07, año=2010.
+    expect(parseDate("2024-07-10")).toBe("2024-07-10");
+  });
+});
+
+describe("detectMonedaFromText", () => {
+  it("OCR-25e: detects ARS from a '$' marker", () => {
+    expect(detectMonedaFromText("$ 87.440.200,00")).toBe("ARS");
+  });
+
+  it("OCR-25f: detects USD from a 'USD' marker", () => {
+    expect(detectMonedaFromText("USD 2.226,12")).toBe("USD");
+  });
+
+  it("OCR-25g: returns null when neither marker is present", () => {
+    expect(detectMonedaFromText("2.226,12")).toBeNull();
+    expect(detectMonedaFromText("")).toBeNull();
   });
 });
 
@@ -659,6 +692,297 @@ describe("positional fallback must not leak across differently-shaped rows", () 
     expect(compra.errors).not.toContain("Fecha no detectada.");
     expect(compra.cantidad).toBe("10000");
     expect(compra.precio).toBe("65.25");
+  });
+});
+
+// ── Fixture real de 11 operaciones (E4.6A, DANIEL/11538) ─────────────────────
+//
+// Modelado sobre un dry-run real de Tesseract contra la imagen del lote
+// dca3f66b/489a5c54 ("Captura de pantalla 2026-07-15 122741.png", no incluida
+// en el repo). El dry-run reveló patrones reales de OCR que los tests
+// anteriores no cubrían:
+//   - encabezados de dos palabras fundidos por el kerning ajustado de la
+//     celda ("FECHA CONC." → "FECHACONC.", "MONTO NETO" → "MONTONETO");
+//   - fechas en formato DD-MM-AA de 2 dígitos ("14-07-26" = 2026-07-14);
+//   - la celda de TASA/VTO de la caución a veces no se lee como texto en
+//     absoluto (encabezado ilegible), aunque sí se leen OPERACION/FECHA/
+//     MONTO_INICIAL/MONTO_COBRAR_PAGAR — requiere inferencia posicional;
+//   - la tasa viene con el signo "%" pegado ("22,90%");
+//   - la moneda ($/USD) está pegada al monto, nunca al ticker.
+function makeFixture11Operaciones(): OcrWord[] {
+  return [
+    // Comitente
+    w("DANIEL", 10, 10, 70, 24),
+    w("11538", 90, 10, 140, 24),
+
+    // ── Tabla 1: caución — encabezado sin texto de VTO/TASA (inferencia posicional)
+    w("OPERACIÓN", 10, 40, 90, 54),
+    w("FECHACONC.", 110, 40, 230, 54), // "FECHA CONC." fundido
+    w("MONTO", 270, 40, 310, 54),
+    w("COL.", 315, 40, 350, 54),
+    w("MONTO", 470, 40, 510, 54),
+    w("A", 515, 40, 530, 54),
+    w("COBRAR", 535, 40, 590, 54),
+
+    // Fila caución: CAUCION COL. | 14-07-26 | 15-07-26 | $87.440.200,00 | 22,90% | $87.492.602,86
+    w("CAUCION", 10, 70, 60, 84),
+    w("COL.", 65, 70, 100, 84),
+    w("14-07-26", 130, 70, 210, 84),
+    w("15-07-26", 220, 70, 260, 84),
+    w("$87.440.200,00", 270, 70, 350, 84),
+    w("22,90%", 400, 70, 440, 84),
+    w("$87.492.602,86", 470, 70, 590, 84),
+
+    // Ignorado — no debe convertirse en operación
+    w("Tipo", 10, 100, 50, 114),
+    w("de", 55, 100, 75, 114),
+    w("cambio", 80, 100, 130, 114),
+    w("Neto", 135, 100, 175, 114),
+    w("$1.505,66", 195, 100, 260, 114),
+
+    // ── Tabla 2: compra/venta (7 operaciones)
+    w("OPERACIÓN", 10, 140, 90, 154),
+    w("FECHACONC.", 110, 140, 230, 154),
+    w("BONO", 260, 140, 300, 154),
+    w("VN", 350, 140, 390, 154),
+    w("PRECIO", 440, 140, 480, 154),
+    w("MONTO", 520, 140, 560, 154),
+    w("NETO", 565, 140, 600, 154),
+    w("PLAZO", 630, 140, 670, 154),
+
+    // 2. COMPRA GGAL 408 @ 8.205
+    w("COMPRA", 10, 170, 60, 184),
+    w("14-07-26", 130, 170, 210, 184),
+    w("GGAL", 260, 170, 300, 184),
+    w("408", 350, 170, 390, 184),
+    w("8.205,000", 430, 170, 490, 184),
+    w("$3.352.996,07", 510, 170, 610, 184),
+    w("24hs", 630, 170, 670, 184),
+
+    // 3. VENTA GGALD 408 @ 5,46
+    w("VENTA", 10, 190, 55, 204),
+    w("14-07-26", 130, 190, 210, 204),
+    w("GGALD", 260, 190, 305, 204),
+    w("408", 350, 190, 390, 204),
+    w("5,46000", 430, 190, 480, 204),
+    w("USD2.226,12", 510, 190, 610, 204),
+    w("24hs", 630, 190, 670, 204),
+
+    // 4. COMPRA TSLA 1.000 @ 41.200
+    w("COMPRA", 10, 210, 60, 224),
+    w("14-07-26", 130, 210, 210, 224),
+    w("TSLA", 260, 210, 300, 224),
+    w("1.000", 350, 210, 390, 224),
+    w("41.200,000", 430, 210, 490, 224),
+    w("$41.265.910,20", 510, 210, 610, 224),
+    w("24hs", 630, 210, 670, 224),
+
+    // 5. VENTA TSLAD 1.000 @ 27,43
+    w("VENTA", 10, 230, 55, 244),
+    w("14-07-26", 130, 230, 210, 244),
+    w("TSLAD", 260, 230, 305, 244),
+    w("1.000", 350, 230, 390, 244),
+    w("27,43000", 430, 230, 480, 244),
+    w("USD27.410,80", 510, 230, 610, 244),
+    w("24hs", 630, 230, 670, 244),
+
+    // 6. COMPRA MELI 64 @ 24.400
+    w("COMPRA", 10, 250, 60, 264),
+    w("14-07-26", 130, 250, 210, 264),
+    w("MELI", 260, 250, 300, 264),
+    w("64", 350, 250, 380, 264),
+    w("24.400,000", 430, 250, 490, 264),
+    w("$1.564.098,07", 510, 250, 610, 264),
+    w("24hs", 630, 250, 670, 264),
+
+    // 7. VENTA MELID 64 @ 16,20
+    w("VENTA", 10, 270, 55, 284),
+    w("14-07-26", 130, 270, 210, 284),
+    w("MELID", 260, 270, 305, 284),
+    w("64", 350, 270, 380, 284),
+    w("16,20000", 430, 270, 480, 284),
+    w("USD1.036,07", 510, 270, 610, 284),
+    w("24hs", 630, 270, 670, 284),
+
+    // 8. VENTA AL41D 50.000 @ 0,76534
+    w("VENTA", 10, 290, 55, 304),
+    w("14-07-26", 130, 290, 210, 304),
+    w("AL41D", 260, 290, 305, 304),
+    w("50.000", 350, 290, 390, 304),
+    w("0,76534", 430, 290, 480, 304),
+    w("USD38.267,16", 510, 290, 610, 304),
+    w("24hs", 630, 290, 670, 304),
+
+    // Ignorado — segunda línea de tipo de cambio neto
+    w("Tipo", 10, 310, 50, 324),
+    w("de", 55, 310, 75, 324),
+    w("cambio", 80, 310, 130, 324),
+    w("Neto", 135, 310, 175, 324),
+    w("$1.508,69", 195, 310, 260, 324),
+
+    // ── Tabla 3: compra/venta (3 operaciones) — encabezado repetido
+    w("OPERACIÓN", 10, 330, 90, 344),
+    w("FECHACONC.", 110, 330, 230, 344),
+    w("BONO", 260, 330, 300, 344),
+    w("VN", 350, 330, 390, 344),
+    w("PRECIO", 440, 330, 480, 344),
+    w("MONTO", 520, 330, 560, 344),
+    w("NETO", 565, 330, 600, 344),
+    w("PLAZO", 630, 330, 670, 344),
+
+    // 9. VENTA AL30 54.625 @ 849,10
+    w("VENTA", 10, 360, 55, 374),
+    w("14-07-26", 130, 360, 210, 374),
+    w("AL30", 260, 360, 295, 374),
+    w("54.625", 350, 360, 390, 374),
+    w("849,100", 430, 360, 480, 374),
+    w("$46.276.115,16", 510, 360, 610, 374),
+    w("24hs", 630, 360, 670, 374),
+
+    // 10. COMPRA AL30D 54.625 @ 0,56150
+    w("COMPRA", 10, 380, 60, 394),
+    w("14-07-26", 130, 380, 210, 394),
+    w("AL30D", 260, 380, 305, 394),
+    w("54.625", 350, 380, 390, 394),
+    w("0,56150", 430, 380, 480, 394),
+    w("USD30.673,03", 510, 380, 610, 394),
+    w("24hs", 630, 380, 670, 394),
+
+    // 11. COMPRA AL41D 50.000 @ 0,76436
+    w("COMPRA", 10, 400, 60, 414),
+    w("14-07-26", 130, 400, 210, 414),
+    w("AL41D", 260, 400, 305, 414),
+    w("50.000", 350, 400, 390, 414),
+    w("0,76436", 430, 400, 480, 414),
+    w("USD38.217,92", 510, 400, 610, 414),
+    w("24hs", 630, 400, 670, 414),
+  ];
+}
+
+describe("fixture real de 11 operaciones (E4.6A)", () => {
+  it("OCR-53: detecta exactamente las 11 operaciones, sin fantasmas y sin 'Tipo de cambio' convertido en fila", () => {
+    const blocks = reconstructBolsaBlocks(makeFixture11Operaciones());
+    const ops = blocks.flatMap((b) => b.operaciones);
+
+    expect(ops).toHaveLength(11);
+    expect(ops.every((op) => op.operacionBase !== "DESCONOCIDA")).toBe(true);
+    expect(ops.every((op) => !op.rawOperacion.toLowerCase().includes("tipo"))).toBe(true);
+    expect(blocks.every((b) => b.nombreDetectado === "DANIEL" && b.nroComitenteDetectado === "11538")).toBe(true);
+  });
+
+  it("OCR-54: la caución queda completa — fechas, principal, tasa y monto a cobrar sin cruzarse", () => {
+    const blocks = reconstructBolsaBlocks(makeFixture11Operaciones());
+    const caucion = blocks.flatMap((b) => b.operaciones).find((op) => op.operacionBase === "CAUCION_COLOCADORA");
+
+    expect(caucion).toBeDefined();
+    expect(caucion!.fechaConcertacion).toBe("2026-07-14");
+    expect(caucion!.fechaVencimiento).toBe("2026-07-15");
+    expect(caucion!.cantidad).toBe("87440200.00");
+    expect(caucion!.tasaCaucion).toBe("22.90");
+    expect(caucion!.montoCobrarReferencia).toBe("87492602.86");
+    expect(caucion!.montoPagarReferencia).toBeNull();
+    expect(caucion!.errors).toHaveLength(0);
+  });
+
+  it("OCR-55: las 10 compras/ventas tienen ticker, cantidad y precio correctos — nunca un monto en su lugar", () => {
+    const blocks = reconstructBolsaBlocks(makeFixture11Operaciones());
+    const ops = blocks.flatMap((b) => b.operaciones).filter((op) => op.operacionBase !== "CAUCION_COLOCADORA");
+
+    const esperado: Array<{ base: string; ticker: string; cantidad: string; precio: string }> = [
+      { base: "COMPRA", ticker: "GGAL", cantidad: "408", precio: "8205.000" },
+      { base: "VENTA", ticker: "GGALD", cantidad: "408", precio: "5.46000" },
+      { base: "COMPRA", ticker: "TSLA", cantidad: "1000", precio: "41200.000" },
+      { base: "VENTA", ticker: "TSLAD", cantidad: "1000", precio: "27.43000" },
+      { base: "COMPRA", ticker: "MELI", cantidad: "64", precio: "24400.000" },
+      { base: "VENTA", ticker: "MELID", cantidad: "64", precio: "16.20000" },
+      { base: "VENTA", ticker: "AL41D", cantidad: "50000", precio: "0.76534" },
+      { base: "VENTA", ticker: "AL30", cantidad: "54625", precio: "849.100" },
+      { base: "COMPRA", ticker: "AL30D", cantidad: "54625", precio: "0.56150" },
+      { base: "COMPRA", ticker: "AL41D", cantidad: "50000", precio: "0.76436" },
+    ];
+
+    expect(ops).toHaveLength(10);
+    esperado.forEach((exp, i) => {
+      expect(ops[i].operacionBase).toBe(exp.base);
+      expect(ops[i].ticker).toBe(exp.ticker);
+      expect(ops[i].cantidad).toBe(exp.cantidad);
+      expect(ops[i].precio).toBe(exp.precio);
+      expect(ops[i].fechaConcertacion).toBe("2026-07-14");
+      expect(ops[i].plazoNormalizado).toBe("24HS");
+    });
+  });
+
+  it("OCR-56: detecta ARS/USD según la celda de monto, nunca según el ticker", () => {
+    const blocks = reconstructBolsaBlocks(makeFixture11Operaciones());
+    const ops = blocks.flatMap((b) => b.operaciones);
+
+    const ggalCompra = ops.find((op) => op.ticker === "GGAL");
+    const ggaldVenta = ops.find((op) => op.ticker === "GGALD");
+    expect(ggalCompra?.monedaDetectada).toBe("ARS");
+    expect(ggaldVenta?.monedaDetectada).toBe("USD");
+  });
+});
+
+// Caso real: Tesseract lee COMPRA, fecha, cantidad, precio y monto de la fila,
+// pero falla al reconocer la celda del ticker (p.ej. "COMPRA TSLA | 1.000 |
+// 41.200 | ARS 41.265.910,20" con la palabra "TSLA" ilegible/ausente).
+function makeFixtureTickerAusente(): OcrWord[] {
+  return [
+    w("DANIEL", 10, 10, 70, 24),
+    w("11538", 90, 10, 140, 24),
+
+    w("OPERACIÓN", 10, 40, 90, 54),
+    w("FECHACONC.", 110, 40, 230, 54),
+    w("BONO", 260, 40, 300, 54),
+    w("VN", 350, 40, 390, 54),
+    w("PRECIO", 440, 40, 480, 54),
+    w("MONTO", 520, 40, 560, 54),
+    w("NETO", 565, 40, 600, 54),
+    w("PLAZO", 630, 40, 670, 54),
+
+    // COMPRA TSLA 1.000 @ 41.200 — sin palabra de ticker en la celda BONO/VN.
+    w("COMPRA", 10, 70, 60, 84),
+    w("14-07-26", 130, 70, 210, 84),
+    w("1.000", 350, 70, 390, 84),
+    w("41.200,000", 430, 70, 490, 84),
+    w("$41.265.910,20", 510, 70, 610, 84),
+    w("24hs", 630, 70, 670, 84),
+  ];
+}
+
+describe("ticker no detectado — fila nunca se descarta (E4.6A fix final)", () => {
+  it("OCR-57: COMPRA con ticker ilegible se conserva en staging con ticker=null, cantidad/precio/monto intactos y error explícito", () => {
+    const blocks = reconstructBolsaBlocks(makeFixtureTickerAusente());
+    const ops = blocks.flatMap((b) => b.operaciones);
+
+    expect(ops).toHaveLength(1);
+    const op = ops[0];
+    expect(op.operacionBase).toBe("COMPRA");
+    expect(op.ticker).toBeNull();
+    expect(op.cantidad).toBe("1000");
+    expect(op.precio).toBe("41200.000");
+    expect(op.montoNetoReferencia).toBe("41265910.20");
+    expect(op.errors).toContain("Ticker no detectado.");
+  });
+
+  it("OCR-58: una CAUCION sin ticker (no aplica) nunca dispara el error de ticker faltante", () => {
+    const row = [
+      w("CAUCION", 10, 0, 60, 14),
+      w("COL.", 65, 0, 100, 14),
+    ];
+    const colMap = detectTableHeader([
+      w("OPERACIÓN", 10, 0, 90, 14),
+      w("FECHA", 110, 0, 150, 14),
+      w("MONTO", 270, 0, 310, 14),
+      w("COL.", 315, 0, 350, 14),
+      w("MONTO", 470, 0, 510, 14),
+      w("A", 515, 0, 530, 14),
+      w("COBRAR", 535, 0, 590, 14),
+    ]);
+    expect(colMap).not.toBeNull();
+    const op = parseDataRow(row, colMap!, 1);
+    expect(op.operacionBase).toBe("CAUCION_COLOCADORA");
+    expect(op.errors).not.toContain("Ticker no detectado.");
   });
 });
 

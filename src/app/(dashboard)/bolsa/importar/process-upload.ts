@@ -13,6 +13,13 @@ import { parseFechaOperativa, isoDateString } from "./fecha-operativa";
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
 
+/**
+ * Estados de lote sobre los que un reanálisis puede reemplazar filas.
+ * EN_VALIDACION, APROBADO, CONFIRMADO (y CONFIRMADO_PARCIAL/RECHAZADO) nunca
+ * se sobrescriben — ya salieron de staging o están bajo revisión de Augusto.
+ */
+export const ESTADOS_REANALIZABLES = new Set(["REVISION_PENDIENTE", "FALLIDO", "DEVUELTO"]);
+
 function sha256(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
 }
@@ -32,6 +39,10 @@ export interface ProcessBolsaResult {
     loteId: string;
     creadoEl: string;
     estadoArchivo?: string;
+    /** Estado del LOTE (no del archivo) — determina si se puede "Reanalizar". */
+    estadoLote?: string;
+    /** true si estadoLote admite reanálisis (REVISION_PENDIENTE/FALLIDO/DEVUELTO). */
+    reanalizable?: boolean;
   };
   advertencias?: string[];
 }
@@ -73,11 +84,9 @@ export async function resolveComitente(
 
   let resolved: (typeof matches)[0] | null = null;
 
-  if (matches.length === 0) {
-    return { ...errorBase, errorMsg: `Comitente no encontrado: nro ${nroComitenteDetectado}` };
-  } else if (matches.length === 1) {
+  if (matches.length === 1) {
     resolved = matches[0];
-  } else {
+  } else if (matches.length > 1) {
     // Desambiguar por nombre
     const normNombre = normalizeNombre(nombreDetectado);
     const byName = matches.filter((m) => normalizeNombre(m.nombre) === normNombre);
@@ -89,6 +98,34 @@ export async function resolveComitente(
         errorMsg: `Comitente ambiguo: ${matches.length} registros activos con nroComitente=${nroComitenteDetectado}`,
       };
     }
+  }
+
+  if (!resolved) {
+    // Ningún cliente/comitente normal con ese número — puede ser una cartera
+    // propia registrada con ese mismo número de comitente en Banco Industrial
+    // (Cartera.comitenteNumber, usado para el espejo en cuentas de inversión).
+    const carteras = await prisma.cartera.findMany({
+      where: { comitenteNumber: nroComitenteDetectado, activa: true },
+      select: { id: true, nombre: true },
+    });
+    if (carteras.length === 1) {
+      const cartera = carteras[0];
+      return {
+        estado: normalizeNombre(cartera.nombre) !== normalizeNombre(nombreDetectado) ? "ADVERTENCIA" : "RESUELTA",
+        comitenteResueltoId: null,
+        carteraResueltaId: cartera.id,
+        tipoSujeto: "CARTERA",
+        conflictoNombre: normalizeNombre(cartera.nombre) !== normalizeNombre(nombreDetectado),
+        errorMsg: null,
+      };
+    }
+    if (carteras.length > 1) {
+      return {
+        ...errorBase,
+        errorMsg: `Cartera ambigua: ${carteras.length} registros con comitenteNumber=${nroComitenteDetectado}`,
+      };
+    }
+    return { ...errorBase, errorMsg: `Comitente no encontrado: nro ${nroComitenteDetectado}` };
   }
 
   const conflictoNombre = normalizeNombre(resolved.nombre) !== normalizeNombre(nombreDetectado);
@@ -140,6 +177,212 @@ function computeFingerprint(op: BolsaExcelRawOp, bloque: BolsaExcelBloque): stri
   return crypto.createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 32);
 }
 
+type FilaDataExcel = {
+  op: BolsaExcelRawOp;
+  bloque: BolsaExcelBloque;
+  resolucion: ComitenteResolucion;
+  estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
+  allErrors: string[];
+  allWarnings: string[];
+};
+
+/** Resuelve comitentes y prepara las filas — usado por el alta normal y el reanálisis. */
+async function buildFilaDataExcel(
+  parseResult: ReturnType<typeof parseBolsaExcel>,
+  fechaOperativaISO: string,
+): Promise<FilaDataExcel[]> {
+  const filaData: FilaDataExcel[] = [];
+  for (const bloque of parseResult.bloques) {
+    const resolucion = await resolveComitente(bloque.nroComitenteDetectado, bloque.nombreDetectado);
+    for (const op of bloque.operaciones) {
+      // La fecha operativa del lote reemplaza la fechaConcertacion de cada fila,
+      // así que "Fecha no detectada" del parser deja de ser un error real.
+      const allErrors = op.errors.filter((e) => e !== "Fecha no detectada.");
+      const allWarnings = [...op.warnings];
+      if (op.fechaConcertacion && op.fechaConcertacion !== fechaOperativaISO) {
+        allWarnings.push(
+          `Fecha detectada (${op.fechaConcertacion}) difiere de la fecha operativa seleccionada (${fechaOperativaISO}).`,
+        );
+      }
+      if (resolucion.errorMsg) allErrors.push(resolucion.errorMsg);
+
+      let estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
+      if (allErrors.length > 0 || resolucion.estado === "ERROR") {
+        estado = "ERROR";
+      } else if (allWarnings.length > 0 || resolucion.estado === "ADVERTENCIA") {
+        estado = "ADVERTENCIA";
+      } else {
+        estado = "RESUELTA";
+      }
+
+      filaData.push({ op, bloque, resolucion, estado, allErrors, allWarnings });
+    }
+  }
+  return filaData;
+}
+
+function filaCreateDataExcel(f: FilaDataExcel, loteId: string, archivoId: string, fechaOperativa: Date) {
+  const { op, bloque, resolucion, estado, allErrors, allWarnings } = f;
+  return {
+    id: crypto.randomUUID(),
+    loteId,
+    archivoId,
+    estado,
+    numeroBloque: bloque.numeroBloque,
+    numeroFila: op.numeroFila,
+    rawJson: op as object,
+    nombreDetectado: bloque.nombreDetectado ?? undefined,
+    nroComitenteDetectado: bloque.nroComitenteDetectado ?? undefined,
+    tipoOperacionDetectada: op.rawOperacion || undefined,
+    comitenteResueltoId: resolucion.comitenteResueltoId ?? undefined,
+    carteraResueltaId: resolucion.carteraResueltaId ?? undefined,
+    tipoSujeto: resolucion.tipoSujeto ?? undefined,
+    conflictoNombre: resolucion.conflictoNombre,
+    tipoOperacionResuelta: mapOpBase(op) ?? undefined,
+    ticker: op.ticker ?? undefined,
+    instrumento: op.instrumentoHint ?? undefined,
+    moneda: (op.monedaDetectada as "ARS" | "USD" | null) ?? undefined,
+    cantidad: op.cantidad ?? undefined,
+    precio: op.precio ?? undefined,
+    montoNetoReferencia: op.montoNetoReferencia ?? undefined,
+    // La fila siempre usa la fecha operativa del lote, no la detectada por
+    // el parser — esa queda solo en rawJson como referencia.
+    fechaConcertacion: fechaOperativa,
+    plazo: op.plazoNormalizado ?? op.plazo ?? undefined,
+    fechaVencimiento: op.fechaVencimiento ? new Date(op.fechaVencimiento) : undefined,
+    tasaCaucion: op.tasaCaucion ?? undefined,
+    montoCobrarReferencia: op.montoCobrarReferencia ?? undefined,
+    montoPagarReferencia: op.montoPagarReferencia ?? undefined,
+    erroresJson: allErrors.length > 0 ? allErrors : undefined,
+    warningsJson: allWarnings.length > 0 ? allWarnings : undefined,
+    fingerprint: computeFingerprint(op, bloque),
+    updatedAt: new Date(),
+  };
+}
+
+/**
+ * Reanaliza un archivo Excel ya existente (mismo hash de contenido):
+ * reemplaza sus filas de staging con un nuevo parseo, en una única
+ * transacción. Nunca sobrescribe un lote EN_VALIDACION/APROBADO/CONFIRMADO,
+ * y solo el creador del lote o un ADMIN pueden reanalizarlo.
+ */
+async function reanalizarArchivoExcel(
+  archivoExistente: { id: string; loteId: string },
+  buf: Buffer,
+  file: File,
+  fechaOperativa: Date,
+  hash: string,
+  userId: string,
+): Promise<ProcessBolsaResult> {
+  const baseResult = {
+    nombreArchivo: file.name,
+    totalFilas: 0,
+    filasResuelta: 0,
+    filasConAdvertencia: 0,
+    filasConError: 0,
+  };
+
+  const lote = await prisma.bolsaImportLote.findUnique({ where: { id: archivoExistente.loteId } });
+  if (!lote) return { ok: false, error: "Lote no encontrado.", ...baseResult };
+
+  if (lote.creadoPorId !== userId) {
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+    if (user?.role !== "ADMIN") {
+      return { ok: false, error: "No tenés permisos para reanalizar este lote.", ...baseResult };
+    }
+  }
+  if (!ESTADOS_REANALIZABLES.has(lote.estado)) {
+    return {
+      ok: false,
+      error: `El lote está en estado ${lote.estado} y no admite reanálisis.`,
+      ...baseResult,
+    };
+  }
+
+  let parseResult: ReturnType<typeof parseBolsaExcel>;
+  try {
+    parseResult = parseBolsaExcel(buf);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Error desconocido en el parser.";
+    return { ok: false, error: `Error al leer el archivo: ${msg}`, ...baseResult };
+  }
+
+  const fechaOperativaISO = isoDateString(fechaOperativa);
+  const filaData = await buildFilaDataExcel(parseResult, fechaOperativaISO);
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.bolsaImportFila.deleteMany({ where: { archivoId: archivoExistente.id } });
+
+      await tx.bolsaImportArchivo.update({
+        where: { id: archivoExistente.id },
+        data: {
+          nombreOriginal: file.name,
+          tamano: file.size,
+          fileHashSha256: hash,
+          estado: "LISTO",
+          hojaDetectada: parseResult.hojaProceada,
+          rawJson: parseResult as object,
+          warningsJson: parseResult.warningsGlobales.length > 0 ? parseResult.warningsGlobales : undefined,
+          errorMessage: parseResult.erroresGlobales.length > 0 ? parseResult.erroresGlobales.join("; ") : null,
+          totalFilas: filaData.length,
+          updatedAt: new Date(),
+        },
+      });
+
+      for (const f of filaData) {
+        await tx.bolsaImportFila.create({
+          data: filaCreateDataExcel(f, lote.id, archivoExistente.id, fechaOperativa),
+        });
+      }
+
+      const todasLasFilas = await tx.bolsaImportFila.findMany({
+        where: { loteId: lote.id },
+        select: { estado: true },
+      });
+      await tx.bolsaImportLote.update({
+        where: { id: lote.id },
+        data: {
+          estado: "REVISION_PENDIENTE",
+          fechaOperativa,
+          totalFilas: todasLasFilas.length,
+          filasConAdvertencia: todasLasFilas.filter((f) => f.estado === "ADVERTENCIA").length,
+          filasConError: todasLasFilas.filter((f) => f.estado === "ERROR").length,
+          filasExcluidas: todasLasFilas.filter((f) => f.estado === "EXCLUIDA").length,
+          filasListas: todasLasFilas.filter((f) => f.estado === "LISTA").length,
+          updatedAt: new Date(),
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          id: crypto.randomUUID(),
+          userId,
+          accion: "LOTE_REANALIZADO",
+          entidad: "BolsaImportLote",
+          entidadId: lote.id,
+          datosNuevos: { description: `Archivo reanalizado (${filaData.length} filas nuevas).` },
+        },
+      });
+    });
+  } catch (e) {
+    console.error("[reanalizarArchivoExcel] Error inesperado:", e);
+    return { ok: false, error: "No se pudo reanalizar el archivo.", ...baseResult };
+  }
+
+  return {
+    ok: true,
+    estado: "REVISION_PENDIENTE",
+    loteId: lote.id,
+    archivoId: archivoExistente.id,
+    nombreArchivo: file.name,
+    totalFilas: filaData.length,
+    filasResuelta: filaData.filter((f) => f.estado === "RESUELTA").length,
+    filasConAdvertencia: filaData.filter((f) => f.estado === "ADVERTENCIA").length,
+    filasConError: filaData.filter((f) => f.estado === "ERROR").length,
+  };
+}
+
 export async function processBolsaExcelUpload(
   formData: FormData,
   userId: string,
@@ -183,6 +426,14 @@ export async function processBolsaExcelUpload(
   const hash = sha256(buf);
   const existing = await prisma.bolsaImportArchivo.findUnique({ where: { fileHashSha256: hash } });
   if (existing) {
+    const loteExistente = await prisma.bolsaImportLote.findUnique({ where: { id: existing.loteId } });
+    const reanalizable = !!loteExistente && ESTADOS_REANALIZABLES.has(loteExistente.estado);
+    const reanalizar = formData.get("reanalizar") === "true";
+
+    if (reanalizar && reanalizable) {
+      return reanalizarArchivoExcel(existing, buf, file, fechaOperativa, hash, userId);
+    }
+
     // Siempre devolvemos DUPLICADO (sin crear un segundo lote), pero incluimos
     // estadoArchivo para que la UI pueda diferenciar LISTO de ERROR/FALLIDO.
     return {
@@ -195,6 +446,8 @@ export async function processBolsaExcelUpload(
         loteId: existing.loteId,
         creadoEl: existing.createdAt.toISOString(),
         estadoArchivo: existing.estado as string,
+        estadoLote: loteExistente?.estado,
+        reanalizable,
       },
     };
   }
@@ -254,42 +507,7 @@ export async function processBolsaExcelUpload(
   }
 
   // ── Resolución de comitentes y preparación de filas ───────────────────────────
-  const filaData: Array<{
-    op: BolsaExcelRawOp;
-    bloque: BolsaExcelBloque;
-    resolucion: ComitenteResolucion;
-    estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
-    allErrors: string[];
-    allWarnings: string[];
-  }> = [];
-
-  for (const bloque of parseResult.bloques) {
-    const resolucion = await resolveComitente(bloque.nroComitenteDetectado, bloque.nombreDetectado);
-    for (const op of bloque.operaciones) {
-      // La fecha operativa del lote reemplaza la fechaConcertacion de cada fila,
-      // así que "Fecha no detectada" del parser deja de ser un error real.
-      const allErrors = op.errors.filter((e) => e !== "Fecha no detectada.");
-      const allWarnings = [...op.warnings];
-      if (op.fechaConcertacion && op.fechaConcertacion !== fechaOperativaISO) {
-        allWarnings.push(
-          `Fecha detectada (${op.fechaConcertacion}) difiere de la fecha operativa seleccionada (${fechaOperativaISO}).`,
-        );
-      }
-      if (resolucion.errorMsg) allErrors.push(resolucion.errorMsg);
-
-      let estado: "RESUELTA" | "ADVERTENCIA" | "ERROR";
-      if (allErrors.length > 0 || resolucion.estado === "ERROR") {
-        estado = "ERROR";
-      } else if (allWarnings.length > 0 || resolucion.estado === "ADVERTENCIA") {
-        estado = "ADVERTENCIA";
-      } else {
-        estado = "RESUELTA";
-      }
-
-      filaData.push({ op, bloque, resolucion, estado, allErrors, allWarnings });
-    }
-  }
-
+  const filaData = await buildFilaDataExcel(parseResult, fechaOperativaISO);
   const totalFilas = filaData.length;
   const filasConError = filaData.filter((f) => f.estado === "ERROR").length;
   const filasConAdvertencia = filaData.filter((f) => f.estado === "ADVERTENCIA").length;
@@ -333,43 +551,9 @@ export async function processBolsaExcelUpload(
         },
       });
 
-      for (const { op, bloque, resolucion, estado, allErrors, allWarnings } of filaData) {
+      for (const f of filaData) {
         await tx.bolsaImportFila.create({
-          data: {
-            id: crypto.randomUUID(),
-            loteId: lote.id,
-            archivoId: archivo.id,
-            estado,
-            numeroBloque: bloque.numeroBloque,
-            numeroFila: op.numeroFila,
-            rawJson: op as object,
-            nombreDetectado: bloque.nombreDetectado ?? undefined,
-            nroComitenteDetectado: bloque.nroComitenteDetectado ?? undefined,
-            tipoOperacionDetectada: op.rawOperacion || undefined,
-            comitenteResueltoId: resolucion.comitenteResueltoId ?? undefined,
-            carteraResueltaId: resolucion.carteraResueltaId ?? undefined,
-            tipoSujeto: resolucion.tipoSujeto ?? undefined,
-            conflictoNombre: resolucion.conflictoNombre,
-            tipoOperacionResuelta: mapOpBase(op) ?? undefined,
-            ticker: op.ticker ?? undefined,
-            instrumento: op.instrumentoHint ?? undefined,
-            moneda: (op.monedaDetectada as "ARS" | "USD" | null) ?? undefined,
-            cantidad: op.cantidad ?? undefined,
-            precio: op.precio ?? undefined,
-            montoNetoReferencia: op.montoNetoReferencia ?? undefined,
-            // La fila siempre usa la fecha operativa del lote, no la detectada
-            // por el parser — esa queda solo en rawJson como referencia.
-            fechaConcertacion: fechaOperativa,
-            plazo: op.plazoNormalizado ?? op.plazo ?? undefined,
-            fechaVencimiento: op.fechaVencimiento ? new Date(op.fechaVencimiento) : undefined,
-            tasaCaucion: op.tasaCaucion ?? undefined,
-            montoCobrarReferencia: op.montoCobrarReferencia ?? undefined,
-            montoPagarReferencia: op.montoPagarReferencia ?? undefined,
-            erroresJson: allErrors.length > 0 ? allErrors : undefined,
-            warningsJson: allWarnings.length > 0 ? allWarnings : undefined,
-            fingerprint: computeFingerprint(op, bloque),
-            updatedAt: new Date(),
-          },
+          data: filaCreateDataExcel(f, lote.id, archivo.id, fechaOperativa),
         });
       }
 

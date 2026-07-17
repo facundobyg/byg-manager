@@ -7,11 +7,19 @@ import type { BolsaExcelBloque, BolsaExcelParseResult, BolsaExcelRawOp } from "@
 const mocks = vi.hoisted(() => ({
   parseBolsaExcel: vi.fn(),
   findUniqueArchivo: vi.fn(),
+  findUniqueLote: vi.fn(),
+  findUniqueUser: vi.fn(),
   findManyComitente: vi.fn(),
+  findManyCartera: vi.fn(),
   transaction: vi.fn(),
   createLote: vi.fn(),
+  updateLote: vi.fn(),
   createArchivo: vi.fn(),
+  updateArchivo: vi.fn(),
   createFila: vi.fn(),
+  deleteManyFila: vi.fn(),
+  findManyFila: vi.fn(),
+  createAuditLog: vi.fn(),
 }));
 
 vi.mock("@/lib/importers/bolsa-excel/parser", () => ({
@@ -20,8 +28,12 @@ vi.mock("@/lib/importers/bolsa-excel/parser", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    bolsaImportArchivo: { findUnique: mocks.findUniqueArchivo },
+    bolsaImportArchivo: { findUnique: mocks.findUniqueArchivo, update: mocks.updateArchivo },
+    bolsaImportLote: { findUnique: mocks.findUniqueLote },
+    bolsaImportFila: { deleteMany: mocks.deleteManyFila, findMany: mocks.findManyFila },
+    user: { findUnique: mocks.findUniqueUser },
     comitenteInversion: { findMany: mocks.findManyComitente },
+    cartera: { findMany: mocks.findManyCartera },
     $transaction: mocks.transaction,
   },
 }));
@@ -37,10 +49,15 @@ function makeXlsxFile(name = "ops.xlsx", size = 1024): File {
   });
 }
 
-function makeFormData(file: File, fechaOperativa: string | null = "2026-07-14"): FormData {
+function makeFormData(
+  file: File,
+  fechaOperativa: string | null = "2026-07-14",
+  extra?: Record<string, string>,
+): FormData {
   const fd = new FormData();
   fd.set("file", file);
   if (fechaOperativa !== null) fd.set("fechaOperativa", fechaOperativa);
+  for (const [k, v] of Object.entries(extra ?? {})) fd.set(k, v);
   return fd;
 }
 
@@ -124,27 +141,39 @@ beforeEach(() => {
 
   // Sin duplicado por defecto
   mocks.findUniqueArchivo.mockResolvedValue(null);
+  mocks.findUniqueLote.mockResolvedValue(null);
   // Sin comitentes por defecto
   mocks.findManyComitente.mockResolvedValue([]);
+  // Sin carteras propias por defecto
+  mocks.findManyCartera.mockResolvedValue([]);
   // Parser vacío por defecto
   mocks.parseBolsaExcel.mockReturnValue(emptyParseResult());
 
   // Retornos de los creates dentro de la transacción
   mocks.createLote.mockResolvedValue({ id: "lote-1", createdAt: new Date() });
   mocks.createArchivo.mockResolvedValue({ id: "arch-1", loteId: "lote-1", createdAt: new Date() });
+  mocks.updateArchivo.mockResolvedValue({ id: "arch-1", loteId: "lote-1" });
   mocks.createFila.mockResolvedValue({});
+  mocks.deleteManyFila.mockResolvedValue({ count: 0 });
+  mocks.findManyFila.mockResolvedValue([]);
 
   // La transacción llama al callback con un tx mock
   mocks.transaction.mockImplementation(
     async (callback: (tx: {
-      bolsaImportLote: { create: typeof mocks.createLote };
-      bolsaImportArchivo: { create: typeof mocks.createArchivo };
-      bolsaImportFila: { create: typeof mocks.createFila };
+      bolsaImportLote: { create: typeof mocks.createLote; update: typeof mocks.updateLote };
+      bolsaImportArchivo: { create: typeof mocks.createArchivo; update: typeof mocks.updateArchivo };
+      bolsaImportFila: {
+        create: typeof mocks.createFila;
+        deleteMany: typeof mocks.deleteManyFila;
+        findMany: typeof mocks.findManyFila;
+      };
+      auditLog: { create: typeof mocks.createAuditLog };
     }) => Promise<unknown>) => {
       return callback({
-        bolsaImportLote: { create: mocks.createLote },
-        bolsaImportArchivo: { create: mocks.createArchivo },
-        bolsaImportFila: { create: mocks.createFila },
+        bolsaImportLote: { create: mocks.createLote, update: mocks.updateLote },
+        bolsaImportArchivo: { create: mocks.createArchivo, update: mocks.updateArchivo },
+        bolsaImportFila: { create: mocks.createFila, deleteMany: mocks.deleteManyFila, findMany: mocks.findManyFila },
+        auditLog: { create: mocks.createAuditLog },
       });
     },
   );
@@ -243,6 +272,91 @@ describe("processBolsaExcelUpload — deduplicación SHA-256", () => {
   });
 });
 
+// ── Reanálisis de un archivo duplicado (E4.6A) ────────────────────────────────
+
+describe("processBolsaExcelUpload — reanálisis de duplicados", () => {
+  const ARCHIVO_EXISTENTE = {
+    id: "arch-viejo",
+    loteId: "lote-viejo",
+    createdAt: new Date("2026-07-10T10:00:00Z"),
+    estado: "LISTO",
+  };
+
+  it("T-U16 — duplicado sin reanalizar=true nunca toca el parser ni la transacción", async () => {
+    mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+    mocks.findUniqueLote.mockResolvedValue({ id: "lote-viejo", estado: "REVISION_PENDIENTE", creadoPorId: "user-1" });
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.estado).toBe("DUPLICADO");
+    expect(result.archivoExistente?.reanalizable).toBe(true);
+    expect(mocks.parseBolsaExcel).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  it("T-U17 — reanalizar=true en un lote REVISION_PENDIENTE reemplaza filas en una sola transacción", async () => {
+    mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+    mocks.findUniqueLote.mockResolvedValue({ id: "lote-viejo", estado: "REVISION_PENDIENTE", creadoPorId: "user-1" });
+    mocks.findManyComitente.mockResolvedValue([COMITENTE_UNO]);
+    const bloque = makeBloque({ operaciones: [makeRawOp()] });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(
+      makeFormData(makeXlsxFile(), "2026-07-14", { reanalizar: "true" }),
+      "user-1",
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.estado).toBe("REVISION_PENDIENTE");
+    expect(result.loteId).toBe("lote-viejo");
+    expect(result.archivoId).toBe("arch-viejo");
+    expect(mocks.transaction).toHaveBeenCalledTimes(1);
+    expect(mocks.deleteManyFila).toHaveBeenCalledWith({ where: { archivoId: "arch-viejo" } });
+    expect(mocks.updateArchivo).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "arch-viejo" } }),
+    );
+    expect(mocks.createFila).toHaveBeenCalledTimes(1);
+    expect(mocks.updateLote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ estado: "REVISION_PENDIENTE", fechaOperativa: new Date("2026-07-14T00:00:00.000Z") }),
+      }),
+    );
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ accion: "LOTE_REANALIZADO" }) }),
+    );
+  });
+
+  it("T-U18 — reanalizar=true en un lote EN_VALIDACION es rechazado, nunca reemplaza filas", async () => {
+    mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+    mocks.findUniqueLote.mockResolvedValue({ id: "lote-viejo", estado: "EN_VALIDACION", creadoPorId: "user-1" });
+
+    const result = await processBolsaExcelUpload(
+      makeFormData(makeXlsxFile(), "2026-07-14", { reanalizar: "true" }),
+      "user-1",
+    );
+
+    expect(result.estado).toBe("DUPLICADO");
+    expect(result.archivoExistente?.reanalizable).toBe(false);
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.deleteManyFila).not.toHaveBeenCalled();
+  });
+
+  it("T-U19 — reanalizar=true por un usuario que no creó el lote y no es ADMIN es rechazado", async () => {
+    mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+    mocks.findUniqueLote.mockResolvedValue({ id: "lote-viejo", estado: "REVISION_PENDIENTE", creadoPorId: "otro-user" });
+    mocks.findUniqueUser.mockResolvedValue({ role: "SOCIO" });
+
+    const result = await processBolsaExcelUpload(
+      makeFormData(makeXlsxFile(), "2026-07-14", { reanalizar: "true" }),
+      "user-1",
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/permisos/i);
+    expect(mocks.deleteManyFila).not.toHaveBeenCalled();
+  });
+});
+
 describe("processBolsaExcelUpload — parser fatal", () => {
   it("T-U6 — parser lanza excepción → FALLIDO lote + ERROR archivo, sin filas", async () => {
     mocks.parseBolsaExcel.mockImplementation(() => {
@@ -293,6 +407,81 @@ describe("processBolsaExcelUpload — resolución de comitentes", () => {
         }),
       }),
     );
+  });
+
+  // ── Resolución de cartera propia (E4.6A — DANIEL/11538 en Banco Industrial) ─
+
+  it("T-U7b — sin comitente pero con cartera propia por comitenteNumber → CARTERA resuelta, nunca COMITENTE", async () => {
+    mocks.findManyComitente.mockResolvedValue([]); // no es cliente/comitente normal
+    mocks.findManyCartera.mockResolvedValue([{ id: "cart-daniel", nombre: "Daniel" }]);
+    const bloque = makeBloque({
+      nombreDetectado: "DANIEL",
+      nroComitenteDetectado: "11538",
+      operaciones: [makeRawOp()],
+    });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasResuelta).toBe(1);
+    expect(result.filasConError).toBe(0);
+    expect(mocks.findManyCartera).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { comitenteNumber: "11538", activa: true } }),
+    );
+    expect(mocks.createFila).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          estado: "RESUELTA",
+          tipoSujeto: "CARTERA",
+          carteraResueltaId: "cart-daniel",
+          comitenteResueltoId: undefined,
+        }),
+      }),
+    );
+  });
+
+  it("T-U7c — un comitente normal con ese número tiene prioridad sobre una cartera propia homónima", async () => {
+    mocks.findManyComitente.mockResolvedValue([COMITENTE_UNO]);
+    mocks.findManyCartera.mockResolvedValue([{ id: "cart-x", nombre: "GARCIA JUAN" }]);
+    const bloque = makeBloque({ operaciones: [makeRawOp()] });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasResuelta).toBe(1);
+    expect(mocks.findManyCartera).not.toHaveBeenCalled();
+    expect(mocks.createFila).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ tipoSujeto: "COMITENTE", comitenteResueltoId: "com-1" }),
+      }),
+    );
+  });
+
+  it("T-U7d — cartera propia inactiva no se resuelve (fila ERROR)", async () => {
+    mocks.findManyComitente.mockResolvedValue([]);
+    mocks.findManyCartera.mockResolvedValue([]); // activa:true en el where → una inactiva no aparece
+    const bloque = makeBloque({ operaciones: [makeRawOp()] });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasConError).toBe(1);
+  });
+
+  it("T-U7e — número de comitente ambiguo entre varias carteras propias → fila ERROR", async () => {
+    mocks.findManyComitente.mockResolvedValue([]);
+    mocks.findManyCartera.mockResolvedValue([
+      { id: "cart-1", nombre: "A" },
+      { id: "cart-2", nombre: "B" },
+    ]);
+    const bloque = makeBloque({ operaciones: [makeRawOp()] });
+    mocks.parseBolsaExcel.mockReturnValue(emptyParseResult({ bloques: [bloque] }));
+
+    const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
+
+    expect(result.filasConError).toBe(1);
+    const callData = mocks.createFila.mock.calls[0][0].data;
+    expect(callData.carteraResueltaId).toBeUndefined();
   });
 
   it("T-U8 — comitente único → fila RESUELTA con comitenteResueltoId", async () => {

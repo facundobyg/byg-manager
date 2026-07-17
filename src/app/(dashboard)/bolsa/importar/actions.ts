@@ -97,6 +97,7 @@ export async function importarBolsaImagenAction(
 
   const existingLoteId =
     typeof loteIdRaw === "string" && loteIdRaw.length > 0 ? loteIdRaw : undefined;
+  const reanalizar = formData.get("reanalizar") === "true";
 
   const result = await processBolsaImageUpload(
     {
@@ -105,6 +106,7 @@ export async function importarBolsaImagenAction(
       fileSize: Number(fileSize) || 0,
       mimeType,
       fechaOperativa,
+      reanalizar,
     },
     session.user.id,
     existingLoteId,
