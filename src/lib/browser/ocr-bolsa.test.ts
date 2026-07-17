@@ -986,6 +986,216 @@ describe("ticker no detectado — fila nunca se descarta (E4.6A fix final)", () 
   });
 });
 
+// Palabras y coordenadas REALES obtenidas de un dry-run de Tesseract contra la
+// imagen fixture de E4.6A/E4.6B ("Captura de pantalla 2026-07-15 122741.png",
+// no incluida en el repo). Antes del fix E4.6B, este OCR real producía 5
+// bloques (DANIEL/11538 dividido en 2, más 3 comitentes falsos inventados a
+// partir de basura de OCR: "TSLAD 27,"/"43000", "VENTA meo e 13000"/"140726")
+// y 2 operaciones fantasma sin tipo ("—"). Root cause: el mapeo de columnas
+// del encabezado real "Tabla 2" (BONO/PRECIO/MONTO NETO — sin "VN" legible en
+// esta pasada) tenía menos columnas que la fila de datos garabateada
+// "COMPRA" (y0=349-431, una caja de 82px de alto que fusionó varias líneas
+// físicas), y una de esas líneas garabateadas contenía una tira de 5-6
+// dígitos que superaba el chequeo de comitente demasiado permisivo.
+function makeFixtureImagenRealE4_6B(): OcrWord[] {
+  return [
+    w("DANIEL", 888, 1, 998, 36, 96),
+    w("11538", 1231, 5, 1318, 27, 94),
+
+    w("OPERACIÓN", 230, 104, 402, 146, 96),
+    w("FECHA", 549, 115, 641, 137, 96),
+    w("CONC.", 649, 115, 739, 137, 96),
+    w("MONTO", 1180, 115, 1295, 137, 96),
+    w("COL.", 1304, 115, 1367, 137, 95),
+    w("MONTO", 1823, 115, 1938, 137, 96),
+    w("A", 1946, 115, 1967, 137, 96),
+    w("COBRAR", 1976, 115, 2096, 137, 96),
+
+    w("CAUCION", 214, 224, 345, 246, 92),
+    w("COL.", 356, 224, 418, 246, 95),
+    w("14-07-26", 583, 224, 707, 246, 95),
+    w("15-07-26", 882, 224, 1005, 246, 96),
+    w("$", 1105, 220, 1120, 251, 66),
+    w("87.440.200,00|", 1249, 220, 1455, 255, 47),
+    w("22,90%", 1570, 222, 1672, 251, 92),
+    w("S", 1799, 221, 1813, 250, 78),
+    w("87.492.602,86", 1926, 224, 2128, 251, 67),
+
+    w("OPERACION", 230, 323, 402, 365, 91),
+    w("FECHA", 549, 334, 641, 356, 95),
+    w("CONC.", 649, 334, 739, 356, 96),
+    w("BONO", 900, 334, 988, 356, 96),
+    w("PRECIO", 1569, 334, 1673, 356, 95),
+    w("MONTO", 1858, 334, 1973, 356, 91),
+    w("NETO", 1983, 334, 2061, 356, 96),
+    w("|", 2129, 312, 2161, 374, 86),
+    w("pazo", 2242, 312, 2357, 374, 40),
+    w("|", 2408, 312, 2465, 374, 71),
+
+    // Fila garabateada (GGAL/GGALD): caja fusionada de 82px de alto, sin
+    // ticker/cantidad/precio recuperables en esta pasada — se conserva con
+    // ticker=null y "Ticker no detectado.", nunca se pierde ni se corrompe en
+    // un comitente falso.
+    w("COMPRA", 253, 349, 379, 431, 95),
+    w("140726", 583, 391, 707, 413, 55),
+    w("SGAL", 905, 391, 983, 413, 52),
+    w("2205000", 1551, 391, 1691, 418, 71),
+    w("[$", 1799, 387, 1813, 417, 48),
+    w("325298007", 1943, 391, 2126, 418, 73),
+    w("oaks", 2216, 349, 2347, 431, 45),
+    w("|", 2408, 349, 2463, 431, 52),
+
+    w("VENTA", 270, 563, 362, 585, 82),
+    w("14:07:26", 583, 563, 707, 585, 58),
+    w("TSLAD", 898, 521, 986, 603, 85),
+    w("27,43000", 1555, 521, 1686, 603, 64),
+    w("vsp27.410:0", 1922, 563, 2128, 585, 11),
+    w(" 2ahe", 2198, 521, 2342, 603, 5),
+    w("|", 2403, 521, 2465, 603, 74),
+
+    w("COMPRA", 253, 578, 379, 660, 95),
+    w("14:07:26", 583, 620, 707, 642, 73),
+    w("me", 910, 620, 975, 642, 56),
+    w("|", 1076, 578, 1118, 660, 49),
+    w("e", 1199, 602, 1289, 656, 49),
+    w("|", 1391, 578, 1474, 660, 69),
+    w("aso", 1542, 620, 1699, 647, 5),
+    w("ls", 1799, 616, 1813, 646, 57),
+    w("—", 1862, 578, 1890, 660, 57),
+    w("15609807", 1944, 602, 2460, 656, 36),
+    w("Z4hs", 2252, 578, 2348, 660, 21),
+    w("—", 2375, 578, 2410, 660, 68),
+    w("|", 2436, 578, 2464, 660, 85),
+
+    w("VENTA", 270, 678, 363, 700, 96),
+    w("140726", 583, 678, 707, 700, 59),
+    w("meo", 900, 678, 988, 700, 48),
+    w("|", 1078, 634, 1162, 718, 68),
+    w("e", 1093, 659, 1453, 714, 55),
+    w("|", 1386, 634, 1470, 718, 72),
+    w("13000", 1556, 678, 1686, 704, 55),
+    w("USD", 1940, 678, 1995, 700, 13),
+    w("103607)", 2008, 659, 2460, 714, 13),
+    w("Zahs", 2258, 634, 2342, 718, 33),
+    w("|", 2405, 634, 2461, 718, 75),
+
+    w("VENTA", 270, 735, 363, 757, 96),
+    w("14-07-26", 583, 735, 707, 757, 96),
+    w("AL41D", 897, 735, 988, 757, 91),
+    w("50.000", 1227, 731, 1326, 766, 96),
+    w("0,76534", 1563, 735, 1677, 761, 87),
+    w("USD", 1922, 735, 1978, 757, 94),
+    w("38.267,16)", 1990, 712, 2149, 775, 13),
+    w(" 24hs", 2206, 712, 2343, 775, 38),
+    w("|", 2400, 712, 2464, 775, 69),
+
+    // Ignorado — nunca debe convertirse en operación ni en comitente.
+    w("Tipo", 799, 899, 860, 932, 96),
+    w("de", 868, 899, 905, 925, 96),
+    w("cambio", 911, 899, 1019, 924, 96),
+    w("Neto:", 1026, 901, 1106, 925, 96),
+    w("Ss", 1460, 893, 1484, 934, 60),
+    w("1.505,66", 1657, 901, 1783, 929, 19),
+
+    w("OPERACIÓN", 230, 1009, 402, 1038, 88),
+    w("—", 431, 974, 459, 1056, 66),
+    w("|", 478, 974, 507, 1056, 81),
+    w("FECHA", 549, 1016, 636, 1038, 67),
+    w("CONC.", 649, 1016, 739, 1038, 89),
+    w("BONO", 900, 1016, 988, 1038, 70),
+    w("PRECIO", 1569, 1016, 1673, 1038, 88),
+    w("MONTONETO", 1858, 1016, 2061, 1038, 54),
+    w("|", 2113, 974, 2182, 1056, 70),
+    w("mao]", 2133, 998, 2460, 1052, 9),
+
+    w("VENTA", 270, 1074, 363, 1096, 96),
+    w("14-07-26", 583, 1074, 707, 1096, 95),
+    w("AL30", 909, 1074, 978, 1096, 90),
+    w("54.625", 1227, 1074, 1320, 1096, 95),
+    w("845,100", 1564, 1070, 1680, 1105, 89),
+    w("S", 1799, 1070, 1813, 1099, 67),
+    w("46.276.115,16|", 1926, 1051, 2148, 1114, 71),
+    w(" 2ahs", 2205, 1051, 2342, 1114, 39),
+    w("|", 2399, 1051, 2463, 1114, 77),
+
+    w("COMPRA", 253, 1127, 380, 1162, 95),
+    w("14-07-26", 583, 1131, 707, 1153, 96),
+    w("AL30D", 897, 1131, 988, 1153, 91),
+    w("54.625", 1227, 1131, 1320, 1153, 96),
+    w("0,56150", 1563, 1131, 1677, 1157, 92),
+    w("USD", 1922, 1131, 1978, 1153, 93),
+    w("3067303)", 1990, 1108, 2149, 1171, 50),
+    w("24hs", 2248, 1108, 2349, 1171, 75),
+    w("|", 2400, 1108, 2464, 1171, 70),
+
+    w("COMPRA", 253, 1184, 380, 1219, 95),
+    w("14-07-26", 583, 1188, 707, 1210, 96),
+    w("AL41D", 897, 1188, 988, 1210, 92),
+    w("50.000", 1227, 1184, 1326, 1219, 95),
+    w("0,76436", 1563, 1188, 1677, 1214, 91),
+    w("USD", 1922, 1188, 1978, 1210, 94),
+    w("38.217,92)", 1990, 1166, 2188, 1228, 38),
+    w("24hs", 2249, 1166, 2348, 1228, 77),
+    w("|", 2399, 1166, 2462, 1228, 71),
+
+    w("Tipo", 799, 1295, 860, 1328, 96),
+    w("de", 868, 1295, 905, 1320, 97),
+    w("cambio", 911, 1295, 1019, 1320, 96),
+    w("Neto:", 1026, 1297, 1106, 1320, 96),
+    w("Ss", 1460, 1289, 1484, 1329, 58),
+    w("1.508,69)", 1657, 1297, 1783, 1325, 17),
+  ];
+}
+
+describe("regresión E4.6B — falso comitente y filas fantasma con OCR real", () => {
+  it("REG-1: un único comitente (DANIEL/11538) se mantiene activo en todos los bloques — nunca un comitente falso inventado de ruido de OCR", () => {
+    const blocks = reconstructBolsaBlocks(makeFixtureImagenRealE4_6B());
+
+    expect(blocks.length).toBeGreaterThan(0);
+    expect(blocks.every((b) => b.nombreDetectado === "DANIEL")).toBe(true);
+    expect(blocks.every((b) => b.nroComitenteDetectado === "11538")).toBe(true);
+  });
+
+  it("REG-2: ninguna operación fantasma sin tipo reconocible persiste", () => {
+    const blocks = reconstructBolsaBlocks(makeFixtureImagenRealE4_6B());
+    const ops = blocks.flatMap((b) => b.operaciones);
+
+    expect(ops.every((op) => op.operacionBase !== "DESCONOCIDA")).toBe(true);
+    expect(ops.every((op) => !op.rawOperacion.toLowerCase().includes("tipo"))).toBe(true);
+  });
+
+  it("REG-3: la caución y las operaciones con datos legibles se reconstruyen correctamente", () => {
+    const blocks = reconstructBolsaBlocks(makeFixtureImagenRealE4_6B());
+    const ops = blocks.flatMap((b) => b.operaciones);
+
+    const caucion = ops.find((op) => op.operacionBase === "CAUCION_COLOCADORA");
+    expect(caucion).toBeDefined();
+    expect(caucion!.fechaConcertacion).toBe("2026-07-14");
+    expect(caucion!.fechaVencimiento).toBe("2026-07-15");
+    expect(caucion!.tasaCaucion).toBe("22.90");
+
+    const al41dVenta = ops.find((op) => op.ticker === "AL41D" && op.operacionBase === "VENTA");
+    expect(al41dVenta?.precio).toBe("0.76534");
+    expect(al41dVenta?.monedaDetectada).toBe("USD");
+
+    const al30dCompra = ops.find((op) => op.ticker === "AL30D");
+    expect(al30dCompra?.precio).toBe("0.56150");
+
+    const al41dCompra = ops.filter((op) => op.ticker === "AL41D" && op.operacionBase === "COMPRA");
+    expect(al41dCompra).toHaveLength(1);
+    expect(al41dCompra[0].precio).toBe("0.76436");
+  });
+
+  it("REG-4: filas con celdas ilegibles se conservan editables (ticker=null + error puntual), nunca se pierden ni corrompen el comitente", () => {
+    const blocks = reconstructBolsaBlocks(makeFixtureImagenRealE4_6B());
+    const ops = blocks.flatMap((b) => b.operaciones);
+
+    const sinTicker = ops.filter((op) => op.ticker === null && (op.operacionBase === "COMPRA" || op.operacionBase === "VENTA"));
+    expect(sinTicker.length).toBeGreaterThan(0);
+    expect(sinTicker.every((op) => op.errors.includes("Ticker no detectado."))).toBe(true);
+  });
+});
+
 // ── extractOcrWords ───────────────────────────────────────────────────────────
 
 describe("extractOcrWords", () => {

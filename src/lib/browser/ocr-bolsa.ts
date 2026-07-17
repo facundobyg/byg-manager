@@ -363,6 +363,66 @@ function isOpCandidateRow(row: OcrWord[]): boolean {
   return detectOpBase(text) !== "DESCONOCIDA";
 }
 
+// Vocabulario de operación/columna que nunca puede aparecer en un encabezado
+// de comitente real — si aparece, la fila es una fila de datos (probablemente
+// corrupta por el OCR) y su número no es un nroComitente.
+const COMITENTE_EXCLUDED_WORDS =
+  /\b(COMPRA|VENTA|CAUCI|COLOC|TOM|BONO|VN|PRECIO|MONTO|NETO|PLAZO|TASA|USD|ARS|OPERACI[OÓ]N?|COBRAR|PAGAR|COL)\b/i;
+
+/**
+ * Valida que una fila corta sea realmente un encabezado de comitente
+ * ("NOMBRE NUMERO") y no una fila de datos financieros corrupta que por
+ * casualidad contiene una tira de 5-6 dígitos (un monto sin separadores, un
+ * ticker pegado a una cantidad, etc.). Un encabezado de comitente real:
+ *   - nunca es una fila de operación, de encabezado de tabla, o ignorada;
+ *   - nunca lleva vocabulario de columna/operación (COMPRA, MONTO, TASA...);
+ *   - nunca lleva un número con separador decimal (precio/cantidad/monto/tasa
+ *     argentinos siempre llevan "," o "." pegado a un dígito; un nroComitente
+ *     nunca);
+ *   - el texto restante tras quitar el número debe ser puramente alfabético
+ *     (un nombre real, no un fragmento de ticker+dígito como "GGAL 5").
+ */
+function isValidComitenteRow(row: OcrWord[]): { nombre: string; numero: string } | null {
+  if (row.length === 0 || row.length > 5) return null;
+  if (isOpCandidateRow(row)) return null;
+  if (isIgnoredRow(row)) return null;
+
+  const text = row.map((w) => w.text).join(" ");
+  if (COMITENTE_EXCLUDED_WORDS.test(text)) return null;
+  if (/\d[.,]\d/.test(text)) return null;
+
+  const found = detectComitenteInRow(row);
+  if (!found || !found.nombre || !found.numero) return null;
+  if (!/^[A-Za-zÁÉÍÓÚÑÜáéíóúñü\s]+$/.test(found.nombre)) return null;
+  if (found.nombre.replace(/\s/g, "").length < 3) return null;
+
+  return { nombre: found.nombre, numero: found.numero };
+}
+
+/**
+ * Compara la posición X de las palabras de una fila contra las columnas de un
+ * mapa ya conocido. Un mapa geométricamente ajeno (p.ej. el de una tabla de
+ * caución — solo OPERACION/FECHA/MONTO_INICIAL/MONTO_COBRAR_PAGAR — reusado
+ * para una fila de compra/venta con TICKER/CANTIDAD/PRECIO) hace que la
+ * mayoría de las palabras de la fila queden lejos de cualquier columna
+ * conocida. Exige que al menos la mitad caigan dentro de una tolerancia
+ * razonable antes de permitir la reutilización.
+ */
+function isColMapCompatibleWithRow(colMap: ColMap, row: OcrWord[]): boolean {
+  const centers = Object.values(colMap)
+    .filter((c): c is { cx: number } => c !== undefined)
+    .map((c) => c.cx);
+  if (centers.length === 0 || row.length === 0) return false;
+
+  const TOLERANCE = 80;
+  const matched = row.filter((word) => {
+    const cx = xCenter(word);
+    return centers.some((c) => Math.abs(cx - c) <= TOLERANCE);
+  }).length;
+
+  return matched / row.length >= 0.5;
+}
+
 const FALLBACK_COLUMN_ORDER: ColKey[] = [
   "FECHA",
   "TICKER",
@@ -565,9 +625,11 @@ export function reconstructBolsaBlocks(words: OcrWord[]): BolsaImageBloque[] {
       continue;
     }
 
-    // Comitente header: short row with a 5-6 digit number (outside data region)
-    const isShortRow = row.length <= 5;
-    const comitente = isShortRow ? detectComitenteInRow(row) : null;
+    // Comitente header: a short, clean "NOMBRE NUMERO" row — never a data row
+    // that happens to carry a 5-6 digit substring (ver isValidComitenteRow).
+    // Mientras no aparezca un encabezado fuerte y válido, el comitente activo
+    // se mantiene sin cambios (nunca se resetea por una fila corrupta).
+    const comitente = isValidComitenteRow(row);
     if (comitente) {
       if (currentOps.length > 0) flushBlock();
       currentNombre = comitente.nombre;
@@ -577,10 +639,14 @@ export function reconstructBolsaBlocks(words: OcrWord[]): BolsaImageBloque[] {
       continue;
     }
 
-    // Data row under a known column map
+    // Data row under a known column map — solo se convierte en operación si
+    // la fila realmente empieza/contiene COMPRA, VENTA o CAUCION. Una fila sin
+    // tipo reconocible (ruido de OCR) nunca se persiste como fantasma.
     if (currentColMap !== null) {
-      rowNum++;
-      currentOps.push(parseDataRow(row, currentColMap, rowNum));
+      if (isOpCandidateRow(row)) {
+        rowNum++;
+        currentOps.push(parseDataRow(row, currentColMap, rowNum));
+      }
       continue;
     }
 
@@ -588,19 +654,20 @@ export function reconstructBolsaBlocks(words: OcrWord[]): BolsaImageBloque[] {
     // COMPRA/VENTA/CAUCION operation directly is still a valid candidate.
     if (isOpCandidateRow(row)) {
       rowNum++;
-      if (lastGoodColMap !== null) {
-        // A real header was found earlier (this table or a previous one) —
-        // its columns are table-wide and safe to reuse across rows.
+      if (lastGoodColMap !== null && isColMapCompatibleWithRow(lastGoodColMap, row)) {
+        // A real header was found earlier AND its column geometry actually
+        // matches this row's word positions — safe to reuse across tables.
         currentColMap = lastGoodColMap;
         currentOps.push(parseDataRow(row, currentColMap, rowNum));
       } else {
-        // No real header was ever found — build a one-off positional guess
-        // from THIS row's own word positions. This must NOT be cached as
-        // currentColMap/lastGoodColMap: it only reflects where this row's
-        // own words happen to sit, and a differently-shaped row (e.g. a
-        // caución row followed by compra/venta rows, or vice versa) reused
-        // under it would have its dates/montos misassigned by nearest-x
-        // distance to the wrong columns entirely.
+        // No real header available, or the last one belongs to a
+        // structurally different table (e.g. a caución's OPERACION/FECHA/
+        // MONTO_INICIAL/MONTO_COBRAR_PAGAR reused for a compra/venta row) —
+        // build a one-off positional guess from THIS row's own word
+        // positions instead. This must NOT be cached as currentColMap/
+        // lastGoodColMap: it only reflects where this row's own words happen
+        // to sit, and a differently-shaped row reused under it would have
+        // its dates/montos misassigned by nearest-x distance entirely.
         currentOps.push(parseDataRow(row, positionalColMapFromRow(row), rowNum));
       }
     }
