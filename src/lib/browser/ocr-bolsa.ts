@@ -294,6 +294,99 @@ export function parseArgNumber(s: string): string | null {
   return null;
 }
 
+// ── Consenso multipass para celdas numéricas (E4.6C.3) ──────────────────────
+//
+// Separador que nunca aparece en texto OCR real — usado para unir dos
+// lecturas de la MISMA celda cuando difieren, sin cambiar el tipo de
+// GridCellTexts (sigue siendo un string por campo). Cuando ambas lecturas
+// coinciden, la celda queda como un string simple, sin separador.
+export const OCR_CANDIDATE_SEPARATOR = String.fromCharCode(1);
+
+// Segundo separador, dedicado a adjuntar la confianza de Tesseract a una
+// lectura individual dentro de un candidato (E4.6C.3 — ajuste de confianza).
+// Solo aparece cuando dos pasadas discreparon: en ese caso cada mitad lleva
+// su propia confianza para poder evaluarla por separado.
+const OCR_CONFIDENCE_SEPARATOR = String.fromCharCode(2);
+
+// Umbral mínimo (0-100, escala nativa de Tesseract) para aceptar una lectura
+// que quedó sola — la otra pasada no fue legible. Por debajo de esto, o sin
+// dato de confianza disponible, la lectura única no alcanza para aceptar el
+// valor automáticamente.
+export const OCR_CONFIDENCE_THRESHOLD = 60;
+
+export interface OcrCandidate {
+  text: string;
+  confidence: number | null;
+}
+
+/** Codifica una lectura + su confianza para unirla con OCR_CANDIDATE_SEPARATOR. */
+export function encodeOcrCandidate(text: string, confidence: number): string {
+  return `${text}${OCR_CONFIDENCE_SEPARATOR}${confidence}`;
+}
+
+export function splitOcrCandidates(cellText: string): OcrCandidate[] {
+  return cellText.split(OCR_CANDIDATE_SEPARATOR).map((segment) => {
+    const sepIdx = segment.indexOf(OCR_CONFIDENCE_SEPARATOR);
+    if (sepIdx === -1) return { text: segment, confidence: null };
+    const confidence = Number(segment.slice(sepIdx + 1));
+    return { text: segment.slice(0, sepIdx), confidence: Number.isFinite(confidence) ? confidence : null };
+  });
+}
+
+/**
+ * Un valor numérico solo se acepta automáticamente si TODAS las lecturas
+ * disponibles de la celda (multipass) coinciden tras normalizar formato —
+ * nunca "solo porque cantidad × precio coincide con un monto que también
+ * puede estar mal leído". Si dos lecturas independientes DIFIEREN tras
+ * normalizar, ninguna gana por default: el campo queda null con un error
+ * puntual, la fila sigue editable.
+ *
+ * Casos (E4.6C.3 — ajuste final):
+ * - Una única pasada disponible (o dos que coincidieron byte a byte antes de
+ *   llegar acá) que parsea: evidencia fuerte, se acepta.
+ * - Dos pasadas independientes que parsean y coinciden tras normalizar:
+ *   evidencia fuerte, se acepta.
+ * - Dos pasadas, ninguna parsea (ilegibles): value=null, sin mensaje propio
+ *   — `illegible: true` para que la llamadora decida si el campo es
+ *   obligatorio y agregue "<Campo> no detectado.".
+ * - Dos pasadas, exactamente una parsea ("lectura única" real): solo se
+ *   acepta si esa lectura trae una confianza registrada que supera el
+ *   umbral; si no hay confianza disponible o es baja, queda null +
+ *   "<Campo> no confiable.".
+ * - Dos pasadas que parsean pero difieren entre sí: null + "<Campo> no
+ *   confiable.".
+ */
+export function resolveNumericFieldConsensus(
+  rawCandidates: Array<string | OcrCandidate>,
+  label: string,
+): { value: string | null; error: string | null; illegible: boolean } {
+  const candidates = rawCandidates.map((c) => (typeof c === "string" ? { text: c, confidence: null } : c));
+  const parsedOnes = candidates
+    .map((c) => ({ ...c, parsed: parseArgNumber(c.text) }))
+    .filter((c): c is typeof c & { parsed: string } => c.parsed !== null);
+
+  if (parsedOnes.length === 0) {
+    return { value: null, error: null, illegible: true };
+  }
+
+  const unique = Array.from(new Set(parsedOnes.map((c) => Number(c.parsed).toString())));
+
+  if (unique.length > 1) {
+    return { value: null, error: `${label} no confiable.`, illegible: false };
+  }
+
+  if (candidates.length === 1 || parsedOnes.length >= 2) {
+    return { value: parsedOnes[0].parsed, error: null, illegible: false };
+  }
+
+  // Lectura única real: de las pasadas disponibles, solo una fue legible.
+  const single = parsedOnes[0];
+  if (single.confidence !== null && single.confidence >= OCR_CONFIDENCE_THRESHOLD) {
+    return { value: single.parsed, error: null, illegible: false };
+  }
+  return { value: null, error: `${label} no confiable.`, illegible: false };
+}
+
 /**
  * Detects the currency straight from a monto cell's raw text — "USD" marks
  * dollars, "$" marks pesos. Never inferred from the ticker or any other
@@ -632,25 +725,57 @@ export function buildOpFromGridRow(cells: GridCellTexts, rowNum: number): BolsaI
 
   const isCaucion = operacionBase === "CAUCION_COLOCADORA" || operacionBase === "CAUCION_TOMADORA";
 
+  const errors: string[] = [];
+
+  // Cada celda numérica puede traer más de una lectura OCR (multipass) unida
+  // por OCR_CANDIDATE_SEPARATOR cuando las pasadas no coinciden — nunca se
+  // acepta un valor automáticamente solo porque cantidad × precio cuadre con
+  // un monto que también puede estar mal leído (eso se valida aparte, en el
+  // servidor, y solo para RECHAZAR, nunca para inventar un reemplazo).
+  //
+  // `mandatory` (E4.6C.3 — ajuste final): campos obligatorios — ticker,
+  // cantidad y precio en COMPRA/VENTA; principal, tasa y monto final en
+  // CAUCIÓN — agregan "<Campo> no detectado." cuando la celda está vacía o
+  // ninguna pasada fue legible. Campos opcionales (p. ej. monto neto de
+  // referencia) quedan null en silencio en ese mismo caso — solo se
+  // reportan cuando SÍ hay una lectura y esa lectura no es confiable.
+  const resolveField = (raw: string | undefined, label: string, mandatory: boolean): string | null => {
+    if (!raw) {
+      if (mandatory) errors.push(`${label} no detectado.`);
+      return null;
+    }
+    const { value, error, illegible } = resolveNumericFieldConsensus(splitOcrCandidates(raw), label);
+    if (illegible) {
+      if (mandatory) errors.push(`${label} no detectado.`);
+    } else if (error) {
+      errors.push(error);
+    }
+    return value;
+  };
+
   const montoInicialText = cells.MONTO_INICIAL ?? "";
-  const cantidad = parseArgNumber(isCaucion && montoInicialText ? montoInicialText : (cells.CANTIDAD ?? ""));
+  const cantidad = isCaucion
+    ? resolveField(montoInicialText, "Principal", true)
+    : resolveField(cells.CANTIDAD, "Cantidad", true);
 
   const montoCobrarPagarText = cells.MONTO_COBRAR_PAGAR ?? "";
-  const montoCobrarPagarValue = isCaucion ? parseArgNumber(montoCobrarPagarText) : null;
+  const montoCobrarPagarValue = isCaucion ? resolveField(montoCobrarPagarText, "Monto a cobrar/pagar", true) : null;
 
   const monedaDetectada =
     detectMonedaFromText(cells.MONTO ?? "") ??
     detectMonedaFromText(montoInicialText) ??
     detectMonedaFromText(montoCobrarPagarText);
 
-  const errors: string[] = [];
   if (!fechaConcertacion) errors.push("Fecha no detectada.");
   if (operacionBase === "DESCONOCIDA") errors.push("Tipo de operación no reconocido.");
   if ((operacionBase === "COMPRA" || operacionBase === "VENTA") && !ticker) {
     errors.push("Ticker no detectado.");
   }
 
-  let tasaCaucion = parseArgNumber(cells.TASA ?? "");
+  const fechaVencimiento = parseDate(cells.VTO ?? "");
+  if (isCaucion && !fechaVencimiento) errors.push("Vencimiento no detectado.");
+
+  let tasaCaucion = resolveField(cells.TASA, "Tasa", isCaucion);
   if (tasaCaucion !== null && !isTasaCaucionValid(tasaCaucion)) {
     errors.push("Tasa de caución fuera de rango válido.");
     tasaCaucion = null;
@@ -663,12 +788,12 @@ export function buildOpFromGridRow(cells: GridCellTexts, rowNum: number): BolsaI
     fechaConcertacion,
     ticker,
     cantidad,
-    precio: parseArgNumber(cells.PRECIO ?? ""),
+    precio: resolveField(cells.PRECIO, "Precio", !isCaucion),
     monedaDetectada,
-    montoNetoReferencia: parseArgNumber(cells.MONTO ?? ""),
+    montoNetoReferencia: resolveField(cells.MONTO, "Monto neto", false),
     plazo: plazoRaw,
     plazoNormalizado: plazoNorm,
-    fechaVencimiento: parseDate(cells.VTO ?? ""),
+    fechaVencimiento,
     tasaCaucion,
     montoCobrarReferencia: operacionBase === "CAUCION_COLOCADORA" ? montoCobrarPagarValue : null,
     montoPagarReferencia: operacionBase === "CAUCION_TOMADORA" ? montoCobrarPagarValue : null,
@@ -695,6 +820,28 @@ export function parseComitenteHeaderText(text: string): { nombre: string; numero
     .trim();
 
   return nombre.length >= 2 ? { nombre, numero } : null;
+}
+
+/**
+ * Arma un bloque a partir de las operaciones ya construidas de una tabla y el
+ * comitente GLOBAL de la imagen (leído una sola vez, por encima de todas las
+ * tablas). Cada tabla se convierte en su propio bloque, pero TODAS comparten
+ * el mismo nombre/número de comitente — nunca se busca un comitente distinto
+ * por tabla ni por fila.
+ */
+export function buildBloqueFromTableOps(
+  numeroBloque: number,
+  comitente: { nombre: string; numero: string } | null,
+  operaciones: BolsaImageRawOp[],
+): BolsaImageBloque {
+  return {
+    numeroBloque,
+    nombreDetectado: comitente?.nombre ?? null,
+    nroComitenteDetectado: comitente?.numero ?? null,
+    operaciones,
+    warnings: [],
+    errors: [],
+  };
 }
 
 /**
@@ -1038,6 +1185,14 @@ function fieldWhitelist(field: string): string {
   }
 }
 
+/** CANTIDAD, PRECIO, MONTO, TASA, MONTO_INICIAL, MONTO_COBRAR_PAGAR — cualquier
+ * campo que use el whitelist numérico. Estos son los que se leen en dos
+ * pasadas (E4.6C.3): un valor solo se acepta automáticamente si ambas
+ * coinciden, nunca por una sola lectura reforzada por coherencia externa. */
+function isNumericField(field: string): boolean {
+  return fieldWhitelist(field) === WHITELIST_NUMERICO;
+}
+
 /** Carga la imagen a su resolución NATIVA (sin upscale) — el upscale global
  * emborrona las líneas finas de la grilla; el modo GRID necesita la
  * resolución original para detectarlas, y solo escala cada celda recortada. */
@@ -1100,13 +1255,13 @@ async function ocrCellText(
   cellCanvas: HTMLCanvasElement,
   whitelist: string,
   psm: string,
-): Promise<string> {
+): Promise<OcrCandidate> {
   await worker.setParameters({
     tessedit_char_whitelist: whitelist,
     tessedit_pageseg_mode: psm as never,
   });
   const { data } = await worker.recognize(cellCanvas, {}, { text: true });
-  return (data.text ?? "").trim();
+  return { text: (data.text ?? "").trim(), confidence: data.confidence ?? null };
 }
 
 /**
@@ -1128,23 +1283,39 @@ export async function ocrBolsaImageGrid(
   if (!plan) return null;
 
   onProgress("Leyendo encabezado de comitente");
-  const headerCanvas = cropCanvasRegion(
-    canvas,
-    { x0: 0, y0: Math.max(0, plan.comitenteHeaderBand.start), x1: gray.width, y1: plan.comitenteHeaderBand.end },
-    3,
-  );
-  const comitenteText = await ocrCellText(worker, headerCanvas, WHITELIST_COMITENTE, TESS_PSM_SINGLE_LINE);
-  const comitente = parseComitenteHeaderText(comitenteText);
+  // El encabezado DANIEL/11538 se lee UNA sola vez, por encima de todas las
+  // tablas, y se aplica como contexto global a cada bloque — nunca se busca
+  // un comitente dentro de una fila de operación. Si la primera pasada no
+  // logra parsear "NOMBRE NUMERO" (celda casi en blanco, contraste pobre),
+  // se reintenta con más upscale antes de resignarse a "sin comitente".
+  const comitenteRect = {
+    x0: 0,
+    y0: Math.max(0, plan.comitenteHeaderBand.start),
+    x1: gray.width,
+    y1: plan.comitenteHeaderBand.end,
+  };
+  let comitenteText = (
+    await ocrCellText(worker, cropCanvasRegion(canvas, comitenteRect, 3), WHITELIST_COMITENTE, TESS_PSM_SINGLE_LINE)
+  ).text;
+  let comitente = parseComitenteHeaderText(comitenteText);
+  if (!comitente) {
+    comitenteText = (
+      await ocrCellText(worker, cropCanvasRegion(canvas, comitenteRect, 5), WHITELIST_COMITENTE, TESS_PSM_SPARSE_TEXT)
+    ).text;
+    comitente = parseComitenteHeaderText(comitenteText);
+  }
 
   const bloques: BolsaImageBloque[] = [];
 
-  const ocrHeaderBand = (band: Band) =>
-    ocrCellText(
-      worker,
-      cropCanvasRegion(canvas, { x0: 0, y0: band.start, x1: gray.width, y1: band.end }, 2),
-      WHITELIST_HEADER,
-      TESS_PSM_SINGLE_LINE,
-    );
+  const ocrHeaderBand = async (band: Band) =>
+    (
+      await ocrCellText(
+        worker,
+        cropCanvasRegion(canvas, { x0: 0, y0: band.start, x1: gray.width, y1: band.end }, 2),
+        WHITELIST_HEADER,
+        TESS_PSM_SINGLE_LINE,
+      )
+    ).text;
 
   for (const table of plan.tables) {
     onProgress("Leyendo tabla");
@@ -1193,14 +1364,27 @@ export async function ocrBolsaImageGrid(
       for (let colIdx = 0; colIdx < lastCol; colIdx++) {
         const field = columnOrder[colIdx];
         const colBand = columnBands[colIdx];
-        const cellCanvas = cropCanvasRegion(
-          canvas,
-          { x0: colBand.start, y0: rowBand.start, x1: colBand.end, y1: rowBand.end },
-          3,
-        );
+        const rect = { x0: colBand.start, y0: rowBand.start, x1: colBand.end, y1: rowBand.end };
         const whitelist = fieldWhitelist(field);
         const psm = field === "OPERACION" ? TESS_PSM_SINGLE_LINE : TESS_PSM_SINGLE_WORD;
-        cells[field as keyof GridCellTexts] = await ocrCellText(worker, cellCanvas, whitelist, psm);
+
+        if (isNumericField(field)) {
+          // Multipass (E4.6C.3): dos recortes a distinta escala de la MISMA
+          // celda. Si coinciden byte a byte, se guarda un solo valor (evidencia
+          // fuerte, sin necesidad de confianza); si difieren, se unen con
+          // OCR_CANDIDATE_SEPARATOR — cada mitad con su propia confianza
+          // adjunta vía encodeOcrCandidate — y buildOpFromGridRow decide
+          // (nunca automáticamente) cuál, si alguna, aceptar.
+          const pass1 = await ocrCellText(worker, cropCanvasRegion(canvas, rect, 3), whitelist, psm);
+          const pass2 = await ocrCellText(worker, cropCanvasRegion(canvas, rect, 5), whitelist, psm);
+          cells[field as keyof GridCellTexts] =
+            pass1.text === pass2.text
+              ? pass1.text
+              : `${encodeOcrCandidate(pass1.text, pass1.confidence ?? 0)}${OCR_CANDIDATE_SEPARATOR}${encodeOcrCandidate(pass2.text, pass2.confidence ?? 0)}`;
+        } else {
+          const cellCanvas = cropCanvasRegion(canvas, rect, 3);
+          cells[field as keyof GridCellTexts] = (await ocrCellText(worker, cellCanvas, whitelist, psm)).text;
+        }
       }
 
       // "Tipo de cambio Neto", "Resultado pesos/USD" y subtotales a veces
@@ -1217,14 +1401,7 @@ export async function ocrBolsaImageGrid(
       ops.push(buildOpFromGridRow(cells, rowNum));
     }
 
-    bloques.push({
-      numeroBloque: bloques.length + 1,
-      nombreDetectado: comitente?.nombre ?? null,
-      nroComitenteDetectado: comitente?.numero ?? null,
-      operaciones: ops,
-      warnings: [],
-      errors: [],
-    });
+    bloques.push(buildBloqueFromTableOps(bloques.length + 1, comitente, ops));
   }
 
   const totalOperaciones = bloques.reduce((s, b) => s + b.operaciones.length, 0);

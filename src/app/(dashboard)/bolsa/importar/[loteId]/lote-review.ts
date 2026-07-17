@@ -8,6 +8,7 @@
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { parseFechaOperativa, isoDateString } from "../fecha-operativa";
+import { checkCantidadCoherence, checkCaucionPrincipalCoherence } from "../process-upload";
 import { Prisma } from "@prisma/client";
 import type { Moneda, TipoOpBolsa, BolsaFilaEstado } from "@prisma/client";
 
@@ -113,9 +114,21 @@ interface ResolvedFila {
   precio: string | null;
   fechaConcertacion: string | null;
   tasaCaucion: string | null;
+  fechaVencimiento?: string | null;
+  montoNetoReferencia?: string | null;
+  montoCobrarReferencia?: string | null;
+  montoPagarReferencia?: string | null;
 }
 
-/** Errores bloqueantes — si hay alguno, la fila nunca puede quedar LISTA. */
+/**
+ * Errores bloqueantes — si hay alguno, la fila nunca puede quedar LISTA.
+ * Recalcula tanto la presencia de campos como la coherencia entre ellos
+ * (E4.6C.3) — guardar una fila desde la pantalla de revisión nunca se
+ * limita a limpiar errores previos: si la edición introduce una
+ * combinación incoherente (cantidad × precio ≈ monto, o principal vs.
+ * monto a cobrar/pagar en una caución), vuelve a bloquear igual que en el
+ * alta original. Nunca infiere un valor — solo confirma o rechaza.
+ */
 export function computeBlockingErrors(f: ResolvedFila): string[] {
   const errors: string[] = [];
   if (!f.comitenteResueltoId && !f.carteraResueltaId) {
@@ -130,11 +143,25 @@ export function computeBlockingErrors(f: ResolvedFila): string[] {
   if (f.tipoOperacionResuelta) {
     if (isCaucion(f.tipoOperacionResuelta)) {
       if (!f.cantidad) errors.push("Monto de la caución faltante.");
+      if (!f.fechaVencimiento) errors.push("Vencimiento faltante.");
       if (!f.tasaCaucion) errors.push("Tasa de caución faltante.");
+
+      const montoReferencia = f.tipoOperacionResuelta === "CAUCION_COLOCADORA" ? f.montoCobrarReferencia : f.montoPagarReferencia;
+      if (!montoReferencia) errors.push("Monto final de la caución faltante.");
+
+      const { error: principalError } = checkCaucionPrincipalCoherence(f.cantidad ?? null, montoReferencia ?? null);
+      if (principalError) errors.push(principalError);
     } else {
       if (!f.ticker) errors.push("Ticker faltante.");
       if (!f.cantidad) errors.push("Cantidad faltante.");
       if (!f.precio) errors.push("Precio faltante.");
+
+      const { error: coherenceError } = checkCantidadCoherence(
+        f.cantidad ?? null,
+        f.precio ?? null,
+        f.montoNetoReferencia ?? null,
+      );
+      if (coherenceError) errors.push(coherenceError);
     }
   }
   return errors;
@@ -314,6 +341,10 @@ export async function actualizarFila(
     precio: precio.value,
     fechaConcertacion: fechaConcertacion ? isoDateString(fechaConcertacion) : null,
     tasaCaucion: tasaCaucion.value,
+    fechaVencimiento: fechaVencimiento ? isoDateString(fechaVencimiento) : null,
+    montoNetoReferencia: montoNetoReferencia.value,
+    montoCobrarReferencia: montoCobrarReferencia.value,
+    montoPagarReferencia: montoPagarReferencia.value,
   };
 
   const bloqueantes = computeBlockingErrors(resolved);
@@ -395,6 +426,10 @@ export async function restaurarFila(filaId: string, userId: string): Promise<Mut
     precio: fila.precio?.toString() ?? null,
     fechaConcertacion: fila.fechaConcertacion ? isoDateString(fila.fechaConcertacion) : null,
     tasaCaucion: fila.tasaCaucion?.toString() ?? null,
+    fechaVencimiento: fila.fechaVencimiento ? isoDateString(fila.fechaVencimiento) : null,
+    montoNetoReferencia: fila.montoNetoReferencia?.toString() ?? null,
+    montoCobrarReferencia: fila.montoCobrarReferencia?.toString() ?? null,
+    montoPagarReferencia: fila.montoPagarReferencia?.toString() ?? null,
   };
   const bloqueantes = computeBlockingErrors(resolved);
   // Al restaurar vuelve a un estado que requiere revisión explícita de nuevo.
@@ -528,6 +563,10 @@ export async function agregarOperacionManual(
     precio: precio.value,
     fechaConcertacion: isoDateString(fechaConcertacion),
     tasaCaucion: tasaCaucion.value,
+    fechaVencimiento: fechaVencimiento ? isoDateString(fechaVencimiento) : null,
+    montoNetoReferencia: montoNetoReferencia.value,
+    montoCobrarReferencia: montoCobrarReferencia.value,
+    montoPagarReferencia: montoPagarReferencia.value,
   };
   const bloqueantes = computeBlockingErrors(resolved);
   const estado: BolsaFilaEstado = bloqueantes.length > 0 ? "ERROR" : "LISTA";

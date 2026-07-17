@@ -56,6 +56,9 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+// Transitive dep: lote-review.ts → process-upload.ts → resolveComitente → parseBolsaExcel
+vi.mock("@/lib/importers/bolsa-excel/parser", () => ({ parseBolsaExcel: vi.fn() }));
+
 import {
   actualizarFila,
   excluirFila,
@@ -205,6 +208,53 @@ describe("computeBlockingErrors", () => {
       tasaCaucion: null,
     });
     expect(errors).toHaveLength(0);
+  });
+
+  // ── E4.6C.3: recálculo de coherencia (nunca solo presencia de campos) ─────
+
+  it("E4.6C.3-LR-1: cantidad×precio incoherente contra el monto neto de referencia es bloqueante aunque todos los campos estén presentes", () => {
+    const errors = computeBlockingErrors({
+      comitenteResueltoId: "com-1",
+      carteraResueltaId: null,
+      tipoOperacionResuelta: "COMPRA_BONO",
+      ticker: "AL30",
+      cantidad: "100",
+      precio: "65.25",
+      fechaConcertacion: "2026-07-14",
+      tasaCaucion: null,
+      montoNetoReferencia: "6525000", // 100x el monto real — magnitud incoherente
+    });
+    expect(errors).toContain("Cantidad no confiable.");
+  });
+
+  it("E4.6C.3-LR-2: principal de caución incoherente contra el monto a cobrar es bloqueante", () => {
+    const errors = computeBlockingErrors({
+      comitenteResueltoId: "com-1",
+      carteraResueltaId: null,
+      tipoOperacionResuelta: "CAUCION_COLOCADORA",
+      ticker: null,
+      cantidad: "402000",
+      precio: null,
+      fechaConcertacion: "2026-07-14",
+      tasaCaucion: "50",
+      montoCobrarReferencia: "87492602.86",
+    });
+    expect(errors.some((e) => /Principal no confiable/.test(e))).toBe(true);
+  });
+
+  it("E4.6C.3-LR-3: principal y monto a cobrar coherentes en caución no agregan error de coherencia", () => {
+    const errors = computeBlockingErrors({
+      comitenteResueltoId: "com-1",
+      carteraResueltaId: null,
+      tipoOperacionResuelta: "CAUCION_COLOCADORA",
+      ticker: null,
+      cantidad: "87440200",
+      precio: null,
+      fechaConcertacion: "2026-07-14",
+      tasaCaucion: "50",
+      montoCobrarReferencia: "87492602.86",
+    });
+    expect(errors.some((e) => /Principal no confiable/.test(e))).toBe(false);
   });
 });
 
@@ -417,6 +467,101 @@ describe("actualizarFila", () => {
     expect(loteData.filasListas).toBe(1);
     expect(loteData.filasConError).toBe(1);
     expect(loteData.filasExcluidas).toBe(1);
+  });
+});
+
+// ── E4.6C.3 punto 4: revisión — recálculo de coherencia al guardar ───────────
+
+describe("actualizarFila — recálculo de coherencia (E4.6C.3)", () => {
+  it("E4.6C.3-LR-4: corregir la cantidad a un valor coherente permite pasar a LISTA", async () => {
+    mocks.findUniqueFila.mockResolvedValue(
+      makeFila({
+        ticker: "AL30",
+        cantidad: null, // valor previamente descartado por incoherente
+        precio: { toString: () => "65.25" },
+        montoNetoReferencia: { toString: () => "6525" },
+        erroresJson: ["Cantidad no confiable."],
+        estado: "ERROR",
+      }),
+    );
+    mocks.findUniqueLote.mockResolvedValue(makeLote());
+
+    const result = await actualizarFila("fila-1", "user-1", { cantidad: "100" });
+
+    expect(result.ok).toBe(true);
+    const data = mocks.updateFila.mock.calls[0][0].data;
+    expect(data.estado).toBe("LISTA");
+    expect(data.erroresJson).toBe(Prisma.JsonNull);
+    expect(data.cantidad).toBe("100");
+  });
+
+  it("E4.6C.3-LR-5: guardar una fila elimina únicamente los errores realmente corregidos", async () => {
+    mocks.findUniqueFila.mockResolvedValue(
+      makeFila({
+        ticker: null, // sin resolver — error independiente de la cantidad
+        cantidad: null,
+        precio: { toString: () => "65.25" },
+        montoNetoReferencia: { toString: () => "6525" },
+        erroresJson: ["Ticker faltante.", "Cantidad no confiable."],
+        estado: "ERROR",
+      }),
+    );
+    mocks.findUniqueLote.mockResolvedValue(makeLote());
+
+    // Solo se corrige la cantidad — el ticker sigue sin resolver.
+    const result = await actualizarFila("fila-1", "user-1", { cantidad: "100" });
+
+    expect(result.ok).toBe(true);
+    const data = mocks.updateFila.mock.calls[0][0].data;
+    expect(data.estado).toBe("ERROR");
+    expect(data.erroresJson).toContain("Ticker faltante.");
+    expect(data.erroresJson).not.toContain("Cantidad no confiable.");
+  });
+
+  it("E4.6C.3-LR-6: un valor descartado (null) nunca se restaura automáticamente al editar otro campo", async () => {
+    mocks.findUniqueFila.mockResolvedValue(
+      makeFila({
+        ticker: null,
+        cantidad: null, // descartado por OCR no confiable
+        precio: { toString: () => "65.25" },
+        erroresJson: ["Cantidad no confiable."],
+        estado: "ERROR",
+      }),
+    );
+    mocks.findUniqueLote.mockResolvedValue(makeLote());
+
+    // Se edita solo el ticker; la cantidad descartada no se toca en el patch.
+    const result = await actualizarFila("fila-1", "user-1", { ticker: "GD30" });
+
+    expect(result.ok).toBe(true);
+    const data = mocks.updateFila.mock.calls[0][0].data;
+    expect(data.cantidad).toBeUndefined(); // no tocado → Prisma no lo sobreescribe (sigue null en DB)
+    expect(data.estado).toBe("ERROR");
+    expect(data.erroresJson).toContain("Cantidad faltante.");
+  });
+
+  it("E4.6C.3-LR-7: caución — corregir el principal a un valor coherente con el monto a cobrar permite LISTA", async () => {
+    mocks.findUniqueFila.mockResolvedValue(
+      makeFila({
+        tipoOperacionResuelta: "CAUCION_COLOCADORA",
+        ticker: null,
+        cantidad: null, // principal previamente descartado (402000 no confiable)
+        precio: null,
+        tasaCaucion: { toString: () => "50" },
+        fechaVencimiento: new Date("2026-07-15T00:00:00.000Z"),
+        montoCobrarReferencia: { toString: () => "87492602.86" },
+        erroresJson: ["Principal no confiable: diferencia de magnitud frente al monto a cobrar/pagar."],
+        estado: "ERROR",
+      }),
+    );
+    mocks.findUniqueLote.mockResolvedValue(makeLote());
+
+    const result = await actualizarFila("fila-1", "user-1", { cantidad: "87440200" });
+
+    expect(result.ok).toBe(true);
+    const data = mocks.updateFila.mock.calls[0][0].data;
+    expect(data.estado).toBe("LISTA");
+    expect(data.erroresJson).toBe(Prisma.JsonNull);
   });
 });
 

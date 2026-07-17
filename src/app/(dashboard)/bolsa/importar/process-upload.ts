@@ -64,7 +64,7 @@ function normalizeNombre(s: string | null | undefined): string {
   return (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function levenshteinDistance(a: string, b: string): number {
+export function levenshteinDistance(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
@@ -151,6 +151,186 @@ async function findComitenteByNameFallback(
   if (levenshteinDistance(candidate.numero, nroComitenteDetectado) > 1) return null;
 
   return candidate;
+}
+
+// ── Resolución de ticker contra el catálogo real de Activo (E4.6C.2) ───────
+//
+// Misma fuente exacta que usa el alta manual de operaciones de bolsa
+// (src/app/(dashboard)/bolsa/nueva/page.tsx: prisma.activo.findMany() sin
+// filtro, más BrokerTickerAlias para variantes de broker) — nunca una lista
+// separada ni hardcodeada.
+
+export function normalizeTickerText(raw: string): string {
+  return raw
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .trim();
+}
+
+export interface TickerResolution {
+  ticker: string | null;
+  warning: string | null;
+}
+
+/**
+ * Resuelve un ticker leído por OCR contra el catálogo real, en orden de
+ * confianza decreciente — nunca adivina si el resultado es ambiguo:
+ *   1. coincidencia exacta (normalizada) contra el catálogo;
+ *   2. alias existente (BrokerTickerAlias u otro alias operativo) que
+ *      apunte a un ticker del catálogo;
+ *   3. sufijo "D" (variante dólar/MEP de un ticker ya listado — convención
+ *      real y ya usada en el catálogo, p.ej. GGAL/GGALD, AAPL/AAPLD) cuando
+ *      la base sin la "D" existe;
+ *   4. distancia de edición pequeña (<=1) contra el catálogo, solo si hay
+ *      un único candidato — más de un candidato nunca se resuelve.
+ * Cada candidato de OCR (múltiples lecturas del mismo recorte) se prueba en
+ * todos los niveles antes de pasar al siguiente.
+ */
+export function resolveTickerAgainstCatalog(
+  rawCandidates: Array<string | null | undefined>,
+  catalog: string[],
+  aliases: Record<string, string> = {},
+): TickerResolution {
+  const catalogSet = new Set(catalog.map(normalizeTickerText));
+  const aliasMap = new Map(
+    Object.entries(aliases).map(([k, v]) => [normalizeTickerText(k), normalizeTickerText(v)]),
+  );
+  const candidates = Array.from(
+    new Set(rawCandidates.filter((c): c is string => !!c && c.trim().length > 0).map(normalizeTickerText)),
+  ).filter(Boolean);
+
+  if (candidates.length === 0) return { ticker: null, warning: null };
+
+  // 1. Coincidencia exacta.
+  for (const cand of candidates) {
+    if (catalogSet.has(cand)) return { ticker: cand, warning: null };
+  }
+
+  // 2. Alias existente.
+  for (const cand of candidates) {
+    const target = aliasMap.get(cand);
+    if (target && catalogSet.has(target)) {
+      return {
+        ticker: target,
+        warning: `Ticker detectado ${cand}; asociado a ${target} por alias. Requiere revisión.`,
+      };
+    }
+  }
+
+  // 3. Sufijo "D" (variante dólar/MEP) de un ticker base ya listado.
+  for (const cand of candidates) {
+    if (cand.endsWith("D") && cand.length > 1) {
+      const base = cand.slice(0, -1);
+      if (catalogSet.has(base)) {
+        return {
+          ticker: cand,
+          warning: `Ticker detectado ${cand}; variante dólar/MEP de ${base} (aún no está en el catálogo). Requiere revisión.`,
+        };
+      }
+    }
+  }
+
+  // 4. Distancia de edición pequeña — solo si hay un único candidato en TODO el catálogo.
+  const fuzzy = new Set<string>();
+  let bestSourceCand = candidates[0];
+  for (const cand of candidates) {
+    for (const catTicker of Array.from(catalogSet)) {
+      if (Math.abs(cand.length - catTicker.length) <= 1 && levenshteinDistance(cand, catTicker) <= 1) {
+        fuzzy.add(catTicker);
+        bestSourceCand = cand;
+      }
+    }
+  }
+  if (fuzzy.size === 1) {
+    const match = Array.from(fuzzy)[0];
+    return {
+      ticker: match,
+      warning: `Ticker detectado ${bestSourceCand}; asociado a ${match}. Requiere revisión.`,
+    };
+  }
+
+  // Ambiguo (0 o >1 candidatos) — nunca se elige arbitrariamente.
+  return { ticker: null, warning: null };
+}
+
+// ── Coherencia cantidad × precio ≈ monto neto (E4.6C.3 — rechazo, nunca corrección) ─
+//
+// E4.6C.2 intentaba RE-DERIVAR la cantidad desde precio×monto cuando eran
+// incoherentes. E4.6C.3 revierte esa idea explícitamente: "no considerar un
+// valor confiable solo porque cantidad × precio coincide con un monto que
+// también puede estar mal leído" — precio y monto pueden estar TAN
+// corruptos como cantidad, así que inventar un reemplazo a partir de ellos
+// no es más seguro que la lectura original. Esta función SOLO puede anular
+// la cantidad y devolver un error — nunca la reemplaza por otro valor.
+
+const COHERENCE_TOLERANCE = { min: 0.5, max: 2 };
+
+/**
+ * Cantidad × precio debe ser razonablemente coherente con el monto neto
+ * (tolerancia amplia por gastos/comisiones). Si no lo es, la cantidad se
+ * considera no confiable — nunca se reemplaza por un valor derivado.
+ */
+export function checkCantidadCoherence(
+  cantidad: string | null,
+  precio: string | null,
+  montoNeto: string | null,
+  tolerance = COHERENCE_TOLERANCE,
+): { error: string | null } {
+  if (cantidad === null || precio === null || montoNeto === null) return { error: null };
+
+  const cantidadNum = Number(cantidad);
+  const precioNum = Number(precio);
+  const montoNum = Number(montoNeto);
+
+  if (
+    !Number.isFinite(cantidadNum) ||
+    !Number.isFinite(precioNum) ||
+    !Number.isFinite(montoNum) ||
+    precioNum <= 0 ||
+    montoNum <= 0
+  ) {
+    return { error: null };
+  }
+
+  const ratio = (cantidadNum * precioNum) / montoNum;
+  if (ratio >= tolerance.min && ratio <= tolerance.max) return { error: null };
+
+  return { error: "Cantidad no confiable." };
+}
+
+/**
+ * Para CAUCION_COLOCADORA/TOMADORA: el monto a cobrar/pagar (principal +
+ * interés del plazo) siempre debe ser MAYOR O IGUAL al principal — nunca
+ * menor — y la diferencia entre ambos nunca debería ser de orden de
+ * magnitud (una caución real rinde intereses de corto plazo, no duplica ni
+ * multiplica el capital). Nunca infiere el principal desde el monto a
+ * cobrar — solo anula el principal con error cuando la relación es
+ * imposible.
+ */
+export function checkCaucionPrincipalCoherence(
+  principal: string | null,
+  montoCobrarOPagar: string | null,
+  maxRatio = 2,
+): { error: string | null } {
+  if (principal === null || montoCobrarOPagar === null) return { error: null };
+
+  const principalNum = Number(principal);
+  const montoNum = Number(montoCobrarOPagar);
+
+  if (!Number.isFinite(principalNum) || !Number.isFinite(montoNum) || principalNum <= 0 || montoNum <= 0) {
+    return { error: null };
+  }
+
+  if (montoNum < principalNum) {
+    return { error: "Principal no confiable: el monto a cobrar/pagar es menor al principal." };
+  }
+
+  const ratio = montoNum / principalNum;
+  if (ratio > maxRatio) {
+    return { error: "Principal no confiable: diferencia de magnitud frente al monto a cobrar/pagar." };
+  }
+
+  return { error: null };
 }
 
 export async function resolveComitente(

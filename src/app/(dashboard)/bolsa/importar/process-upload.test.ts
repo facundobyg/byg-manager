@@ -38,7 +38,12 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-import { processBolsaExcelUpload } from "./process-upload";
+import {
+  processBolsaExcelUpload,
+  resolveTickerAgainstCatalog,
+  checkCantidadCoherence,
+  checkCaucionPrincipalCoherence,
+} from "./process-upload";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -961,5 +966,131 @@ describe("processBolsaExcelUpload — fecha operativa del lote", () => {
     expect(filaData.estado).toBe("RESUELTA");
     expect(filaData.erroresJson).toBeUndefined();
     expect(filaData.fechaConcertacion).toEqual(new Date("2026-07-14T00:00:00.000Z"));
+  });
+});
+
+// ── resolveTickerAgainstCatalog (E4.6C.2) ───────────────────────────────────
+//
+// Misma fuente que el alta manual (bolsa/nueva/page.tsx: prisma.activo.
+// findMany() sin filtro) — acá se prueba la lógica pura de resolución contra
+// una lista de catálogo ya traída, más BrokerTickerAlias como alias.
+
+describe("resolveTickerAgainstCatalog", () => {
+  const CATALOGO_REAL = ["GGAL", "GGALD", "TSLA", "MELI", "AL30", "AL41", "AAPL", "AAPLD"];
+
+  it("TICK-1: coincidencia exacta contra el catálogo", () => {
+    expect(resolveTickerAgainstCatalog(["GGAL"], CATALOGO_REAL)).toEqual({ ticker: "GGAL", warning: null });
+  });
+
+  it("TICK-2: GAL (un solo candidato, único match a distancia 1) se asocia a GGAL con warning — nunca se corrige en silencio", () => {
+    const result = resolveTickerAgainstCatalog(["GAL"], CATALOGO_REAL);
+    expect(result.ticker).toBe("GGAL");
+    expect(result.warning).toMatch(/GAL.*GGAL/);
+  });
+
+  it("TICK-3: ticker ambiguo (distancia 1 de más de un candidato del catálogo) nunca se corrige", () => {
+    // "AL3" está a distancia 1 tanto de "AL30" como de... construimos un catálogo
+    // ambiguo a propósito: dos tickers de 4 letras a un solo cambio de "AL3X".
+    const catalogoAmbiguo = ["AL3A", "AL3B"];
+    const result = resolveTickerAgainstCatalog(["AL3A".slice(0, 3) + "C"], catalogoAmbiguo); // "AL3C"
+    expect(result.ticker).toBeNull();
+    expect(result.warning).toBeNull();
+  });
+
+  it("TICK-4: variante dólar/MEP (sufijo D) de un ticker base ya listado se asocia con warning, aunque no esté literal en el catálogo", () => {
+    // TSLAD no está en CATALOGO_REAL, pero TSLA sí — convención real ya usada
+    // en el catálogo (GGAL/GGALD, AAPL/AAPLD).
+    const result = resolveTickerAgainstCatalog(["TSLAD"], CATALOGO_REAL);
+    expect(result.ticker).toBe("TSLAD");
+    expect(result.warning).toMatch(/TSLAD/);
+  });
+
+  it("TICK-5: alias existente resuelve al ticker canónico del catálogo", () => {
+    const result = resolveTickerAgainstCatalog(["MELI.BA"], CATALOGO_REAL, { "MELI.BA": "MELI" });
+    expect(result.ticker).toBe("MELI");
+    expect(result.warning).toMatch(/alias/i);
+  });
+
+  it("TICK-6: ticker totalmente ajeno al catálogo, sin alias ni sufijo D ni distancia chica, no resuelve", () => {
+    const result = resolveTickerAgainstCatalog(["ZZZZZ"], CATALOGO_REAL);
+    expect(result.ticker).toBeNull();
+  });
+
+  it("TICK-7: normaliza mayúsculas, espacios y caracteres OCR extraños antes de comparar", () => {
+    expect(resolveTickerAgainstCatalog([" g g a l "], CATALOGO_REAL)).toEqual({ ticker: "GGAL", warning: null });
+    expect(resolveTickerAgainstCatalog(["GG.AL"], CATALOGO_REAL)).toEqual({ ticker: "GGAL", warning: null });
+  });
+
+  it("TICK-8: múltiples lecturas del mismo recorte — si cualquiera matchea exacto, se usa esa", () => {
+    const result = resolveTickerAgainstCatalog(["GAL", "GGAL"], CATALOGO_REAL);
+    expect(result).toEqual({ ticker: "GGAL", warning: null });
+  });
+});
+
+// ── checkCantidadCoherence / checkCaucionPrincipalCoherence (E4.6C.3) ──────
+//
+// E4.6C.2 derivaba un reemplazo desde precio×monto cuando eran incoherentes.
+// E4.6C.3 revierte esa idea: precio y monto pueden estar tan corruptos como
+// cantidad, así que su coincidencia numérica nunca es evidencia suficiente.
+// Estas funciones SOLO pueden devolver un error — nunca un valor alternativo.
+
+describe("checkCantidadCoherence", () => {
+  it("CANT-1: 54625 × 0.5615 ≈ 30673.03 es coherente — sin error", () => {
+    expect(checkCantidadCoherence("54625", "0.5615", "30673.03")).toEqual({ error: null });
+  });
+
+  it("CANT-2: 546295 (dígito de más insertado por el OCR) frente a la misma precio/monto — NUNCA se corrige, pero si la diferencia es mínima en términos de ratio puede seguir dentro de tolerancia; se exige el caso real de magnitud", () => {
+    // 546295 × 0.5615 = 306.744,64 vs monto 30.673,03 → ratio ~10x: sí incoherente.
+    const result = checkCantidadCoherence("546295", "0.5615", "30673.03");
+    expect(result.error).toBe("Cantidad no confiable.");
+  });
+
+  it("CANT-3: valores coherentes (408, 1000, 64, 50000) nunca generan error", () => {
+    expect(checkCantidadCoherence("408", "8205.000", "3352996.07").error).toBeNull();
+    expect(checkCantidadCoherence("1000", "41200.000", "41265910.20").error).toBeNull();
+    expect(checkCantidadCoherence("64", "24400.000", "1564098.07").error).toBeNull();
+    expect(checkCantidadCoherence("50000", "0.76534", "38267.16").error).toBeNull();
+  });
+
+  it("CANT-4: si falta precio o monto, no hay nada contra qué validar — nunca error", () => {
+    expect(checkCantidadCoherence("546295", null, "30673.03")).toEqual({ error: null });
+    expect(checkCantidadCoherence("546295", "0.5615", null)).toEqual({ error: null });
+  });
+
+  it("CANT-5: 100 frente a la imagen real (1.000) — diferencia de magnitud clara con precio/monto reales", () => {
+    // 100 × 41200 = 4.120.000 vs monto real 41.265.910,20 (~1.000 unidades) → ratio ~10x.
+    const result = checkCantidadCoherence("100", "41200.000", "41265910.20");
+    expect(result.error).toBe("Cantidad no confiable.");
+  });
+
+  it("CANT-6: una diferencia de magnitud (separador de miles perdido en precio) también queda incoherente", () => {
+    const result = checkCantidadCoherence("408", "8205000", "3352996.07");
+    expect(result.error).toBe("Cantidad no confiable.");
+  });
+
+  it("CANT-7: nunca devuelve un valor alternativo — solo error o null (no hay campo 'cantidad' en el resultado)", () => {
+    const result = checkCantidadCoherence("100", "41200.000", "41265910.20");
+    expect(Object.keys(result)).toEqual(["error"]);
+  });
+});
+
+describe("checkCaucionPrincipalCoherence", () => {
+  it("CAUC-1: principal 87.440.200 y monto a cobrar 87.492.602,86 (levemente mayor, con interés) es coherente", () => {
+    expect(checkCaucionPrincipalCoherence("87440200", "87492602.86")).toEqual({ error: null });
+  });
+
+  it("CAUC-2: principal 402000 frente al monto a cobrar real 87492602.86 — diferencia de magnitud, se anula", () => {
+    const result = checkCaucionPrincipalCoherence("402000", "87492602.86");
+    expect(result.error).toMatch(/Principal no confiable/);
+  });
+
+  it("CAUC-3: el monto a cobrar/pagar nunca puede ser menor al principal", () => {
+    const result = checkCaucionPrincipalCoherence("87440200", "50000000");
+    expect(result.error).toMatch(/menor al principal/);
+  });
+
+  it("CAUC-4: sin datos suficientes, no hay error (nada que contrastar)", () => {
+    expect(checkCaucionPrincipalCoherence(null, "87492602.86")).toEqual({ error: null });
+    expect(checkCaucionPrincipalCoherence("87440200", null)).toEqual({ error: null });
   });
 });

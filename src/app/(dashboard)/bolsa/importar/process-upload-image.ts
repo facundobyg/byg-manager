@@ -15,6 +15,9 @@ import type {
 import type { TipoOpBolsa } from "@prisma/client";
 import {
   resolveComitente,
+  resolveTickerAgainstCatalog,
+  checkCantidadCoherence,
+  checkCaucionPrincipalCoherence,
   ESTADOS_REANALIZABLES,
   type ComitenteResolucion,
   type ProcessBolsaResult,
@@ -142,73 +145,108 @@ type FilaDataImg = {
   allErrors: string[];
   allWarnings: string[];
   /** Ticker efectivo para la columna `ticker` — null si no pasó la
-   * validación de catálogo (E4.6C.1). El OCR original queda intacto en
-   * `op`/rawJson de todas formas. */
+   * validación de catálogo (E4.6C.1/E4.6C.2). El OCR original queda intacto
+   * en `op`/rawJson de todas formas. */
   tickerResuelto: string | null;
+  /** Cantidad efectiva para la columna `cantidad` — puede diferir del OCR
+   * original (op.cantidad) cuando se re-derivó por coherencia (E4.6C.2). El
+   * valor OCR original queda intacto en rawJson y el warning documenta la
+   * corrección. */
+  cantidadResuelta: string | null;
 };
 
-// E4.6C.1 — endurecimiento SOLO del flujo GRID (lectura por celda): un valor
-// financiero corrupto (separador/cero perdido por el OCR, ticker inexistente)
-// nunca debe quedar como fila lista para enviar sin revisión humana. El flujo
-// GENERIC_OCR (fallback de página completa) no se toca acá.
-const MAGNITUDE_TOLERANCE_MIN = 0.5;
-const MAGNITUDE_TOLERANCE_MAX = 2;
+// E4.6C.1/E4.6C.2 — endurecimiento SOLO del flujo GRID (lectura por celda):
+// un valor financiero corrupto (separador/cero perdido por el OCR, ticker
+// inexistente) nunca debe quedar como fila lista para enviar sin revisión
+// humana. El flujo GENERIC_OCR (fallback de página completa) no se toca acá.
 
-async function validateFinancialCoherenceGrid(
-  op: BolsaImageRawOp,
-): Promise<{ tickerResuelto: string | null; extraErrors: string[] }> {
+export interface TickerCatalog {
+  tickers: string[];
+  aliases: Record<string, string>;
+}
+
+/**
+ * Misma fuente exacta que usa el alta manual de operaciones de bolsa
+ * (bolsa/nueva/page.tsx: prisma.activo.findMany() sin filtro) — se trae UNA
+ * sola vez por request y se reutiliza para todas las filas, en vez de una
+ * consulta findUnique por fila.
+ */
+async function fetchTickerCatalog(): Promise<TickerCatalog> {
+  const [activos, brokerAliases] = await Promise.all([
+    prisma.activo.findMany({ select: { ticker: true } }),
+    prisma.brokerTickerAlias.findMany({
+      where: { enabled: true },
+      select: { brokerTicker: true, Activo: { select: { ticker: true } } },
+    }),
+  ]);
+
+  const aliases: Record<string, string> = {};
+  for (const a of brokerAliases) aliases[a.brokerTicker] = a.Activo.ticker;
+
+  return { tickers: activos.map((a) => a.ticker), aliases };
+}
+
+interface FinancialCoherenceResult {
+  tickerResuelto: string | null;
+  cantidadResuelta: string | null;
+  extraErrors: string[];
+  extraWarnings: string[];
+}
+
+function validateFinancialCoherenceGrid(op: BolsaImageRawOp, catalog: TickerCatalog): FinancialCoherenceResult {
   const extraErrors: string[] = [];
+  const extraWarnings: string[] = [];
   let tickerResuelto = op.ticker;
+  let cantidadResuelta = op.cantidad;
+
+  const isCaucion = op.operacionBase === "CAUCION_COLOCADORA" || op.operacionBase === "CAUCION_TOMADORA";
+
+  if (isCaucion) {
+    // Cauciones no llevan ticker — el "cantidad" de la fila es el principal,
+    // que debe ser coherente con el monto a cobrar/pagar (nunca al revés: no
+    // se infiere el principal desde el monto, solo se anula si es imposible).
+    const montoReferencia = op.operacionBase === "CAUCION_COLOCADORA" ? op.montoCobrarReferencia : op.montoPagarReferencia;
+    const { error } = checkCaucionPrincipalCoherence(op.cantidad, montoReferencia);
+    if (error) {
+      extraErrors.push(error);
+      cantidadResuelta = null;
+    }
+    return { tickerResuelto, cantidadResuelta, extraErrors, extraWarnings };
+  }
 
   if (op.operacionBase !== "COMPRA" && op.operacionBase !== "VENTA") {
-    // Las cauciones no llevan ticker ni esta validación — solo compra/venta.
-    return { tickerResuelto, extraErrors };
+    return { tickerResuelto, cantidadResuelta, extraErrors, extraWarnings };
   }
 
   if (tickerResuelto) {
-    const activo = await prisma.activo.findUnique({ where: { ticker: tickerResuelto }, select: { id: true } });
-    if (!activo) {
+    const { ticker, warning } = resolveTickerAgainstCatalog([tickerResuelto], catalog.tickers, catalog.aliases);
+    if (ticker) {
+      tickerResuelto = ticker;
+      if (warning) extraWarnings.push(warning);
+    } else {
       extraErrors.push(`Ticker no reconocido: ${tickerResuelto}`);
       tickerResuelto = null;
     }
   }
 
-  const cantidadNum = op.cantidad !== null ? Number(op.cantidad) : null;
-  const precioNum = op.precio !== null ? Number(op.precio) : null;
-  const montoNum = op.montoNetoReferencia !== null ? Number(op.montoNetoReferencia) : null;
-
-  if (cantidadNum !== null && (!Number.isFinite(cantidadNum) || cantidadNum <= 0)) {
+  if (op.cantidad !== null && !(Number(op.cantidad) > 0)) {
     extraErrors.push("Cantidad inválida.");
   }
-  if (precioNum !== null && (!Number.isFinite(precioNum) || precioNum <= 0)) {
+  if (op.precio !== null && !(Number(op.precio) > 0)) {
     extraErrors.push("Precio inválido.");
   }
 
-  // Coherencia cantidad × precio ≈ monto neto, con tolerancia amplia por
-  // gastos/comisiones (hasta 2x en cualquier sentido) — un desvío de magnitud
-  // (separador de miles o decimal perdido por el OCR) cae muy por fuera de
-  // esa banda y debe bloquear la fila. Nunca se corrige automáticamente.
-  if (
-    cantidadNum !== null &&
-    precioNum !== null &&
-    montoNum !== null &&
-    Number.isFinite(cantidadNum) &&
-    Number.isFinite(precioNum) &&
-    Number.isFinite(montoNum) &&
-    cantidadNum > 0 &&
-    precioNum > 0 &&
-    montoNum > 0
-  ) {
-    const esperado = cantidadNum * precioNum;
-    const ratio = esperado / montoNum;
-    if (ratio < MAGNITUDE_TOLERANCE_MIN || ratio > MAGNITUDE_TOLERANCE_MAX) {
-      extraErrors.push(
-        `Inconsistencia entre cantidad × precio (${esperado.toFixed(2)}) y monto neto (${montoNum.toFixed(2)}).`,
-      );
-    }
+  // Coherencia cantidad × precio ≈ monto neto — SOLO para rechazar, nunca
+  // para "confirmar" ni reemplazar: precio y monto pueden estar tan
+  // corruptos como cantidad, así que su coincidencia numérica no es
+  // suficiente evidencia de que cantidad esté bien leída (E4.6C.3).
+  const { error: coherenceError } = checkCantidadCoherence(op.cantidad, op.precio, op.montoNetoReferencia);
+  if (coherenceError) {
+    extraErrors.push(coherenceError);
+    cantidadResuelta = null;
   }
 
-  return { tickerResuelto, extraErrors };
+  return { tickerResuelto, cantidadResuelta, extraErrors, extraWarnings };
 }
 
 /**
@@ -220,6 +258,7 @@ async function buildFilaDataImagen(
   fechaOperativaISO: string,
 ): Promise<FilaDataImg[]> {
   const esGrid = parseResult.modo === "GRID";
+  const catalog: TickerCatalog = esGrid ? await fetchTickerCatalog() : { tickers: [], aliases: {} };
   const filaData: FilaDataImg[] = [];
   for (const bloque of parseResult.bloques) {
     const resolucion = await resolveComitente(bloque.nroComitenteDetectado, bloque.nombreDetectado);
@@ -227,17 +266,21 @@ async function buildFilaDataImagen(
       const { op, extraErrors: sanitizeErrors } = sanitizeNumericFields(rawOp);
 
       let tickerResuelto = op.ticker;
+      let cantidadResuelta = op.cantidad;
       let financialErrors: string[] = [];
+      let financialWarnings: string[] = [];
       if (esGrid) {
-        const result = await validateFinancialCoherenceGrid(op);
+        const result = validateFinancialCoherenceGrid(op, catalog);
         tickerResuelto = result.tickerResuelto;
+        cantidadResuelta = result.cantidadResuelta;
         financialErrors = result.extraErrors;
+        financialWarnings = result.extraWarnings;
       }
 
       // La fecha operativa del lote reemplaza la fechaConcertacion de cada
       // fila, así que "Fecha no detectada" del OCR deja de ser un error real.
       const allErrors = [...op.errors.filter((e) => e !== "Fecha no detectada."), ...sanitizeErrors, ...financialErrors];
-      const allWarnings = [...op.warnings];
+      const allWarnings = [...op.warnings, ...financialWarnings];
       if (op.fechaConcertacion && op.fechaConcertacion !== fechaOperativaISO) {
         allWarnings.push(
           `Fecha detectada (${op.fechaConcertacion}) difiere de la fecha operativa seleccionada (${fechaOperativaISO}).`,
@@ -250,7 +293,7 @@ async function buildFilaDataImagen(
       const estado: "ADVERTENCIA" | "ERROR" =
         allErrors.length > 0 || resolucion.estado === "ERROR" ? "ERROR" : "ADVERTENCIA";
 
-      filaData.push({ op, bloque, resolucion, estado, allErrors, allWarnings, tickerResuelto });
+      filaData.push({ op, bloque, resolucion, estado, allErrors, allWarnings, tickerResuelto, cantidadResuelta });
     }
   }
   return filaData;
@@ -262,7 +305,7 @@ function filaCreateDataImg(
   archivoId: string,
   fechaOperativa: Date,
 ) {
-  const { op, bloque, resolucion, estado, allErrors, allWarnings, tickerResuelto } = f;
+  const { op, bloque, resolucion, estado, allErrors, allWarnings, tickerResuelto, cantidadResuelta } = f;
   return {
     id: crypto.randomUUID(),
     loteId,
@@ -284,7 +327,7 @@ function filaCreateDataImg(
     ticker: tickerResuelto ?? undefined,
     instrumento: op.instrumentoHint ?? undefined,
     moneda: (op.monedaDetectada as "ARS" | "USD" | null) ?? undefined,
-    cantidad: op.cantidad ?? undefined,
+    cantidad: cantidadResuelta ?? undefined,
     precio: op.precio ?? undefined,
     montoNetoReferencia: op.montoNetoReferencia ?? undefined,
     // La fila siempre usa la fecha operativa del lote, no la detectada por

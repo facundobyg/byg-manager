@@ -12,6 +12,11 @@ import {
   extractOcrWords,
   buildOpFromGridRow,
   parseComitenteHeaderText,
+  buildBloqueFromTableOps,
+  resolveNumericFieldConsensus,
+  splitOcrCandidates,
+  encodeOcrCandidate,
+  OCR_CANDIDATE_SEPARATOR,
   type OcrWord,
   type OcrPage,
   type GridCellTexts,
@@ -250,6 +255,84 @@ describe("parseArgNumber", () => {
   it("OCR-21: returns null for non-numeric string", () => {
     expect(parseArgNumber("N/A")).toBeNull();
     expect(parseArgNumber("")).toBeNull();
+  });
+});
+
+// ── resolveNumericFieldConsensus / splitOcrCandidates (consenso multipass, E4.6C.3) ──
+
+describe("resolveNumericFieldConsensus", () => {
+  it("CONS-1: dos lecturas que coinciden tras normalizar se aceptan", () => {
+    const result = resolveNumericFieldConsensus(["1.234,56", "1234.56"], "Precio");
+    expect(result).toEqual({ value: "1234.56", error: null, illegible: false });
+  });
+
+  it("CONS-2: una única lectura disponible (una sola pasada, o dos que coincidieron byte a byte) se acepta por falta de evidencia en contra", () => {
+    const result = resolveNumericFieldConsensus(["54625"], "Cantidad");
+    expect(result).toEqual({ value: "54625", error: null, illegible: false });
+  });
+
+  it("CONS-3: caso real TSLA — 100 vs 1.000 discrepan y quedan null + error, nunca se elige una por default", () => {
+    const result = resolveNumericFieldConsensus(["100", "1.000"], "Cantidad");
+    expect(result.value).toBeNull();
+    expect(result.error).toBe("Cantidad no confiable.");
+    expect(result.illegible).toBe(false);
+  });
+
+  it("CONS-4: caso real AL30D — 54695 vs 54625 discrepan y quedan null + error", () => {
+    const result = resolveNumericFieldConsensus(["54695", "54625"], "Cantidad");
+    expect(result.value).toBeNull();
+    expect(result.error).toBe("Cantidad no confiable.");
+    expect(result.illegible).toBe(false);
+  });
+
+  it("CONS-5: dos lecturas ilegibles (ninguna parseable) devuelven value=null, sin mensaje propio, marcadas illegible para que la llamadora decida si el campo es obligatorio", () => {
+    const result = resolveNumericFieldConsensus(["N/A", ""], "Precio");
+    expect(result).toEqual({ value: null, error: null, illegible: true });
+  });
+
+  it("CONS-6: splitOcrCandidates separa dos pasadas unidas por el separador dedicado", () => {
+    const joined = `54695${OCR_CANDIDATE_SEPARATOR}54625`;
+    expect(splitOcrCandidates(joined)).toEqual([
+      { text: "54695", confidence: null },
+      { text: "54625", confidence: null },
+    ]);
+  });
+
+  it("CONS-7: una celda sin separador es una única candidata (caso normal, sin discrepancia entre pasadas)", () => {
+    expect(splitOcrCandidates("8.205,000")).toEqual([{ text: "8.205,000", confidence: null }]);
+  });
+
+  // ── Ajuste final E4.6C.3: lectura única real (de dos pasadas, solo una legible) ──
+
+  it("CONS-8: lectura única real de baja confianza (o sin confianza registrada) queda null + 'no confiable', nunca se acepta a ciegas", () => {
+    const lowConfidence = resolveNumericFieldConsensus(
+      [
+        { text: "54625", confidence: 35 },
+        { text: "###", confidence: 0 },
+      ],
+      "Cantidad",
+    );
+    expect(lowConfidence).toEqual({ value: null, error: "Cantidad no confiable.", illegible: false });
+
+    const noConfidenceData = resolveNumericFieldConsensus(
+      [
+        { text: "54625", confidence: null },
+        { text: "###", confidence: null },
+      ],
+      "Cantidad",
+    );
+    expect(noConfidenceData).toEqual({ value: null, error: "Cantidad no confiable.", illegible: false });
+  });
+
+  it("CONS-9: lectura única real que supera el umbral de confianza se acepta", () => {
+    const result = resolveNumericFieldConsensus(
+      [
+        { text: "54625", confidence: 92 },
+        { text: "###", confidence: 0 },
+      ],
+      "Cantidad",
+    );
+    expect(result).toEqual({ value: "54625", error: null, illegible: false });
   });
 });
 
@@ -504,6 +587,154 @@ describe("buildOpFromGridRow", () => {
     expect(op.ticker).toBe("MELI");
     expect(op.tasaCaucion).toBeNull();
   });
+
+  // ── Consenso multipass en celdas numéricas (E4.6C.3) ──────────────────────
+
+  it("E4.6C.3-1: TSLA — pasadas OCR discrepantes (100 vs 1.000) dejan cantidad null con error puntual, la fila sigue existiendo", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "TSLA",
+      CANTIDAD: `100${OCR_CANDIDATE_SEPARATOR}1.000`,
+      PRECIO: "245,000",
+      MONTO: "$24.500,00",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.ticker).toBe("TSLA");
+    expect(op.cantidad).toBeNull();
+    expect(op.errors).toContain("Cantidad no confiable.");
+  });
+
+  it("E4.6C.3-2: AL30D — pasadas OCR discrepantes (54695 vs 54625) dejan cantidad null con error puntual", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "VENTA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "AL30D",
+      CANTIDAD: `54695${OCR_CANDIDATE_SEPARATOR}54625`,
+      PRECIO: "1.400,000",
+      MONTO: "$76.503.000,00",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 2);
+    expect(op.ticker).toBe("AL30D");
+    expect(op.cantidad).toBeNull();
+    expect(op.errors).toContain("Cantidad no confiable.");
+  });
+
+  it("E4.6C.3-3: dos pasadas OCR que coinciden tras normalizar formato se aceptan sin error (consenso real, no solo coincidencia aritmética)", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "GGAL",
+      CANTIDAD: `408${OCR_CANDIDATE_SEPARATOR}408`,
+      PRECIO: "8.205,000",
+      MONTO: "$3.352.996,07",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.cantidad).toBe("408");
+    expect(op.errors).toHaveLength(0);
+  });
+
+  it("E4.6C.3-4: dos campos numéricos corruptos pero matemáticamente coherentes entre sí (cantidad × precio ≈ monto) no se aceptan automáticamente — el consenso multipass es la única vía de aceptación", () => {
+    // Ambas pasadas de CANTIDAD y de PRECIO están corruptas de forma que su
+    // producto igual cuadra con MONTO — no alcanza: cada campo se evalúa por
+    // su propio consenso multipass, nunca por si el producto "cierra".
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "AL30",
+      CANTIDAD: `1000${OCR_CANDIDATE_SEPARATOR}100`, // discrepancia real entre pasadas
+      PRECIO: `10${OCR_CANDIDATE_SEPARATOR}100`, // también discrepante
+      MONTO: "$10.000,00", // 1000 × 10 = 100 × 100 = 10000 — "cuadra" con cualquiera de las dos combinaciones
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 3);
+    expect(op.cantidad).toBeNull();
+    expect(op.precio).toBeNull();
+    expect(op.errors).toContain("Cantidad no confiable.");
+    expect(op.errors).toContain("Precio no confiable.");
+  });
+
+  // ── Ajuste final E4.6C.3: ilegibilidad, confianza y campos obligatorios ──
+
+  it("E4.6C.3-5: dos lecturas ilegibles de cantidad (campo obligatorio en COMPRA/VENTA) generan error bloqueante 'Cantidad no detectado.'", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "AL30",
+      CANTIDAD: `${encodeOcrCandidate("###", 20)}${OCR_CANDIDATE_SEPARATOR}${encodeOcrCandidate("", 0)}`,
+      PRECIO: "65,25",
+      MONTO: "$6.525,00",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.cantidad).toBeNull();
+    expect(op.errors).toContain("Cantidad no detectado.");
+  });
+
+  it("E4.6C.3-6: lectura única de baja confianza (la otra pasada fue ilegible) queda null + 'Cantidad no confiable.', nunca se acepta a ciegas", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "AL30",
+      CANTIDAD: `${encodeOcrCandidate("54625", 35)}${OCR_CANDIDATE_SEPARATOR}${encodeOcrCandidate("###", 0)}`,
+      PRECIO: "65,25",
+      MONTO: "$3.562.281,25",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.cantidad).toBeNull();
+    expect(op.errors).toContain("Cantidad no confiable.");
+    expect(op.errors).not.toContain("Cantidad no detectado.");
+  });
+
+  it("E4.6C.3-7: lectura única confiable (supera el umbral) y coherente con el resto de la fila se acepta sin error", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "AL30",
+      CANTIDAD: `${encodeOcrCandidate("54625", 92)}${OCR_CANDIDATE_SEPARATOR}${encodeOcrCandidate("###", 0)}`,
+      PRECIO: "65,25",
+      MONTO: "$3.564.281,25",
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.cantidad).toBe("54625");
+    expect(op.errors).not.toContain("Cantidad no confiable.");
+    expect(op.errors).not.toContain("Cantidad no detectado.");
+  });
+
+  it("E4.6C.3-8: campo opcional (monto neto) totalmente ilegible queda null sin error — solo los obligatorios exigen 'no detectado'", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "COMPRA",
+      FECHA_CONC: "14-07-26",
+      TICKER: "AL30",
+      CANTIDAD: "100",
+      PRECIO: "65,25",
+      MONTO: `${OCR_CANDIDATE_SEPARATOR}`, // ambas pasadas vacías/ilegibles
+      PLAZO: "24hs",
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.montoNetoReferencia).toBeNull();
+    expect(op.errors).not.toContain("Monto neto no detectado.");
+    expect(op.errors).not.toContain("Monto neto no confiable.");
+  });
+
+  it("E4.6C.3-9: CAUCIÓN sin vencimiento legible genera error bloqueante 'Vencimiento no detectado.'", () => {
+    const cells: GridCellTexts = {
+      OPERACION: "CAUCION COL.",
+      FECHA_CONC: "14-07-26",
+      MONTO_INICIAL: "$87.440.200,00",
+      TASA: "22,90%",
+      MONTO_COBRAR_PAGAR: "$87.492.602,86",
+      // VTO ausente — la fecha de vencimiento es obligatoria en CAUCIÓN.
+    };
+    const op = buildOpFromGridRow(cells, 1);
+    expect(op.fechaVencimiento).toBeNull();
+    expect(op.errors).toContain("Vencimiento no detectado.");
+  });
 });
 
 describe("parseComitenteHeaderText", () => {
@@ -515,6 +746,43 @@ describe("parseComitenteHeaderText", () => {
   it("GRID-26: devuelve null cuando no hay un número de 5-6 dígitos", () => {
     expect(parseComitenteHeaderText("DANIEL")).toBeNull();
     expect(parseComitenteHeaderText("")).toBeNull();
+  });
+});
+
+describe("buildBloqueFromTableOps — comitente global heredado por todas las tablas (E4.6C.2)", () => {
+  it("GRID-33: el mismo comitente (leído UNA sola vez por encima de las tablas) se aplica idéntico a los 3 bloques", () => {
+    const comitente = { nombre: "DANIEL", numero: "11538" };
+    const bloqueCaucion = buildBloqueFromTableOps(1, comitente, [
+      buildOpFromGridRow({ OPERACION: "CAUCION COL." }, 1),
+    ]);
+    const bloqueCompraVenta1 = buildBloqueFromTableOps(2, comitente, [
+      buildOpFromGridRow({ OPERACION: "COMPRA", TICKER: "GGAL" }, 1),
+    ]);
+    const bloqueCompraVenta2 = buildBloqueFromTableOps(3, comitente, [
+      buildOpFromGridRow({ OPERACION: "VENTA", TICKER: "AL30" }, 1),
+    ]);
+
+    for (const bloque of [bloqueCaucion, bloqueCompraVenta1, bloqueCompraVenta2]) {
+      expect(bloque.nombreDetectado).toBe("DANIEL");
+      expect(bloque.nroComitenteDetectado).toBe("11538");
+    }
+    // Nunca se busca un comitente distinto por tabla — los 3 números coinciden entre sí.
+    const numeros = new Set([
+      bloqueCaucion.nroComitenteDetectado,
+      bloqueCompraVenta1.nroComitenteDetectado,
+      bloqueCompraVenta2.nroComitenteDetectado,
+    ]);
+    expect(numeros.size).toBe(1);
+  });
+
+  it("GRID-34: si el encabezado global no se pudo leer, todos los bloques quedan sin comitente por igual (nunca uno sí y otro no)", () => {
+    const bloque1 = buildBloqueFromTableOps(1, null, [buildOpFromGridRow({ OPERACION: "CAUCION COL." }, 1)]);
+    const bloque2 = buildBloqueFromTableOps(2, null, [buildOpFromGridRow({ OPERACION: "COMPRA" }, 1)]);
+
+    expect(bloque1.nombreDetectado).toBeNull();
+    expect(bloque1.nroComitenteDetectado).toBeNull();
+    expect(bloque2.nombreDetectado).toBeNull();
+    expect(bloque2.nroComitenteDetectado).toBeNull();
   });
 });
 
