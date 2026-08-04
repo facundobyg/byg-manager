@@ -287,14 +287,22 @@ describe("processBolsaExcelUpload — reanálisis de duplicados", () => {
     estado: "LISTO",
   };
 
-  it("T-U16 — duplicado sin reanalizar=true nunca toca el parser ni la transacción", async () => {
+  it("T-U16 — duplicado sin reanalizar=true nunca toca el parser ni la transacción, y expone la fecha operativa actual del lote", async () => {
     mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
-    mocks.findUniqueLote.mockResolvedValue({ id: "lote-viejo", estado: "REVISION_PENDIENTE", creadoPorId: "user-1" });
+    mocks.findUniqueLote.mockResolvedValue({
+      id: "lote-viejo",
+      estado: "REVISION_PENDIENTE",
+      creadoPorId: "user-1",
+      fechaOperativa: new Date("2026-06-01T00:00:00.000Z"),
+    });
 
     const result = await processBolsaExcelUpload(makeFormData(makeXlsxFile()), "user-1");
 
     expect(result.estado).toBe("DUPLICADO");
     expect(result.archivoExistente?.reanalizable).toBe(true);
+    // E4.6C.4: la UI necesita la fecha actual del lote para nunca aplicar
+    // en silencio la fecha recién seleccionada sin mostrarla contra la vieja.
+    expect(result.archivoExistente?.fechaOperativaLote).toBe("2026-06-01");
     expect(mocks.parseBolsaExcel).not.toHaveBeenCalled();
     expect(mocks.transaction).not.toHaveBeenCalled();
   });

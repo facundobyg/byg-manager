@@ -514,6 +514,7 @@ export async function processBolsaImageUpload(
         estadoArchivo: existing.estado as string,
         estadoLote: loteExistente?.estado,
         reanalizable,
+        fechaOperativaLote: loteExistente?.fechaOperativa ? isoDateString(loteExistente.fechaOperativa) : undefined,
       },
     };
   }

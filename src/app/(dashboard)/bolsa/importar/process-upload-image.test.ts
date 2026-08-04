@@ -176,7 +176,7 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
     expect(mocks.transaction).not.toHaveBeenCalled();
   });
 
-  // ── Reanálisis de un archivo duplicado (E4.6A) ───────────────────────────
+  // ── Reanálisis de un archivo duplicado (E4.6A, endurecido en E4.6C.4) ────
   describe("reanálisis", () => {
     const ARCHIVO_EXISTENTE = {
       id: "archivo-prev",
@@ -184,49 +184,89 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
       createdAt: new Date("2024-07-01T00:00:00Z"),
       estado: "LISTO",
     };
+    const FECHA_LOTE_VIEJA = new Date("2024-06-01T00:00:00.000Z");
 
-    it("T-IMG-2b: duplicado sin reanalizar=true nunca toca la transacción", async () => {
+    it("T-IMG-2b: duplicado sin reanalizar=true nunca toca la transacción ni modifica ningún dato (abrir existente es de solo lectura)", async () => {
       mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
-      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "REVISION_PENDIENTE", creadoPorId: "user-1" });
+      mocks.findUniqueLote.mockResolvedValue({
+        id: "lote-prev",
+        estado: "REVISION_PENDIENTE",
+        creadoPorId: "user-1",
+        fechaOperativa: FECHA_LOTE_VIEJA,
+      });
 
       const result = await processBolsaImageUpload(makeInput(), "user-1");
 
       expect(result.estado).toBe("DUPLICADO");
       expect(result.archivoExistente?.reanalizable).toBe(true);
+      // La UI necesita la fecha actual del lote para nunca aplicar en
+      // silencio la fecha recién seleccionada sin mostrarla contra la vieja.
+      expect(result.archivoExistente?.fechaOperativaLote).toBe("2024-06-01");
       expect(mocks.transaction).not.toHaveBeenCalled();
+      expect(mocks.deleteManyFila).not.toHaveBeenCalled();
+      expect(mocks.updateArchivo).not.toHaveBeenCalled();
+      expect(mocks.createFila).not.toHaveBeenCalled();
+      expect(mocks.updateLote).not.toHaveBeenCalled();
     });
 
-    it("T-IMG-2c: reanalizar=true en un lote REVISION_PENDIENTE reemplaza las filas de ESE archivo en una sola transacción", async () => {
+    it("T-IMG-2c: reanalizar=true en un lote REVISION_PENDIENTE reemplaza las filas de ESE archivo, actualiza fechaOperativa y todo ocurre en una sola transacción", async () => {
       mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
-      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "REVISION_PENDIENTE", creadoPorId: "user-1" });
+      mocks.findUniqueLote.mockResolvedValue({
+        id: "lote-prev",
+        estado: "REVISION_PENDIENTE",
+        creadoPorId: "user-1",
+        fechaOperativa: FECHA_LOTE_VIEJA,
+      });
       setupTransaction();
 
-      const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
+      const result = await processBolsaImageUpload(
+        makeInput({ reanalizar: true, fechaOperativa: new Date("2026-08-04T00:00:00.000Z") }),
+        "user-1",
+      );
 
       expect(result.ok).toBe(true);
       expect(result.estado).toBe("REVISION_PENDIENTE");
       expect(result.loteId).toBe("lote-prev");
       expect(result.archivoId).toBe("archivo-prev");
+      // Operación transaccional: una única llamada a $transaction agrupa
+      // borrado + archivo + filas + lote + auditoría.
       expect(mocks.transaction).toHaveBeenCalledTimes(1);
       expect(mocks.deleteManyFila).toHaveBeenCalledWith({ where: { archivoId: "archivo-prev" } });
       expect(mocks.updateArchivo).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "archivo-prev" } }));
       expect(mocks.createFila).toHaveBeenCalledTimes(1);
+      // La fecha operativa seleccionada nunca se ignora en silencio: el lote
+      // queda con la fecha NUEVA, no con la que tenía antes del reanálisis.
+      expect(mocks.updateLote).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "lote-prev" },
+          data: expect.objectContaining({ fechaOperativa: new Date("2026-08-04T00:00:00.000Z") }),
+        }),
+      );
       expect(mocks.createAuditLog).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.objectContaining({ accion: "LOTE_REANALIZADO" }) }),
       );
     });
 
-    it("T-IMG-2d: reanalizar=true en un lote EN_VALIDACION es rechazado, nunca reemplaza filas", async () => {
-      mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
-      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "EN_VALIDACION", creadoPorId: "user-1" });
+    it.each(["EN_VALIDACION", "APROBADO", "CONFIRMADO"])(
+      "T-IMG-2d: reanalizar=true en un lote %s es rechazado, nunca reemplaza filas ni la fechaOperativa",
+      async (estadoLote) => {
+        mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+        mocks.findUniqueLote.mockResolvedValue({
+          id: "lote-prev",
+          estado: estadoLote,
+          creadoPorId: "user-1",
+          fechaOperativa: FECHA_LOTE_VIEJA,
+        });
 
-      const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
+        const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
 
-      expect(result.estado).toBe("DUPLICADO");
-      expect(result.archivoExistente?.reanalizable).toBe(false);
-      expect(mocks.transaction).not.toHaveBeenCalled();
-      expect(mocks.deleteManyFila).not.toHaveBeenCalled();
-    });
+        expect(result.estado).toBe("DUPLICADO");
+        expect(result.archivoExistente?.reanalizable).toBe(false);
+        expect(mocks.transaction).not.toHaveBeenCalled();
+        expect(mocks.deleteManyFila).not.toHaveBeenCalled();
+        expect(mocks.updateLote).not.toHaveBeenCalled();
+      },
+    );
 
     it("T-IMG-2e: reanalizar=true por un usuario que no creó el lote y no es ADMIN es rechazado", async () => {
       mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
@@ -240,9 +280,47 @@ describe("processBolsaImageUpload (OCR — no image sent to server)", () => {
       expect(mocks.deleteManyFila).not.toHaveBeenCalled();
     });
 
+    it("T-IMG-2e-bis: un ADMIN puede reanalizar un lote que no creó", async () => {
+      mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+      mocks.findUniqueLote.mockResolvedValue({
+        id: "lote-prev",
+        estado: "REVISION_PENDIENTE",
+        creadoPorId: "otro-user",
+        fechaOperativa: FECHA_LOTE_VIEJA,
+      });
+      mocks.findUniqueUser.mockResolvedValue({ role: "ADMIN" });
+      setupTransaction();
+
+      const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
+
+      expect(result.ok).toBe(true);
+      expect(result.estado).toBe("REVISION_PENDIENTE");
+      expect(mocks.transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("T-IMG-2e-ter: el creador del lote no necesita consultar el rol para reanalizar", async () => {
+      mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
+      mocks.findUniqueLote.mockResolvedValue({
+        id: "lote-prev",
+        estado: "REVISION_PENDIENTE",
+        creadoPorId: "user-1",
+        fechaOperativa: FECHA_LOTE_VIEJA,
+      });
+      setupTransaction();
+
+      await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");
+
+      expect(mocks.findUniqueUser).not.toHaveBeenCalled();
+    });
+
     it("T-IMG-2f: reanalizar=true en un lote DEVUELTO sí se admite", async () => {
       mocks.findUniqueArchivo.mockResolvedValue(ARCHIVO_EXISTENTE);
-      mocks.findUniqueLote.mockResolvedValue({ id: "lote-prev", estado: "DEVUELTO", creadoPorId: "user-1" });
+      mocks.findUniqueLote.mockResolvedValue({
+        id: "lote-prev",
+        estado: "DEVUELTO",
+        creadoPorId: "user-1",
+        fechaOperativa: FECHA_LOTE_VIEJA,
+      });
       setupTransaction();
 
       const result = await processBolsaImageUpload(makeInput({ reanalizar: true }), "user-1");

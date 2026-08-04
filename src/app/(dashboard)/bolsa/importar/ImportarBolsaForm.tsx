@@ -13,6 +13,7 @@ import {
   createOcrWorker,
   type TesseractWorker,
 } from "@/lib/browser/ocr-bolsa";
+import { debeActualizarLoteActivo, opcionesParaDuplicado } from "./duplicado-decision";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -25,7 +26,14 @@ type ImgFase =
   | { fase: "armando" }
   | { fase: "guardando" }
   | { fase: "ok"; result: ProcessBolsaResult }
-  | { fase: "duplicado"; loteId?: string; creadoEl?: string; reanalizable?: boolean }
+  | {
+      fase: "duplicado";
+      loteId?: string;
+      creadoEl?: string;
+      reanalizable?: boolean;
+      estadoLote?: string;
+      fechaOperativaLote?: string;
+    }
   | { fase: "error"; msg: string };
 
 type ImagenEntry = { file: File; estado: ImgFase };
@@ -47,6 +55,7 @@ export function ImportarBolsaForm() {
   const [loteActual, setLoteActual] = useState<string | undefined>();
   const [imgConfirming, setImgConfirming] = useState(false);
   const [confirmandoReanalisisIdx, setConfirmandoReanalisisIdx] = useState<number | null>(null);
+  const [duplicadosCancelados, setDuplicadosCancelados] = useState<Set<number>>(new Set());
   const [imgPending, startImgTransition] = useTransition();
   const imagenInputRef = useRef<HTMLInputElement>(null);
 
@@ -59,6 +68,7 @@ export function ImportarBolsaForm() {
     setLoteActual(undefined);
     setImgConfirming(false);
     setConfirmandoReanalisisIdx(null);
+    setDuplicadosCancelados(new Set());
   }
 
   function handleCambiarModo(m: Modo) {
@@ -197,7 +207,11 @@ export function ImportarBolsaForm() {
             continue;
           }
 
-          if (result.loteId && !loteId) {
+          // E4.6C.4: un DUPLICADO nunca pasa a ser "el lote activo" de esta
+          // tanda — de lo contrario el atajo "Revisar lote" de abajo termina
+          // apuntando en silencio al lote anterior, sin haber aplicado la
+          // fecha recién seleccionada ni el nuevo resultado del OCR.
+          if (!loteId && debeActualizarLoteActivo(result)) {
             loteId = result.loteId;
             setLoteActual(loteId);
           }
@@ -208,6 +222,8 @@ export function ImportarBolsaForm() {
               loteId: result.archivoExistente?.loteId,
               creadoEl: result.archivoExistente?.creadoEl,
               reanalizable: result.archivoExistente?.reanalizable,
+              estadoLote: result.archivoExistente?.estadoLote,
+              fechaOperativaLote: result.archivoExistente?.fechaOperativaLote,
             });
           } else if (!result.ok) {
             actualizarEntrada(i, {
@@ -230,6 +246,13 @@ export function ImportarBolsaForm() {
 
   function cancelarReanalizarImagen() {
     setConfirmandoReanalisisIdx(null);
+  }
+
+  // "Cancelar" ante un duplicado: descarta la decisión sin abrir el lote
+  // existente ni reanalizar nada — la fila sigue visible como duplicado
+  // detectado, nunca desaparece silenciosamente.
+  function cancelarDecisionDuplicado(idx: number) {
+    setDuplicadosCancelados((prev) => new Set(prev).add(idx));
   }
 
   function confirmarReanalizarImagen(idx: number) {
@@ -454,10 +477,13 @@ export function ImportarBolsaForm() {
                 <ImagenEntryCard
                   key={i}
                   entry={entry}
+                  fechaSeleccionada={fechaOperativa}
                   confirmandoReanalisis={confirmandoReanalisisIdx === i}
+                  decisionCancelada={duplicadosCancelados.has(i)}
                   onPedirReanalizar={() => pedirReanalizarImagen(i)}
                   onConfirmarReanalizar={() => confirmarReanalizarImagen(i)}
                   onCancelarReanalizar={cancelarReanalizarImagen}
+                  onCancelarDecision={() => cancelarDecisionDuplicado(i)}
                 />
               ))}
               {loteActual && (
@@ -642,16 +668,22 @@ function ResultadoExcel({
 
 function ImagenEntryCard({
   entry,
+  fechaSeleccionada,
   confirmandoReanalisis,
+  decisionCancelada,
   onPedirReanalizar,
   onConfirmarReanalizar,
   onCancelarReanalizar,
+  onCancelarDecision,
 }: {
   entry: ImagenEntry;
+  fechaSeleccionada: string;
   confirmandoReanalisis: boolean;
+  decisionCancelada: boolean;
   onPedirReanalizar: () => void;
   onConfirmarReanalizar: () => void;
   onCancelarReanalizar: () => void;
+  onCancelarDecision: () => void;
 }) {
   const { file, estado } = entry;
   const baseClass = "rounded-xl border p-3 flex flex-col gap-1.5 transition-colors";
@@ -713,50 +745,89 @@ function ImagenEntryCard({
   }
 
   if (estado.fase === "duplicado") {
+    // E4.6C.4: nunca una decisión implícita — siempre se muestran las
+    // opciones explícitas (abrir / reanalizar / cancelar) más la fecha
+    // actual del lote contra la recién seleccionada, para que reanalizar
+    // nunca ignore en silencio la fecha elegida por el usuario.
+    const opciones = opcionesParaDuplicado(estado.reanalizable);
+    const loteId = estado.loteId;
     return (
       <div
         className={`${baseClass} border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800/40`}
       >
         <p className="text-[11px] font-black text-amber-600 dark:text-amber-400">{file.name}</p>
-        <p className="text-[11px] text-amber-700 dark:text-amber-300">
-          Ya importada
-          {estado.creadoEl && (
-            <> el {new Date(estado.creadoEl).toLocaleString("es-AR")}</>
-          )}
-          .
+        <p className="text-[11px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
+          Esta imagen ya fue procesada.
         </p>
-        {estado.reanalizable && !confirmandoReanalisis && (
-          <button
-            type="button"
-            onClick={onPedirReanalizar}
-            className="self-start px-3 py-1.5 rounded-lg border border-amber-400 text-amber-700 dark:text-amber-400 text-[10px] font-black uppercase tracking-wider hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
-          >
-            Reanalizar lote
-          </button>
-        )}
-        {confirmandoReanalisis && (
-          <div className="flex flex-col gap-2 mt-1">
-            <p className="text-[11px] text-amber-800 dark:text-amber-300">
-              Se van a reemplazar las filas de este archivo en el lote {estado.loteId} con esta
-              imagen y la fecha seleccionada.
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={onConfirmarReanalizar}
-                className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-[10px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
-              >
-                Confirmar
-              </button>
-              <button
-                type="button"
-                onClick={onCancelarReanalizar}
-                className="px-3 py-1.5 rounded-lg border border-byg-border text-byg-muted text-[10px] font-black uppercase tracking-wider hover:text-byg-text transition-colors"
-              >
-                Cancelar
-              </button>
-            </div>
-          </div>
+        <div className="text-[11px] text-amber-800 dark:text-amber-300 flex flex-col gap-0.5">
+          {loteId && <p>Lote existente: {loteId}</p>}
+          {estado.creadoEl && <p>Procesada el {new Date(estado.creadoEl).toLocaleString("es-AR")}.</p>}
+          {estado.estadoLote && <p>Estado del lote: {estado.estadoLote}.</p>}
+          {estado.fechaOperativaLote && <p>Fecha actual del lote: {estado.fechaOperativaLote}.</p>}
+          <p>Fecha nueva seleccionada: {fechaSeleccionada}.</p>
+        </div>
+
+        {decisionCancelada ? (
+          <p className="text-[11px] text-byg-muted italic mt-1">Decisión cancelada — no se modificó nada.</p>
+        ) : (
+          <>
+            {!confirmandoReanalisis && (
+              <div className="flex flex-wrap gap-2 mt-1">
+                {opciones.puedeAbrirExistente && loteId && (
+                  <Link
+                    href={`/bolsa/importar/${loteId}`}
+                    className="px-3 py-1.5 rounded-lg bg-byg-accent text-white text-[10px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+                  >
+                    Abrir lote existente
+                  </Link>
+                )}
+                {opciones.puedeReanalizar && (
+                  <button
+                    type="button"
+                    onClick={onPedirReanalizar}
+                    className="px-3 py-1.5 rounded-lg border border-amber-400 text-amber-700 dark:text-amber-400 text-[10px] font-black uppercase tracking-wider hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+                  >
+                    Reanalizar con fecha {fechaSeleccionada}
+                  </button>
+                )}
+                {opciones.puedeCancelar && (
+                  <button
+                    type="button"
+                    onClick={onCancelarDecision}
+                    className="px-3 py-1.5 rounded-lg border border-byg-border text-byg-muted text-[10px] font-black uppercase tracking-wider hover:text-byg-text transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                )}
+              </div>
+            )}
+            {confirmandoReanalisis && (
+              <div className="flex flex-col gap-2 mt-1">
+                <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                  Se va a actualizar la fecha del lote {loteId} de{" "}
+                  <strong>{estado.fechaOperativaLote ?? "—"}</strong> a{" "}
+                  <strong>{fechaSeleccionada}</strong> y se reemplazarán las filas de staging no
+                  enviadas de este archivo con el resultado de esta imagen.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={onConfirmarReanalizar}
+                    className="px-3 py-1.5 rounded-lg bg-amber-600 text-white text-[10px] font-black uppercase tracking-wider hover:opacity-90 transition-opacity"
+                  >
+                    Confirmar reanálisis
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onCancelarReanalizar}
+                    className="px-3 py-1.5 rounded-lg border border-byg-border text-byg-muted text-[10px] font-black uppercase tracking-wider hover:text-byg-text transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     );

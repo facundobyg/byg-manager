@@ -43,6 +43,11 @@ export interface ProcessBolsaResult {
     estadoLote?: string;
     /** true si estadoLote admite reanálisis (REVISION_PENDIENTE/FALLIDO/DEVUELTO). */
     reanalizable?: boolean;
+    /** Fecha operativa ACTUAL del lote existente (YYYY-MM-DD) — la UI debe
+     * mostrarla junto a la fecha recién seleccionada, nunca aplicar esta
+     * última en silencio sobre un lote que en realidad no se reanalizó
+     * (E4.6C.4). */
+    fechaOperativaLote?: string;
   };
   advertencias?: string[];
 }
@@ -741,6 +746,7 @@ export async function processBolsaExcelUpload(
         estadoArchivo: existing.estado as string,
         estadoLote: loteExistente?.estado,
         reanalizable,
+        fechaOperativaLote: loteExistente?.fechaOperativa ? isoDateString(loteExistente.fechaOperativa) : undefined,
       },
     };
   }
