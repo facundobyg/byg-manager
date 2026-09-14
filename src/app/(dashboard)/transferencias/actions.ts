@@ -5,6 +5,7 @@ import { Decimal } from "@prisma/client/runtime/library";
 import type { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { readOnlyPreview } from "@/lib/config";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 type DatosTransferencia = {
   clienteId: string;
@@ -16,6 +17,9 @@ type DatosTransferencia = {
 
 export async function revertirTransferencia(_prevState: unknown, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const denied = await requireActionPermission("bolsa:transferir_custodia");
+  if (denied) return { error: denied.error };
 
   const logId = formData.get("logId") as string;
   if (!logId) return { error: "logId inválido" };

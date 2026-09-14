@@ -8,10 +8,26 @@ import { auth } from "@/auth";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { writeAuditLog } from "@/lib/services/audit.service";
 
+/**
+ * Gate compartido por las Server Actions de este archivo: exige sesión válida
+ * y el permiso indicado antes de tocar Prisma. Mismo patrón que
+ * bolsa/importar/[loteId]/actions.ts.
+ */
+async function requireGate(permissionKey: string): Promise<{ userId: string } | { error: string }> {
+  const denied = await requireActionPermission(permissionKey);
+  if (denied) return { error: denied.error };
+  const session = await auth();
+  if (!session?.user?.id) return { error: "Sin sesión activa" };
+  return { userId: session.user.id };
+}
+
 export async function updateSaldosCartera(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const gated = await requireGate("saldos:editar");
+  if ("error" in gated) return { error: gated.error };
+
   const carteraId = formData.get("carteraId")?.toString().trim();
   const slug      = formData.get("slug")?.toString().trim();
   if (!carteraId || !slug) return { error: "Datos requeridos" };
@@ -52,6 +68,9 @@ export async function agregarPosicion(
   _prev: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const gated = await requireGate("bolsa:crear");
+  if ("error" in gated) return { error: gated.error };
+
   const carteraId    = formData.get("carteraId")?.toString().trim();
   const ticker       = formData.get("ticker")?.toString().trim().toUpperCase();
   const descripcion  = formData.get("descripcion")?.toString().trim() || null;
@@ -129,6 +148,9 @@ export async function editarPosicion(
   _prev: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const gated = await requireGate("bolsa:crear");
+  if ("error" in gated) return { error: gated.error };
+
   const posicionId  = formData.get("posicionId")?.toString().trim();
   const cantidadRaw = formData.get("cantidad")?.toString().replace(",", ".");
   const precioRaw   = formData.get("precioCompra")?.toString().replace(",", ".");
@@ -158,18 +180,15 @@ export async function editarPosicion(
   if (Object.keys(data).length === 0) return { error: "Nada para actualizar" };
 
   try {
-    const session = await auth();
-    const userId  = session?.user?.id as string | undefined;
+    const userId  = gated.userId;
     const updated = await prisma.posicionCartera.update({ where: { id: posicionId }, data, include: { Activo: { select: { ticker: true } } } });
-    if (userId) {
-      await writeAuditLog({
-        userId,
-        accion:      "EDICION",
-        entidad:     "PosicionCartera",
-        entidadId:   posicionId,
-        description: `Edición posición ${updated.Activo.ticker}: ${Object.keys(data).join(", ")}`,
-      });
-    }
+    await writeAuditLog({
+      userId,
+      accion:      "EDICION",
+      entidad:     "PosicionCartera",
+      entidadId:   posicionId,
+      description: `Edición posición ${updated.Activo.ticker}: ${Object.keys(data).join(", ")}`,
+    });
     revalidateCartera(carteraSlug);
     return { success: true };
   } catch (e) {
@@ -184,6 +203,9 @@ export async function cambiarCategoriaActivo(
   _prev: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const gated = await requireGate("bolsa:crear");
+  if ("error" in gated) return { error: gated.error };
+
   const activoId     = formData.get("activoId")?.toString().trim();
   const categoriaRaw = formData.get("categoria")?.toString().trim();
   const carteraSlug  = formData.get("carteraSlug")?.toString();
@@ -338,6 +360,9 @@ export async function eliminarPosicion(
   _prev: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const gated = await requireGate("bolsa:anular");
+  if ("error" in gated) return { error: gated.error };
+
   const posicionId  = formData.get("posicionId")?.toString().trim();
   const carteraSlug = formData.get("carteraSlug")?.toString();
 

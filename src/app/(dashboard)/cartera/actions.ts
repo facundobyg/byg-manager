@@ -5,9 +5,13 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { revalidatePath } from "next/cache";
 import { readOnlyPreview } from "@/lib/config";
 import { calcularPrecioPromedio } from "@/lib/services/precioPromedio.service";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function transferirActivo(_prevState: unknown, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+
+  const denied = await requireActionPermission("bolsa:transferir_custodia");
+  if (denied) return { error: denied.error };
 
   const posicionId = formData.get("posicionId") as string;
   const clienteId = formData.get("clienteId") as string;
