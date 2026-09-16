@@ -35,6 +35,24 @@ function cleanDesc(d: string | null): string {
   return d.replace(/\s*\|\s*op:[a-zA-Z0-9-]+/, "").replace(/\s*\|\s*ref:[a-zA-Z0-9-]+/, "").trim();
 }
 
+/**
+ * true si la descripción trae un operationRef de operación agrupada (op:{ref}) —
+ * RULO/DIVISA/LP/INTERES. Una pata individual de estas operaciones no debe
+ * revertirse sola vía revertirMovimientoCC; solo la operación completa vía
+ * revertirOperacion.
+ */
+export function esMovimientoDeOperacionAgrupada(descripcion: string | null | undefined): boolean {
+  return /op:[a-zA-Z0-9-]+/.test(descripcion ?? "");
+}
+
+/**
+ * id de MovimientoCC referenciado por una reversión individual (movref:{id}),
+ * o null si la descripción no es una reversión individual estructurada.
+ */
+export function extraerMovRef(descripcion: string | null | undefined): string | null {
+  return descripcion?.match(/movref:([a-zA-Z0-9-]+)/)?.[1] ?? null;
+}
+
 export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
   const movs = await prisma.movimientoCC.findMany({
     orderBy: [{ fecha: "desc" }, { createdAt: "desc" }],
@@ -57,6 +75,16 @@ export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
     } else {
       noRef.push(m);
     }
+  }
+
+  // operationRef -> ya tiene una reversión (algún movimiento trae ref:{operationRef}).
+  // Se calcula sobre TODA la ventana leída, no solo dentro de cada grupo: la
+  // reversión de una operación forma su propio grupo (op:{reversalRef}), separado
+  // del original, así que hay que buscar el ref: cruzando todos los movimientos.
+  const operationRefsRevertidos = new Set<string>();
+  for (const m of movs) {
+    const refMatch = m.descripcion?.match(/\bref:([a-zA-Z0-9-]+)/);
+    if (refMatch?.[1]) operationRefsRevertidos.add(refMatch[1]);
   }
 
   // Find all LP refs to resolve linked plazo fijo records
@@ -85,7 +113,7 @@ export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
 
   for (const [ref, group] of Array.from(byRef.entries())) {
     const primary = group.find((m) => m.tipo === "INGRESO") ?? group[0];
-    const revertida = group.some((m) => m.descripcion?.includes("REVERSO"));
+    const revertida = operationRefsRevertidos.has(ref) || group.some((m) => m.descripcion?.includes("REVERSO"));
     const latestFecha = group.reduce((l, m) => (m.fecha > l ? m.fecha : l), group[0].fecha);
     const tipoOperacion = primary.descripcion?.split(" ")[0]?.toUpperCase() ?? "MOV";
     const plazoFijoId = pfByRef.get(ref) ?? null;
@@ -185,6 +213,12 @@ export async function getResumenOperacionesPorCliente(): Promise<ResumenOperacio
   return Array.from(map.values()).sort((a, b) => b.totalOperaciones - a.totalOperaciones);
 }
 
+/**
+ * Movimientos ORIGINALES de una operación agrupada (op:{operationRef}).
+ * NUNCA incluye la reversión: la reversión trae su propio op:{reversalRef}
+ * distinto, más ref:{operationRef} apuntando para atrás. Para saber si ya
+ * fue revertida usar getReversionByOperationRef, no esta función.
+ */
 export async function getMovimientosByOperationRef(operationRef: string) {
   return prisma.movimientoCC.findMany({
     where: {
@@ -193,6 +227,22 @@ export async function getMovimientosByOperationRef(operationRef: string) {
     include: {
       CuentaCorriente: true,
     },
+  });
+}
+
+/**
+ * Busca la reversión (si existe) de una operación agrupada, por ref:{operationRef}.
+ * Semántica explícitamente separada de getMovimientosByOperationRef para no
+ * mezclar "traer los originales" con "saber si ya se revirtió".
+ *
+ * Nota: usa el cliente `prisma` singleton (fuera de transacción) — es un helper
+ * de lectura para UI/reportes. revertirOperacion hace su propia consulta
+ * equivalente contra `tx` dentro de la transacción con lock, para que el
+ * chequeo quede serializado con la escritura (ver clientes/actions.ts).
+ */
+export async function getReversionByOperationRef(operationRef: string) {
+  return prisma.movimientoCC.findFirst({
+    where: { descripcion: { contains: `ref:${operationRef}` } },
   });
 }
 

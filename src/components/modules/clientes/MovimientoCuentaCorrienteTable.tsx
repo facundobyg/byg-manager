@@ -1,6 +1,7 @@
 import Decimal from "decimal.js";
 import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import { RevertirMovCCButton } from "@/components/modules/clientes/RevertirMovCCButton";
+import { esMovimientoDeOperacionAgrupada, extraerMovRef } from "@/lib/data/movimiento-cc";
 
 interface Movimiento {
   id: string;
@@ -39,6 +40,15 @@ export function MovimientoCuentaCorrienteTable({
       
     return { ...mov, saldoProgresivo: currentBalance };
   });
+
+  // ids de movimientos que ya tienen una reversión individual (movref:{id})
+  // en algún otro movimiento de la misma cuenta — mismo criterio que usa el
+  // backend (revertirMovimientoCC) para rechazar una segunda reversión.
+  const idsYaRevertidos = new Set<string>();
+  for (const m of movimientos) {
+    const ref = extraerMovRef(m.descripcion);
+    if (ref) idsYaRevertidos.add(ref);
+  }
 
   if (!movimientos.length) {
     return (
@@ -100,9 +110,13 @@ export function MovimientoCuentaCorrienteTable({
                     {formatCurrency(mov.saldoProgresivo)}
                   </td>
                   <td className="px-4 py-3.5 text-right">
-                    {canRevertir && !mov.descripcion?.includes("[REVERSO") && (
-                      <RevertirMovCCButton id={mov.id} />
-                    )}
+                    {canRevertir &&
+                      !mov.descripcion?.startsWith("[REVERSO") &&
+                      !mov.descripcion?.startsWith("REVERSO") &&
+                      !esMovimientoDeOperacionAgrupada(mov.descripcion) &&
+                      !idsYaRevertidos.has(mov.id) && (
+                        <RevertirMovCCButton id={mov.id} />
+                      )}
                   </td>
                 </tr>
               );

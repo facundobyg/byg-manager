@@ -170,7 +170,7 @@ export function OperacionHistoryTable({ rows }: { rows: LedgerRow[] }) {
                 )}
               </td>
               <td className="py-3 px-4 text-right">
-                {row.operationRef && !row.revertida && row.tipoOperacion !== "INTERES" && row.tipoOperacion !== "REVERSO" ? (
+                {row.operationRef && !row.revertida && row.tipoOperacion !== "REVERSO" ? (
                   <RevertForm operationRef={row.operationRef} />
                 ) : (
                   <span className="text-slate-200">—</span>

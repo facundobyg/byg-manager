@@ -5,9 +5,10 @@ import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { readOnlyPreview } from "@/lib/config";
 import { requireActionPermission } from "@/lib/auth/permissions";
-import { Moneda, TipoMovCaja } from "@prisma/client";
+import { Moneda, Prisma, TipoMovCaja } from "@prisma/client";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import { esMovimientoDeOperacionAgrupada } from "@/lib/data/movimiento-cc";
 
 export async function crearMovimientoCC(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -611,23 +612,50 @@ export async function revertirOperacion(formData: FormData) {
   const operationRef = (formData.get("operationRef") as string)?.trim();
   if (!operationRef) return { error: "operationRef requerido" };
 
-  const { getMovimientosByOperationRef } = await import("@/lib/data/movimiento-cc");
-  const movimientos = await getMovimientosByOperationRef(operationRef);
-
-  if (movimientos.length === 0) return { error: "No se encontraron movimientos para esta operación" };
-
-  // Guard: prevent double reversal
-  if (movimientos.some((m) => m.descripcion?.includes("REVERSO"))) {
-    return { error: "Esta operación ya fue revertida" };
-  }
-
-  const reversalRef = crypto.randomUUID();
-  const hoy = new Date();
-
   try {
     await prisma.$transaction(async (tx) => {
-      for (const mov of movimientos) {
-        const inversoTipo = mov.tipo === "INGRESO" ? "EGRESO" : "INGRESO";
+      // 1-2. localizar los movimientos ORIGINALES de esta operación (op:{operationRef}).
+      const originales = await tx.movimientoCC.findMany({
+        where: { descripcion: { contains: `op:${operationRef}` } },
+      });
+
+      if (originales.length === 0) {
+        throw new Error("No se encontraron movimientos para esta operación");
+      }
+
+      // 6. rechazar si lo encontrado es en realidad un grupo REVERSO
+      //    (p. ej. alguien pasó un reversalRef como si fuera un operationRef).
+      if (originales.some((m) => m.descripcion?.startsWith("REVERSO"))) {
+        throw new Error("No se puede revertir una reversión");
+      }
+
+      // 3. lock row-level sobre los originales: serializa cualquier otra
+      //    reversión concurrente del MISMO operationRef. SQL parametrizado
+      //    (Prisma.join sobre ids ya resueltos por Prisma, nunca input crudo
+      //    del usuario) porque Prisma no expone FOR UPDATE en su API fluida.
+      const ids = originales.map((m) => m.id);
+      await tx.$queryRaw`SELECT id FROM "MovimientoCC" WHERE id IN (${Prisma.join(ids)}) FOR UPDATE`;
+
+      // 4. recién con el lock adquirido, re-chequear si ya existe una reversión.
+      //    Si otra transacción ganó la carrera y ya commiteó su reversión
+      //    mientras esperábamos el lock, este SELECT (bajo Read Committed) la
+      //    ve porque corre en un statement nuevo, posterior al desbloqueo.
+      const yaRevertida = await tx.movimientoCC.findFirst({
+        where: { descripcion: { contains: `ref:${operationRef}` } },
+      });
+      if (yaRevertida) {
+        throw new Error("Esta operación ya fue revertida");
+      }
+
+      // 7-10. crear todos los movimientos inversos + actualizar saldos, atómico.
+      const reversalRef = crypto.randomUUID();
+      const hoy = new Date();
+
+      for (const mov of originales) {
+        // INTERES suma al saldo igual que INGRESO (ver aplicarInteresCC), así
+        // que su inverso también debe restar — mismo criterio que ya usa
+        // revertirMovimientoCC más abajo.
+        const inversoTipo = mov.tipo === "INGRESO" || mov.tipo === "INTERES" ? "EGRESO" : "INGRESO";
         const desc = `REVERSO ${mov.tipo} | op:${reversalRef} | ref:${operationRef}`;
 
         await tx.movimientoCC.create({
@@ -1001,25 +1029,55 @@ export async function revertirMovimientoCC(
   const id = formData.get("id")?.toString();
   if (!id) return { error: "ID requerido" };
 
-  const mov = await prisma.movimientoCC.findUnique({
-    where: { id },
-    include: { CuentaCorriente: { select: { id: true, saldo: true, clienteId: true, moneda: true } } },
-  });
-  if (!mov) return { error: "Movimiento no encontrado" };
-
-  const desc = mov.descripcion ?? "";
-  if (desc.startsWith("[REVERSO]")) return { error: "Este movimiento ya es una reversión" };
-  if (desc.includes("REVERSO")) return { error: "Este movimiento ya fue revertido" };
-
   const session = await auth();
   const userName = (session?.user as { name?: string })?.name ?? "Sistema";
 
-  const inversoTipo: "INGRESO" | "EGRESO" = mov.tipo === "INGRESO" || mov.tipo === "INTERES" ? "EGRESO" : "INGRESO";
-  const hoy = new Date();
-  const fecha = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
-
   try {
-    await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
+      const mov = await tx.movimientoCC.findUnique({
+        where: { id },
+        include: { CuentaCorriente: { select: { id: true, saldo: true, clienteId: true, moneda: true } } },
+      });
+      if (!mov) throw new Error("Movimiento no encontrado");
+
+      const desc = mov.descripcion ?? "";
+
+      // Cruce de caminos: una pata de una operación agrupada (RULO/DIVISA/LP/
+      // INTERES, tiene op:{operationRef}) no se revierte individualmente acá,
+      // solo completa vía revertirOperacion — evita reversión parcial.
+      if (esMovimientoDeOperacionAgrupada(desc)) {
+        throw new Error("Este movimiento pertenece a una operación agrupada. Revertila desde Operaciones.");
+      }
+      // Una reversión (grupal o individual) no puede volver a revertirse.
+      if (desc.startsWith("REVERSO") || desc.startsWith("[REVERSO")) {
+        throw new Error("Este movimiento ya es una reversión");
+      }
+
+      // Lock row-level sobre el movimiento original: serializa cualquier otra
+      // reversión concurrente del MISMO id. SQL parametrizado (id vinculado,
+      // nunca concatenado) porque Prisma no expone FOR UPDATE en su API fluida.
+      await tx.$queryRaw`SELECT id FROM "MovimientoCC" WHERE id = ${id} FOR UPDATE`;
+
+      // Re-chequeo post-lock: ¿alguien más ya generó la reversión de este
+      // movimiento mientras esperábamos el lock? Bajo Read Committed, este
+      // SELECT corre en un statement nuevo tras el desbloqueo y sí la ve.
+      const yaRevertido = await tx.movimientoCC.findFirst({
+        where: { descripcion: { contains: `movref:${id}` } },
+      });
+      if (yaRevertido) throw new Error("Este movimiento ya fue revertido");
+
+      const inversoTipo: "INGRESO" | "EGRESO" = mov.tipo === "INGRESO" || mov.tipo === "INTERES" ? "EGRESO" : "INGRESO";
+      const hoy = new Date();
+      const fecha = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
+
+      // Referencia estructurada nueva y no ambigua (movref:), distinta de op:/ref:
+      // que son semántica de operación agrupada. Se reserva espacio para que
+      // nunca quede truncada por el límite de 500 caracteres.
+      const prefix = `[REVERSO por ${userName}] `;
+      const suffix = ` | movref:${id}`;
+      const maxDescLen = Math.max(0, 500 - prefix.length - suffix.length);
+      const descTruncada = desc.length > maxDescLen ? desc.slice(0, maxDescLen) : desc;
+
       await tx.movimientoCC.create({
         data: {
           id: crypto.randomUUID(),
@@ -1027,7 +1085,7 @@ export async function revertirMovimientoCC(
           fecha,
           tipo: inversoTipo,
           monto: mov.monto,
-          descripcion: `[REVERSO por ${userName}] ${desc}`.slice(0, 500),
+          descripcion: `${prefix}${descTruncada}${suffix}`,
           operacionCambioId: mov.operacionCambioId,
         },
       });
@@ -1037,19 +1095,26 @@ export async function revertirMovimientoCC(
         where: { id: mov.cuentaCorrienteId },
         data: { saldo: { increment: delta }, updatedAt: new Date() },
       });
+
+      return {
+        clienteId: mov.CuentaCorriente.clienteId,
+        cuentaId:  mov.CuentaCorriente.id,
+        moneda:    mov.CuentaCorriente.moneda,
+        tipo:      mov.tipo,
+        monto:     mov.monto,
+      };
     });
 
-    const cc = mov.CuentaCorriente;
     await writeAuditLog({
       userId:      session?.user?.id,
       accion:      "REVERTIR",
       entidad:     "MovimientoCC",
       entidadId:   id,
-      description: `${userName} revirtió movimiento CC ${id} (${mov.tipo} ${mov.monto} ${cc.moneda})`,
+      description: `${userName} revirtió movimiento CC ${id} (${result.tipo} ${result.monto} ${result.moneda})`,
     });
 
-    revalidatePath(`/clientes/${cc.clienteId}`);
-    revalidatePath(`/clientes/${cc.clienteId}/cuentas/${cc.id}`);
+    revalidatePath(`/clientes/${result.clienteId}`);
+    revalidatePath(`/clientes/${result.clienteId}/cuentas/${result.cuentaId}`);
     revalidatePath("/clientes/cc");
     return { ok: true };
   } catch (e: unknown) {
