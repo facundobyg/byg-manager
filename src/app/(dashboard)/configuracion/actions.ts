@@ -166,6 +166,9 @@ export async function updateTCBlue(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const raw = formData.get("valor")?.toString().trim().replace(",", ".");
   if (!raw) return { error: "Valor requerido" };
 
@@ -181,6 +184,9 @@ export async function updateTCMep(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const raw = formData.get("valor")?.toString().trim().replace(",", ".");
   if (!raw) return { error: "Valor requerido" };
   const valor = parseFloat(raw);
@@ -209,6 +215,9 @@ export async function updatePrecioActivo(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const activoId = formData.get("activoId")?.toString().trim();
   const rawPrecio = formData.get("precioActual")?.toString().trim().replace(",", ".");
 
@@ -234,6 +243,9 @@ export async function updatePreciosActivosBatch(
   _prev: { error?: string; ok?: boolean; count?: number },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean; count?: number }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const assetIds = formData.getAll("activoId") as string[];
   const prices = formData.getAll("precioActual") as string[];
 
@@ -272,6 +284,9 @@ export async function updateSociosPorcentaje(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const ids = formData.getAll("socioId") as string[];
   const pcts = formData.getAll("porcentaje") as string[];
 
@@ -312,6 +327,9 @@ export async function createCartera(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const nombre                    = formData.get("nombre")?.toString().trim();
   const slug                      = formData.get("slug")?.toString().trim().toLowerCase();
   const tipo                      = (formData.get("tipo")?.toString() ?? "COMPLETA") as TipoCartera;
@@ -362,6 +380,9 @@ export async function updatePreciosTickerBatch(
   _prev: { error?: string; ok?: boolean; updated?: string[]; notFound?: string[]; invalid?: string[] },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean; updated?: string[]; notFound?: string[]; invalid?: string[] }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const text  = formData.get("batch")?.toString() ?? "";
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
@@ -426,6 +447,9 @@ export async function updateCartera(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const id                        = formData.get("id")?.toString().trim();
   const nombre                    = formData.get("nombre")?.toString().trim();
   const slug                      = formData.get("slug")?.toString().trim().toLowerCase();
@@ -591,6 +615,9 @@ export async function createActivo(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const ticker       = formData.get("ticker")?.toString().trim().toUpperCase();
   const descripcion  = formData.get("descripcion")?.toString().trim();
   const categoria    = formData.get("categoria")?.toString() as CategoriaActivo;
@@ -631,6 +658,9 @@ export async function importPreciosExcel(
   _prev: { error?: string; ok?: boolean; report?: { updated: string[]; created: string[]; skipped: number; errors: string[] } } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean; report?: { updated: string[]; created: string[]; skipped: number; errors: string[] } }> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const text = formData.get("csv")?.toString() ?? "";
   if (!text) return { error: "No hay datos para procesar" };
 
