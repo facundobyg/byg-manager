@@ -28,6 +28,12 @@ export interface LedgerRow {
   generoPlazoFijo: boolean;
   plazoFijoId: string | null;
   pfRevertido: boolean;
+  /**
+   * true si la operación LP está revertida en CC pero el PlazoFijo persistido
+   * NO quedó CANCELADO (dato legacy anterior al fix, o editado manualmente
+   * después). Señal de revisión manual — nunca se repara automáticamente.
+   */
+  pfInconsistente: boolean;
 }
 
 function cleanDesc(d: string | null): string {
@@ -51,6 +57,16 @@ export function esMovimientoDeOperacionAgrupada(descripcion: string | null | und
  */
 export function extraerMovRef(descripcion: string | null | undefined): string | null {
   return descripcion?.match(/movref:([a-zA-Z0-9-]+)/)?.[1] ?? null;
+}
+
+/**
+ * Extrae el operationRef completo (op:{ref}) de un texto (descripcion de
+ * MovimientoCC o notas de PlazoFijo). Devuelve el token completo capturado
+ * por la regex, nunca un prefijo — por eso alcanza comparar con === para
+ * probar identidad exacta y no aceptar "op:abc" como match de "op:abcdef".
+ */
+export function extraerOperationRef(texto: string | null | undefined): string | null {
+  return texto?.match(/op:([a-zA-Z0-9-]+)/)?.[1] ?? null;
 }
 
 export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
@@ -95,16 +111,19 @@ export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
     if (tipoOperacion === "LP") lpRefs.push(ref);
   }
 
-  const pfByRef = new Map<string, string>();
+  // ref -> { id, estado } del PlazoFijo real. Se guarda el estado persistido
+  // (no solo el id) para que pfRevertido refleje el dato real de la base y no
+  // solamente "existe un ref: en CC" — ver pfRevertido/pfInconsistente abajo.
+  const pfByRef = new Map<string, { id: string; estado: string }>();
   if (lpRefs.length > 0) {
     const pfs = await prisma.plazoFijo.findMany({
       where: { notas: { contains: "op:" } },
-      select: { id: true, notas: true },
+      select: { id: true, notas: true, estado: true },
     });
     for (const pf of pfs) {
       const match = pf.notas?.match(/op:([a-zA-Z0-9-]+)/);
       if (match?.[1] && lpRefs.includes(match[1])) {
-        pfByRef.set(match[1], pf.id);
+        pfByRef.set(match[1], { id: pf.id, estado: pf.estado });
       }
     }
   }
@@ -116,7 +135,9 @@ export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
     const revertida = operationRefsRevertidos.has(ref) || group.some((m) => m.descripcion?.includes("REVERSO"));
     const latestFecha = group.reduce((l, m) => (m.fecha > l ? m.fecha : l), group[0].fecha);
     const tipoOperacion = primary.descripcion?.split(" ")[0]?.toUpperCase() ?? "MOV";
-    const plazoFijoId = pfByRef.get(ref) ?? null;
+    const pfInfo = pfByRef.get(ref) ?? null;
+    const plazoFijoId = pfInfo?.id ?? null;
+    const esLP = tipoOperacion === "LP";
 
     ledger.push({
       operationRef: ref,
@@ -131,7 +152,13 @@ export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
       revertida,
       generoPlazoFijo: plazoFijoId !== null,
       plazoFijoId,
-      pfRevertido: tipoOperacion === "LP" && revertida && plazoFijoId !== null,
+      // Solo true si el PlazoFijo persistido está realmente CANCELADO — no
+      // alcanza con que exista ref: en CC (ver OPS-02).
+      pfRevertido: esLP && revertida && pfInfo !== null && pfInfo.estado === "CANCELADO",
+      // La operación se revirtió en CC pero el PF no quedó CANCELADO: dato
+      // legacy (anterior al fix) o editado manualmente después. Se señala,
+      // no se repara automáticamente.
+      pfInconsistente: esLP && revertida && pfInfo !== null && pfInfo.estado !== "CANCELADO",
     });
   }
 
@@ -151,6 +178,7 @@ export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
       generoPlazoFijo: false,
       plazoFijoId: null,
       pfRevertido: false,
+      pfInconsistente: false,
     });
   }
 

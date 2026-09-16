@@ -1,5 +1,6 @@
 import { InteresesTable } from "@/components/modules/clientes/InteresesTable";
 import { getClientes } from "@/lib/data/cliente";
+import { soloPFActivos } from "@/lib/data/plazo-fijo";
 import { calcularInteresCCRealista, calcularInteresPF } from "@/lib/services/intereses.service";
 import { calcularDiasEntreFechas } from "@/lib/services/intereses.service";
 import { aplicarTodosInteresesCC } from "@/app/(dashboard)/clientes/actions";
@@ -63,7 +64,7 @@ export default async function InteresesPage() {
   });
 
   const pfItems = clientes.flatMap((cliente) =>
-    (cliente.PlazoFijo ?? []).map((pf) => {
+    soloPFActivos(cliente.PlazoFijo ?? []).map((pf) => {
       const dias = calcularDiasEntreFechas(pf.fechaInicio, pf.fechaVencimiento);
       // tasaAnual stored as percent (4.5 for 4.5%); formula expects decimal
       const interes = calcularInteresPF({

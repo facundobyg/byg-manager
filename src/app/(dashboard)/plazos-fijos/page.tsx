@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getClientes } from "@/lib/data/cliente";
+import { soloPFActivos } from "@/lib/data/plazo-fijo";
 
 function diasEntre(desde: Date, hasta: Date): number {
   const a = Date.UTC(desde.getFullYear(), desde.getMonth(), desde.getDate());
@@ -27,7 +28,8 @@ export default async function PlazosFijosPage() {
 
   const rows = clientes
     .flatMap((cliente) =>
-      (cliente.PlazoFijo ?? []).map((pf) => {
+      soloPFActivos(cliente.PlazoFijo ?? [])
+        .map((pf) => {
         const diasRestantes = diasEntre(hoy, pf.fechaVencimiento);
         const estado =
           diasRestantes < 0 ? "VENCIDO" : diasRestantes <= 7 ? "PRÓXIMO" : "VIGENTE";

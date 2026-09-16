@@ -19,6 +19,7 @@ export interface LedgerRow {
   generoPlazoFijo: boolean;
   plazoFijoId: string | null;
   pfRevertido: boolean;
+  pfInconsistente: boolean;
 }
 
 const OP_BADGE: Record<string, string> = {
@@ -151,7 +152,11 @@ export function OperacionHistoryTable({ rows }: { rows: LedgerRow[] }) {
               </td>
               <td className="py-3 px-4 text-center">
                 {row.tipoOperacion === "LP" ? (
-                  row.pfRevertido ? (
+                  row.pfInconsistente ? (
+                    <span className="px-2 py-0.5 rounded-full font-black text-[10px] bg-red-100 text-red-700 ring-1 ring-red-300 whitespace-nowrap">
+                      REVISAR PF ACTIVO
+                    </span>
+                  ) : row.pfRevertido ? (
                     <span className="px-2 py-0.5 rounded-full font-black text-[10px] bg-red-50 text-red-500 whitespace-nowrap">
                       PF revertido
                     </span>

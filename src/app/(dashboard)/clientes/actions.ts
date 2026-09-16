@@ -8,7 +8,7 @@ import { requireActionPermission } from "@/lib/auth/permissions";
 import { Moneda, Prisma, TipoMovCaja } from "@prisma/client";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
-import { esMovimientoDeOperacionAgrupada } from "@/lib/data/movimiento-cc";
+import { esMovimientoDeOperacionAgrupada, extraerOperationRef } from "@/lib/data/movimiento-cc";
 
 export async function crearMovimientoCC(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -647,6 +647,50 @@ export async function revertirOperacion(formData: FormData) {
         throw new Error("Esta operación ya fue revertida");
       }
 
+      // OPS-02: si la operación es LP, resolver + lockear + validar el
+      // PlazoFijo asociado ANTES de escribir nada. Mismo criterio de
+      // tipoOperacion que usa el ledger (movimiento-cc.ts): primera palabra
+      // de la descripcion del original.
+      const tipoOperacionDetectado = originales[0].descripcion?.split(" ")[0]?.toUpperCase() ?? "MOV";
+      const esLP = tipoOperacionDetectado === "LP";
+      let plazoFijoObjetivoId: string | null = null;
+
+      if (esLP) {
+        // contains() solo para acotar candidatos — la identidad real se
+        // prueba comparando el operationRef extraído con === (nunca substring).
+        const pfCandidatos = await tx.plazoFijo.findMany({
+          where: { notas: { contains: `op:${operationRef}` } },
+        });
+        const pfExactos = pfCandidatos.filter((pf) => extraerOperationRef(pf.notas) === operationRef);
+
+        if (pfExactos.length === 0) {
+          throw new Error("No se encontró el Plazo Fijo asociado a esta operación LP");
+        }
+        if (pfExactos.length > 1) {
+          throw new Error("Se encontraron múltiples Plazos Fijos asociados a la misma operación LP");
+        }
+
+        const pfCandidato = pfExactos[0];
+
+        // Lock row-level sobre el PF: serializa cualquier otra reversión (u
+        // otra escritura) concurrente sobre el MISMO PlazoFijo. Mismo patrón
+        // que el lock de MovimientoCC de arriba — SQL parametrizado.
+        await tx.$queryRaw`SELECT id FROM "PlazoFijo" WHERE id = ${pfCandidato.id} FOR UPDATE`;
+
+        // Releer identidad y estado ya con el lock adquirido — no confiar en
+        // la lectura previa al lock (podría haber cambiado entre el filtro
+        // exacto de arriba y la adquisición del lock).
+        const pfLocked = await tx.plazoFijo.findUniqueOrThrow({ where: { id: pfCandidato.id } });
+        if (extraerOperationRef(pfLocked.notas) !== operationRef) {
+          throw new Error("El Plazo Fijo asociado ya no corresponde a esta operación LP");
+        }
+        if (pfLocked.estado !== "ACTIVO") {
+          throw new Error(`El Plazo Fijo asociado está ${pfLocked.estado}, no se puede revertir la operación`);
+        }
+
+        plazoFijoObjetivoId = pfLocked.id;
+      }
+
       // 7-10. crear todos los movimientos inversos + actualizar saldos, atómico.
       const reversalRef = crypto.randomUUID();
       const hoy = new Date();
@@ -683,9 +727,23 @@ export async function revertirOperacion(formData: FormData) {
           data: { saldo: nuevoSaldo },
         });
       }
+
+      // OPS-02: cancelar el PlazoFijo recién ahora, en la misma transacción.
+      // Si esto falla, Prisma revierte también los movimientos y saldos ya
+      // escritos arriba — nunca queda "CC restituida + PF sin cancelar".
+      // Se preservan capital/tasaAnual/fechas/moneda/clienteId/notas: solo
+      // cambian estado y saldoActual, que es lo que representa la reversión.
+      if (esLP && plazoFijoObjetivoId) {
+        await tx.plazoFijo.update({
+          where: { id: plazoFijoObjetivoId },
+          data: { estado: "CANCELADO", saldoActual: new Decimal(0) },
+        });
+      }
     });
 
     revalidatePath("/operaciones");
+    revalidatePath("/plazos-fijos");
+    revalidatePath("/intereses");
     return { success: true };
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : "Error al revertir operación";

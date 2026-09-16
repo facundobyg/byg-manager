@@ -16,7 +16,14 @@ const mocks = vi.hoisted(() => ({
       create: vi.fn(),
     },
     cuentaCorriente: {
+      findFirst: vi.fn(),
       findUniqueOrThrow: vi.fn(),
+      update: vi.fn(),
+    },
+    plazoFijo: {
+      findMany: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
+      create: vi.fn(),
       update: vi.fn(),
     },
     $queryRaw: vi.fn(),
@@ -58,9 +65,11 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/data/movimiento-cc", () => ({
   esMovimientoDeOperacionAgrupada: (descripcion: string | null | undefined) =>
     /op:[a-zA-Z0-9-]+/.test(descripcion ?? ""),
+  extraerOperationRef: (texto: string | null | undefined) =>
+    texto?.match(/op:([a-zA-Z0-9-]+)/)?.[1] ?? null,
 }));
 
-import { revertirOperacion, revertirMovimientoCC } from "./actions";
+import { revertirOperacion, revertirMovimientoCC, ejecutarOperacion } from "./actions";
 
 const tx = mocks.tx;
 const mockPrisma = mocks.mockPrisma;
@@ -89,11 +98,43 @@ function formDataId(id: string) {
   return fd;
 }
 
+function plazoFijoMock(over: Partial<{
+  id: string; clienteId: string; capital: Decimal; saldoActual: Decimal; tasaAnual: Decimal;
+  moneda: string; estado: string; notas: string; fechaInicio: Date; fechaVencimiento: Date;
+}>) {
+  return {
+    id: over.id ?? "pf-1",
+    clienteId: over.clienteId ?? "cli-1",
+    capital: over.capital ?? new Decimal(1000),
+    saldoActual: over.saldoActual ?? new Decimal(1000),
+    tasaAnual: over.tasaAnual ?? new Decimal(5),
+    moneda: over.moneda ?? "USD",
+    estado: over.estado ?? "ACTIVO",
+    notas: over.notas ?? "LP automático | op:REF-LP-1",
+    fechaInicio: over.fechaInicio ?? new Date("2026-01-01"),
+    fechaVencimiento: over.fechaVencimiento ?? new Date("2026-02-01"),
+  };
+}
+
+function formDataEjecutarLP(over?: Partial<{ clienteId: string; monto: string; tasa: string; plazoDias: string }>) {
+  const fd = new FormData();
+  fd.set("clienteId", over?.clienteId ?? "cli-1");
+  fd.set("tipo", "LP");
+  fd.set("monedaOrigen", "USD");
+  fd.set("monto", over?.monto ?? "1000");
+  fd.set("tasa", over?.tasa ?? "5");
+  fd.set("plazoDias", over?.plazoDias ?? "30");
+  return fd;
+}
+
 function resetTx() {
   Object.values(tx.movimientoCC).forEach((f) => f.mockReset());
   Object.values(tx.cuentaCorriente).forEach((f) => f.mockReset());
+  Object.values(tx.plazoFijo).forEach((f) => f.mockReset());
   tx.$queryRaw.mockReset();
   tx.$queryRaw.mockResolvedValue([]);
+  // por defecto sin PF (operaciones no-LP no lo tocan); los tests de LP lo sobreescriben.
+  tx.plazoFijo.findMany.mockResolvedValue([]);
 }
 
 beforeEach(() => {
@@ -102,9 +143,11 @@ beforeEach(() => {
   resetTx();
   mocks.requireActionPermission.mockResolvedValue(null); // permiso concedido por defecto
   mocks.auth.mockResolvedValue({ user: { id: "user-1", name: "Tester" } });
+  tx.cuentaCorriente.findFirst.mockResolvedValue({ id: "cc-1", saldo: new Decimal(1000) });
   tx.cuentaCorriente.findUniqueOrThrow.mockResolvedValue({ id: "cc-1", saldo: new Decimal(1000) });
   tx.cuentaCorriente.update.mockResolvedValue({});
   tx.movimientoCC.create.mockResolvedValue({});
+  tx.plazoFijo.create.mockResolvedValue(plazoFijoMock({}));
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -113,7 +156,9 @@ beforeEach(() => {
 
 describe("revertirOperacion — Camino A (OPS-01)", () => {
   it("A1: reversión simple exitosa", async () => {
-    const original = movOriginal({ descripcion: "LP egreso | op:REF1" });
+    // Descripción genérica (no-LP): esta prueba no es específica de LP, así
+    // que evitamos disparar la validación de PlazoFijo de OPS-02.
+    const original = movOriginal({ descripcion: "AJUSTE egreso | op:REF1" });
     tx.movimientoCC.findMany.mockResolvedValue([original]);
     tx.movimientoCC.findFirst.mockResolvedValue(null); // sin reversión previa
 
@@ -229,6 +274,308 @@ describe("revertirOperacion — Camino A (OPS-01)", () => {
     // transacción interactiva — eso no lo puede demostrar este mock, lo deja
     // para A3/integración real.
     expect(tx.cuentaCorriente.update).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// A''. ejecutarOperacion — creación LP (OPS-02, regresión)
+// ════════════════════════════════════════════════════════════════════════════
+
+describe("ejecutarOperacion — creación LP (OPS-02)", () => {
+  it("1/2: crea un MovimientoCC EGRESO y reduce el saldo de la cuenta USD", async () => {
+    tx.cuentaCorriente.findFirst.mockResolvedValue({ id: "cc-usd", saldo: new Decimal(5000) });
+    tx.plazoFijo.create.mockResolvedValue(plazoFijoMock({ id: "pf-new" }));
+
+    const result = await ejecutarOperacion(formDataEjecutarLP({ monto: "1000" }));
+
+    expect("success" in result && result.success).toBe(true);
+    expect(tx.movimientoCC.create).toHaveBeenCalledTimes(1);
+    const movData = tx.movimientoCC.create.mock.calls[0][0].data;
+    expect(movData.tipo).toBe("EGRESO");
+    expect(movData.cuentaCorrienteId).toBe("cc-usd");
+    expect(tx.cuentaCorriente.update).toHaveBeenCalledTimes(1);
+    const nuevoSaldo = tx.cuentaCorriente.update.mock.calls[0][0].data.saldo as Decimal;
+    expect(nuevoSaldo.equals(new Decimal(4000))).toBe(true);
+  });
+
+  it("3/4/5: crea exactamente 1 PlazoFijo, ACTIVO, con capital === saldoActual === monto", async () => {
+    tx.plazoFijo.create.mockResolvedValue(plazoFijoMock({ id: "pf-new" }));
+
+    await ejecutarOperacion(formDataEjecutarLP({ monto: "2500" }));
+
+    expect(tx.plazoFijo.create).toHaveBeenCalledTimes(1);
+    const pfData = tx.plazoFijo.create.mock.calls[0][0].data;
+    expect(pfData.estado).toBe("ACTIVO");
+    expect((pfData.capital as Decimal).equals(new Decimal(2500))).toBe(true);
+    expect((pfData.saldoActual as Decimal).equals(new Decimal(2500))).toBe(true);
+  });
+
+  it("6: el MovimientoCC y el PlazoFijo comparten exactamente el mismo operationRef", async () => {
+    tx.plazoFijo.create.mockResolvedValue(plazoFijoMock({ id: "pf-new" }));
+
+    await ejecutarOperacion(formDataEjecutarLP());
+
+    const movDesc = tx.movimientoCC.create.mock.calls[0][0].data.descripcion as string;
+    const pfNotas = tx.plazoFijo.create.mock.calls[0][0].data.notas as string;
+    const movRef = movDesc.match(/op:([a-zA-Z0-9-]+)/)?.[1];
+    const pfRef = pfNotas.match(/op:([a-zA-Z0-9-]+)/)?.[1];
+    expect(movRef).toBeTruthy();
+    expect(movRef).toBe(pfRef);
+  });
+
+  it("7: un fallo en PlazoFijo.create se reporta como error (rollback lógico de toda la operación)", async () => {
+    tx.plazoFijo.create.mockRejectedValue(new Error("DB write failed"));
+
+    const result = await ejecutarOperacion(formDataEjecutarLP());
+
+    expect(result).toEqual({ error: "DB write failed" });
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// B'. revertirOperacion — LP (OPS-02)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// La protección de OPS-01 (lock de MovimientoCC + re-check de ref:) queda
+// intacta; estos tests cubren exclusivamente el agregado de OPS-02: resolver,
+// lockear y validar el PlazoFijo asociado, y cancelarlo en la misma
+// transacción.
+
+describe("revertirOperacion — LP (OPS-02)", () => {
+  function lpOriginal(monto = new Decimal(1000)) {
+    return movOriginal({
+      id: "lp-mov-1",
+      cuentaCorrienteId: "cc-usd",
+      tipo: "EGRESO",
+      monto,
+      descripcion: "LP egreso | op:REF-LP-1",
+    });
+  }
+
+  function pfActivo(over?: Partial<{ id: string; notas: string; estado: string }>) {
+    return plazoFijoMock({
+      id: over?.id ?? "pf-1",
+      notas: over?.notas ?? "LP automático | op:REF-LP-1",
+      estado: over?.estado ?? "ACTIVO",
+    });
+  }
+
+  it("8/9/10: LP ACTIVO se revierte — exactamente 1 inverso INGRESO por el capital exacto", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([lpOriginal(new Decimal(1000))]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([pfActivo()]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(pfActivo());
+
+    const result = await revertirOperacion(formDataOp("REF-LP-1"));
+
+    expect(result).toEqual({ success: true });
+    expect(tx.movimientoCC.create).toHaveBeenCalledTimes(1);
+    const movData = tx.movimientoCC.create.mock.calls[0][0].data;
+    expect(movData.tipo).toBe("INGRESO");
+    expect((movData.monto as Decimal).equals(new Decimal(1000))).toBe(true);
+    expect(movData.descripcion).toMatch(/^REVERSO EGRESO \| op:[a-zA-Z0-9-]+ \| ref:REF-LP-1$/);
+  });
+
+  it("11/12: el PF queda CANCELADO con saldoActual en 0", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([lpOriginal()]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([pfActivo()]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(pfActivo());
+
+    await revertirOperacion(formDataOp("REF-LP-1"));
+
+    expect(tx.plazoFijo.update).toHaveBeenCalledTimes(1);
+    const [{ where, data }] = tx.plazoFijo.update.mock.calls[0];
+    expect(where.id).toBe("pf-1");
+    expect(data.estado).toBe("CANCELADO");
+    expect((data.saldoActual as Decimal).equals(new Decimal(0))).toBe(true);
+  });
+
+  it("13/14: capital, tasa y fechas históricas del PF no se tocan (no vienen en el update)", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([lpOriginal()]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([pfActivo()]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(pfActivo());
+
+    await revertirOperacion(formDataOp("REF-LP-1"));
+
+    const data = tx.plazoFijo.update.mock.calls[0][0].data;
+    expect(data).not.toHaveProperty("capital");
+    expect(data).not.toHaveProperty("tasaAnual");
+    expect(data).not.toHaveProperty("fechaInicio");
+    expect(data).not.toHaveProperty("fechaVencimiento");
+    expect(data).not.toHaveProperty("moneda");
+    expect(data).not.toHaveProperty("clienteId");
+    expect(data).not.toHaveProperty("notas");
+  });
+
+  it("15: original + reversión netean cero en la cuenta corriente", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([lpOriginal(new Decimal(750))]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([pfActivo()]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(pfActivo());
+
+    await revertirOperacion(formDataOp("REF-LP-1"));
+
+    const movData = tx.movimientoCC.create.mock.calls[0][0].data;
+    expect(movData.tipo).toBe("INGRESO");
+    expect((movData.monto as Decimal).equals(new Decimal(750))).toBe(true);
+  });
+
+  it("16: la cancelación del PF ocurre en la misma transacción que el movimiento inverso y el saldo", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([lpOriginal()]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([pfActivo()]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(pfActivo());
+
+    await revertirOperacion(formDataOp("REF-LP-1"));
+
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.movimientoCC.create).toHaveBeenCalledTimes(1);
+    expect(tx.cuentaCorriente.update).toHaveBeenCalledTimes(1);
+    expect(tx.plazoFijo.update).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// C'. revertirOperacion — validaciones LP (OPS-02)
+// ════════════════════════════════════════════════════════════════════════════
+
+describe("revertirOperacion — validaciones LP (OPS-02)", () => {
+  it("17: LP sin PF asociado → error, 0 escrituras", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:REF-LP-X" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([]);
+
+    const result = await revertirOperacion(formDataOp("REF-LP-X"));
+
+    expect("error" in result && result.error).toMatch(/no se encontró el plazo fijo/i);
+    expect(tx.movimientoCC.create).not.toHaveBeenCalled();
+    expect(tx.cuentaCorriente.update).not.toHaveBeenCalled();
+    expect(tx.plazoFijo.update).not.toHaveBeenCalled();
+  });
+
+  it("18: LP con 2 PF asociados al mismo ref exacto → error, 0 escrituras", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:REF-LP-DUP" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([
+      plazoFijoMock({ id: "pf-a", notas: "LP automático | op:REF-LP-DUP" }),
+      plazoFijoMock({ id: "pf-b", notas: "LP automático | op:REF-LP-DUP" }),
+    ]);
+
+    const result = await revertirOperacion(formDataOp("REF-LP-DUP"));
+
+    expect("error" in result && result.error).toMatch(/múltiples plazos fijos/i);
+    expect(tx.movimientoCC.create).not.toHaveBeenCalled();
+    expect(tx.plazoFijo.update).not.toHaveBeenCalled();
+  });
+
+  it("19: un substring parecido (op:abc vs op:abcdef) NO cuenta como match del PF", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:abc" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    // El "contains" de Prisma está mockeado (no filtra de verdad); simulamos
+    // que la DB devolvió este candidato porque "op:abc" es substring de
+    // "op:abcdef" — el código debe descartarlo igual por comparación exacta.
+    tx.plazoFijo.findMany.mockResolvedValue([
+      plazoFijoMock({ id: "pf-parecido", notas: "LP automático | op:abcdef" }),
+    ]);
+
+    const result = await revertirOperacion(formDataOp("abc"));
+
+    expect("error" in result && result.error).toMatch(/no se encontró el plazo fijo/i);
+    expect(tx.movimientoCC.create).not.toHaveBeenCalled();
+  });
+
+  it("post-lock: si el operationRef de la fila ya no coincide después de adquirir el lock, se rechaza sin escribir nada", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:REF-LP-RACE" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    // El filtro exacto previo al lock encuentra un único candidato correcto...
+    tx.plazoFijo.findMany.mockResolvedValue([
+      plazoFijoMock({ id: "pf-race", notas: "LP automático | op:REF-LP-RACE", estado: "ACTIVO" }),
+    ]);
+    // ...pero la relectura posterior al FOR UPDATE trae una fila cuyo notas
+    // ya no corresponde a ese operationRef (simula que cambió entre el
+    // filtro y la adquisición del lock).
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(
+      plazoFijoMock({ id: "pf-race", notas: "LP automático | op:REF-LP-OTRO", estado: "ACTIVO" }),
+    );
+
+    const result = await revertirOperacion(formDataOp("REF-LP-RACE"));
+
+    expect("error" in result && result.error).toMatch(/ya no corresponde a esta operación LP/i);
+    expect(tx.movimientoCC.create).not.toHaveBeenCalled();
+    expect(tx.cuentaCorriente.update).not.toHaveBeenCalled();
+    expect(tx.plazoFijo.update).not.toHaveBeenCalled();
+  });
+
+  it("20: PF CANCELADO → reversión rechazada, 0 escrituras", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:REF-LP-CANC" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([plazoFijoMock({ id: "pf-c", notas: "LP automático | op:REF-LP-CANC", estado: "CANCELADO" })]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(plazoFijoMock({ id: "pf-c", notas: "LP automático | op:REF-LP-CANC", estado: "CANCELADO" }));
+
+    const result = await revertirOperacion(formDataOp("REF-LP-CANC"));
+
+    expect("error" in result && result.error).toMatch(/CANCELADO/);
+    expect(tx.movimientoCC.create).not.toHaveBeenCalled();
+    expect(tx.cuentaCorriente.update).not.toHaveBeenCalled();
+    expect(tx.plazoFijo.update).not.toHaveBeenCalled();
+  });
+
+  it("21: PF VENCIDO → reversión rechazada", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:REF-LP-VENC" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([plazoFijoMock({ id: "pf-v", notas: "LP automático | op:REF-LP-VENC", estado: "VENCIDO" })]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(plazoFijoMock({ id: "pf-v", notas: "LP automático | op:REF-LP-VENC", estado: "VENCIDO" }));
+
+    const result = await revertirOperacion(formDataOp("REF-LP-VENC"));
+
+    expect("error" in result && result.error).toMatch(/VENCIDO/);
+    expect(tx.movimientoCC.create).not.toHaveBeenCalled();
+  });
+
+  it("22: PF RENOVADO → reversión rechazada", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:REF-LP-REN" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([plazoFijoMock({ id: "pf-r", notas: "LP automático | op:REF-LP-REN", estado: "RENOVADO" })]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(plazoFijoMock({ id: "pf-r", notas: "LP automático | op:REF-LP-REN", estado: "RENOVADO" }));
+
+    const result = await revertirOperacion(formDataOp("REF-LP-REN"));
+
+    expect("error" in result && result.error).toMatch(/RENOVADO/);
+    expect(tx.movimientoCC.create).not.toHaveBeenCalled();
+  });
+
+  it("23: un fallo al actualizar el PF se reporta como error tras haber escrito el movimiento/saldo en la misma llamada a la transacción", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:REF-LP-FAIL" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(null);
+    tx.plazoFijo.findMany.mockResolvedValue([plazoFijoMock({ id: "pf-f", notas: "LP automático | op:REF-LP-FAIL", estado: "ACTIVO" })]);
+    tx.plazoFijo.findUniqueOrThrow.mockResolvedValue(plazoFijoMock({ id: "pf-f", notas: "LP automático | op:REF-LP-FAIL", estado: "ACTIVO" }));
+    tx.plazoFijo.update.mockRejectedValue(new Error("DB write failed"));
+
+    const result = await revertirOperacion(formDataOp("REF-LP-FAIL"));
+
+    expect(result).toEqual({ error: "DB write failed" });
+    // Con Postgres real, al lanzar dentro del callback de $transaction, todo
+    // lo ya escrito en esa misma llamada (el create y el update de abajo)
+    // hace rollback junto con este error — un mock sin base real detrás no
+    // puede demostrar esa reversión física, solo que ambas llamadas SÍ se
+    // hicieron antes del fallo (dentro del mismo bloque transaccional):
+    expect(tx.movimientoCC.create).toHaveBeenCalledTimes(1);
+    expect(tx.cuentaCorriente.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("24: segunda reversión de un LP sigue rechazada por el guard de OPS-01, sin llegar a resolver el PF", async () => {
+    tx.movimientoCC.findMany.mockResolvedValue([movOriginal({ descripcion: "LP egreso | op:REF-LP-2ND" })]);
+    tx.movimientoCC.findFirst.mockResolvedValue(
+      movOriginal({ id: "rev1", descripcion: "REVERSO EGRESO | op:REF-LP-2ND-R | ref:REF-LP-2ND" }),
+    );
+
+    const result = await revertirOperacion(formDataOp("REF-LP-2ND"));
+
+    expect(result).toEqual({ error: "Esta operación ya fue revertida" });
+    expect(tx.plazoFijo.findMany).not.toHaveBeenCalled();
+    expect(tx.plazoFijo.update).not.toHaveBeenCalled();
   });
 });
 
