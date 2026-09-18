@@ -841,6 +841,7 @@ model User {
   BolsaImportLotesCargados   BolsaImportLote[]  @relation("LoteCargadoPor")
   BolsaImportLotesValidados  BolsaImportLote[]  @relation("LoteValidadoPor")
   BolsaImportFilasCorregidas BolsaImportFila[]  @relation("FilaCorregidaPor")
+  OperationalLocks           OperationalLock[]
 
   @@index([email])
 }
@@ -859,6 +860,25 @@ model UserPermiso {
 
   @@unique([userId, permisoId])
   @@index([userId])
+}
+
+// A3.1.1 — motor de locks operativos (ownership de área/recurso entre
+// usuarios). Ver src/lib/locks/. lockKey es la unidad atómica: "PF", "CC",
+// "CAJA:{cajaId}", etc. Sin integración a Server Actions financieras todavía.
+model OperationalLock {
+  id              String   @id
+  lockKey         String   @unique
+  area            String
+  ownerUserId     String
+  ownerClientId   String
+  acquiredAt      DateTime
+  lastHeartbeatAt DateTime
+  updatedAt       DateTime @updatedAt
+  OwnerUser       User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@index([ownerUserId])
+  @@index([area])
+  @@index([lastHeartbeatAt])
 }
 
 enum BindImportBatchStatus {
