@@ -8,6 +8,9 @@ import { writeAuditLog } from "@/lib/services/audit.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { TipoCartera, CategoriaActivo, Moneda } from "@prisma/client";
+import { withOperationalLocks } from "@/lib/locks/withOperationalLocks";
+import { assertValidClientId } from "@/lib/locks/keys";
+import { InvalidClientIdError, LockOwnershipError } from "@/lib/locks/errors";
 
 // ─── Productores ──────────────────────────────────────────────────────────────
 
@@ -162,6 +165,13 @@ export async function eliminarAlyc(
   return { ok: true };
 }
 
+/**
+ * A3.1.2.2 — primera mutación CONFIG cableada al lease CONFIG (piloto).
+ * Lock = coordinación entre usuarios autorizados; permission = autorización
+ * — se mantienen separados a propósito (ver lock-actions.ts). Adquirir/tener
+ * el lease NUNCA reemplaza requireActionPermission, y viceversa: poseer el
+ * permiso no alcanza para escribir si no se posee el lease vigente.
+ */
 export async function updateTCBlue(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
@@ -169,13 +179,44 @@ export async function updateTCBlue(
   const denied = await requireActionPermission("configuracion:editar");
   if (denied) return denied;
 
+  // requireActionPermission ya hizo su propio auth() interno pero no expone
+  // la sesión al caller — hace falta un auth() propio acá para obtener el
+  // ownerUserId real. NO se toca requireActionPermission (usado por ~20
+  // Server Actions) solo para evitar esta segunda llamada, barata en el
+  // caso común (lee la sesión, no pega a la DB).
+  const session = await auth();
+  if (!session?.user?.id) return { error: "Sin sesión activa" };
+
+  const ownerClientId = formData.get("ownerClientId")?.toString() ?? "";
+  try {
+    assertValidClientId(ownerClientId);
+  } catch (error) {
+    if (!(error instanceof InvalidClientIdError)) throw error;
+    // No se expone el mensaje interno de InvalidClientIdError — mensaje
+    // fijo, seguro, accionable para el usuario.
+    return { error: "No se pudo verificar la pestaña. Recargá la página." };
+  }
+
   const raw = formData.get("valor")?.toString().trim().replace(",", ".");
   if (!raw) return { error: "Valor requerido" };
 
   const valor = parseFloat(raw);
   if (isNaN(valor) || valor <= 0) return { error: "Valor inválido" };
 
-  await setTCBlue(valor);
+  try {
+    await withOperationalLocks(["CONFIG"], session.user.id, ownerClientId, async (tx) => {
+      await setTCBlue(valor, tx);
+    });
+  } catch (error) {
+    if (error instanceof LockOwnershipError) {
+      return { error: "Perdiste el control de edición. Recargá la página para continuar." };
+    }
+    // Deadlock/serialization con retries agotados, o cualquier error de DB
+    // no reconocido: nunca exponer error.message crudo (SQL, stack, IDs
+    // internos) — mensaje genérico fijo.
+    return { error: "No se pudo guardar. Probá de nuevo en unos segundos." };
+  }
+
   revalidatePath("/configuracion");
   return { ok: true };
 }

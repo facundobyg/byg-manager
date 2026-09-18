@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 
 export type ProductorOption = {
@@ -33,23 +34,29 @@ export async function getTCBlue() {
   return prisma.config.findUnique({ where: { clave: "tc_blue" } });
 }
 
-export async function setTCBlue(value: number) {
+/**
+ * A3.1.2.2 — participa del lease CONFIG: el caller (updateTCBlue) es
+ * responsable de haber confirmado posesión vigente del lock DENTRO de la
+ * misma transacción antes de invocar esto (ver withOperationalLocks). `tx`
+ * es obligatorio a propósito — el único caller real siempre lo provee, y un
+ * fallback a `prisma` global reabriría la ventana TOCTOU que el lease existe
+ * para cerrar.
+ */
+export async function setTCBlue(value: number, tx: Prisma.TransactionClient) {
   const dec = new Decimal(value).toDecimalPlaces(4);
   const hoy = new Date();
   const fecha = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
 
-  await prisma.$transaction([
-    prisma.config.upsert({
-      where:  { clave: "tc_blue" },
-      update: { valor: dec.toString() },
-      create: { id: crypto.randomUUID(), clave: "tc_blue", valor: dec.toString(), updatedAt: new Date() },
-    }),
-    prisma.tipoCambio.upsert({
-      where:  { monedaOrigen_monedaDestino_fecha: { monedaOrigen: "ARS", monedaDestino: "USD", fecha } },
-      update: { valor: dec },
-      create: { id: crypto.randomUUID(), monedaOrigen: "ARS", monedaDestino: "USD", valor: dec, fecha },
-    }),
-  ]);
+  await tx.config.upsert({
+    where:  { clave: "tc_blue" },
+    update: { valor: dec.toString() },
+    create: { id: crypto.randomUUID(), clave: "tc_blue", valor: dec.toString(), updatedAt: new Date() },
+  });
+  await tx.tipoCambio.upsert({
+    where:  { monedaOrigen_monedaDestino_fecha: { monedaOrigen: "ARS", monedaDestino: "USD", fecha } },
+    update: { valor: dec },
+    create: { id: crypto.randomUUID(), monedaOrigen: "ARS", monedaDestino: "USD", valor: dec, fecha },
+  });
 }
 
 export async function getMesActivo() {

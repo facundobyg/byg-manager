@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   requireActionPermission: vi.fn(),
   auth: vi.fn(),
   writeAuditLog: vi.fn(),
+  withOperationalLocks: vi.fn(),
+  revalidatePath: vi.fn(),
   prisma: {
     cartera: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     activo: { findUnique: vi.fn(), create: vi.fn() },
@@ -52,8 +54,23 @@ vi.mock("@/lib/services/config.service", () => ({
   updateAlycConfig: mocks.config.updateAlycConfig,
 }));
 
+vi.mock("@/lib/locks/withOperationalLocks", () => ({
+  withOperationalLocks: mocks.withOperationalLocks,
+}));
+
+// Sin vitest.config con alias "@/*" — igual que en lock-actions.test.ts, un
+// import directo no mockeado de "@/lib/locks/keys"/"errors" no resuelve.
+// Se mockean reexportando el módulo real vía import relativo, así
+// assertValidClientId/las clases de error son el código real, no un doble.
+vi.mock("@/lib/locks/keys", async () => {
+  return await import("../../../lib/locks/keys");
+});
+vi.mock("@/lib/locks/errors", async () => {
+  return await import("../../../lib/locks/errors");
+});
+
 vi.mock("next/cache", () => ({
-  revalidatePath: vi.fn(),
+  revalidatePath: mocks.revalidatePath,
 }));
 
 import {
@@ -93,6 +110,7 @@ describe("SEC-CONFIG — gate agregado, denegado → 0 escrituras (las 10 funcio
     expect(result).toEqual(DENEGADO);
     expect(mocks.requireActionPermission).toHaveBeenCalledWith("configuracion:editar");
     expect(mocks.config.setTCBlue).not.toHaveBeenCalled();
+    expect(mocks.withOperationalLocks).not.toHaveBeenCalled();
   });
 
   it("updateTCMep: denegado → error, setTCMep no se llama", async () => {
@@ -217,13 +235,17 @@ describe("SEC-CONFIG — gate agregado, denegado → 0 escrituras (las 10 funcio
 
 describe("SEC-CONFIG — autorizado, comportamiento existente intacto", () => {
   it("TIPO DE CAMBIO — updateTCBlue autorizado ejecuta setTCBlue con el valor parseado", async () => {
+    const FAKE_TX = { __fakeTransactionClient: true };
+    mocks.withOperationalLocks.mockImplementation(async (_keys: unknown, _userId: unknown, _clientId: unknown, callback: (tx: unknown) => unknown) => callback(FAKE_TX));
+
     const fd = new FormData();
     fd.set("valor", "1234,56");
+    fd.set("ownerClientId", "f47ac10b-58cc-4372-a567-0e02b2c3d479");
 
     const result = await updateTCBlue({}, fd);
 
     expect(result).toEqual({ ok: true });
-    expect(mocks.config.setTCBlue).toHaveBeenCalledWith(1234.56);
+    expect(mocks.config.setTCBlue).toHaveBeenCalledWith(1234.56, FAKE_TX);
   });
 
   it("PRECIOS (individual) — updatePrecioActivo autorizado llama al servicio con activoId/precio/userId", async () => {
@@ -293,6 +315,107 @@ describe("SEC-CONFIG — autorizado, comportamiento existente intacto", () => {
 
     expect(result).toEqual({ ok: true });
     expect(mocks.prisma.activo.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// A3.1.2.2 — updateTCBlue cableado al lease CONFIG (piloto)
+// ════════════════════════════════════════════════════════════════════════════
+
+describe("A3.1.2.2 — updateTCBlue + lease CONFIG", () => {
+  const VALID_CLIENT_ID = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+  const FAKE_TX = { __fakeTransactionClient: true };
+
+  function fdOk(valor = "1234.56") {
+    const fd = new FormData();
+    fd.set("valor", valor);
+    fd.set("ownerClientId", VALID_CLIENT_ID);
+    return fd;
+  }
+
+  it("C. ownerClientId ausente → error seguro, withOperationalLocks no se llama", async () => {
+    const fd = new FormData();
+    fd.set("valor", "1200");
+    // sin fd.set("ownerClientId", ...)
+
+    const result = await updateTCBlue({}, fd);
+
+    expect(result).toEqual({ error: "No se pudo verificar la pestaña. Recargá la página." });
+    expect(mocks.withOperationalLocks).not.toHaveBeenCalled();
+    expect(mocks.config.setTCBlue).not.toHaveBeenCalled();
+  });
+
+  it("D. ownerClientId inválido (no UUID) → error seguro, withOperationalLocks no se llama", async () => {
+    const fd = new FormData();
+    fd.set("valor", "1200");
+    fd.set("ownerClientId", "no-es-un-uuid");
+
+    const result = await updateTCBlue({}, fd);
+
+    expect(result).toEqual({ error: "No se pudo verificar la pestaña. Recargá la página." });
+    expect(mocks.withOperationalLocks).not.toHaveBeenCalled();
+  });
+
+  it("E. LockOwnershipError → error de pérdida de edición, revalidatePath NO se llama", async () => {
+    const { LockOwnershipError } = await import("../../../lib/locks/errors");
+    mocks.withOperationalLocks.mockRejectedValue(new LockOwnershipError("CONFIG"));
+
+    const result = await updateTCBlue({}, fdOk());
+
+    expect(result).toEqual({ error: "Perdiste el control de edición. Recargá la página para continuar." });
+    expect(mocks.revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("F. error DB desconocido → mensaje genérico, nunca error.message crudo, revalidatePath NO se llama", async () => {
+    mocks.withOperationalLocks.mockRejectedValue(new Error("relation \"TipoCambio\" constraint violation — secreto interno"));
+
+    const result = await updateTCBlue({}, fdOk());
+
+    expect(result).toEqual({ error: "No se pudo guardar. Probá de nuevo en unos segundos." });
+    expect(result.error).not.toContain("secreto interno");
+    expect(result.error).not.toContain("TipoCambio");
+    expect(mocks.revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("G. éxito → revalidatePath se llama exactamente una vez, solo tras el commit", async () => {
+    mocks.withOperationalLocks.mockImplementation(async (_keys: unknown, _userId: unknown, _clientId: unknown, callback: (tx: unknown) => unknown) => callback(FAKE_TX));
+
+    const result = await updateTCBlue({}, fdOk());
+
+    expect(result).toEqual({ ok: true });
+    expect(mocks.revalidatePath).toHaveBeenCalledTimes(1);
+    expect(mocks.revalidatePath).toHaveBeenCalledWith("/configuracion");
+  });
+
+  it("H. validaciones de 'valor' existentes siguen aplicando ANTES de tocar el lock", async () => {
+    const sinValor = new FormData();
+    sinValor.set("ownerClientId", VALID_CLIENT_ID);
+    expect(await updateTCBlue({}, sinValor)).toEqual({ error: "Valor requerido" });
+
+    const invalido = new FormData();
+    invalido.set("ownerClientId", VALID_CLIENT_ID);
+    invalido.set("valor", "-5");
+    expect(await updateTCBlue({}, invalido)).toEqual({ error: "Valor inválido" });
+
+    const noNumerico = new FormData();
+    noNumerico.set("ownerClientId", VALID_CLIENT_ID);
+    noNumerico.set("valor", "abc");
+    expect(await updateTCBlue({}, noNumerico)).toEqual({ error: "Valor inválido" });
+
+    expect(mocks.withOperationalLocks).not.toHaveBeenCalled();
+  });
+
+  it("wiring: withOperationalLocks recibe exactamente ['CONFIG'], el userId de sesión y el ownerClientId del form", async () => {
+    mocks.withOperationalLocks.mockImplementation(async (_keys: unknown, _userId: unknown, _clientId: unknown, callback: (tx: unknown) => unknown) => callback(FAKE_TX));
+
+    await updateTCBlue({}, fdOk());
+
+    expect(mocks.withOperationalLocks).toHaveBeenCalledWith(
+      ["CONFIG"],
+      "user-1", // de mocks.auth por defecto (beforeEach)
+      VALID_CLIENT_ID,
+      expect.any(Function),
+    );
   });
 });
 
