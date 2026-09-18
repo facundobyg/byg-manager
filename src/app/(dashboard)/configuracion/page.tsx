@@ -13,6 +13,8 @@ import { prisma } from "@/lib/prisma";
 
 import { EditCajaForm } from "@/components/modules/configuracion/EditCajaForm";
 import { CreateCajaForm } from "@/components/modules/configuracion/CreateCajaForm";
+import { ConfigLockProvider } from "@/components/modules/configuracion/ConfigLockProvider";
+import { ConfigLockStatusBanner } from "@/components/modules/configuracion/ConfigLockStatusBanner";
 
 function fmt(n: string | null) {
   if (!n) return "—";
@@ -47,6 +49,16 @@ export default async function ConfiguracionPage() {
         <p className="text-sm text-slate-400 font-medium mt-1">TC Blue · Mes activo · Socios · Carteras</p>
       </header>
 
+      {/*
+        A3.1.2.1 — el lease CONFIG se monta únicamente alrededor del
+        contenido editable de esta página, nunca vía un layout compartido.
+        Deja afuera "Accesos administrativos" (2FA / mi-cuenta / Data912 /
+        permisos / backup son rutas propias, sin protección de este lease).
+        Todavía no habilita ninguna mutación: solo visualiza el ciclo de
+        vida del lock (banner de estado).
+      */}
+      <ConfigLockProvider>
+        <ConfigLockStatusBanner />
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* TC Blue */}
         <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex flex-col gap-5">
@@ -228,6 +240,7 @@ export default async function ConfiguracionPage() {
           />
         )}
       </section>
+      </ConfigLockProvider>
 
       {/* Accesos administrativos */}
       <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
