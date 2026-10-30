@@ -3,7 +3,7 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { getMovimientosDiarios, getResultadoCambioMensual } from "@/lib/data/mov-diarios";
 import { MovDiariosTable } from "@/components/modules/operativa/MovDiariosTable";
 import { OperativaFormToggle } from "@/components/modules/operativa/OperativaFormToggle";
-import { hasPermission, requirePermission } from "@/lib/auth/permissions";
+import { canDoAction, requirePermission } from "@/lib/auth/permissions";
 
 export default async function MovDiariosPage() {
   await requirePermission("mov_diarios:leer");
@@ -98,7 +98,7 @@ export default async function MovDiariosPage() {
   }));
 
   const principal = cajas.find(c => c.esPrincipal);
-  const canWrite  = await hasPermission("mov_diarios:escribir");
+  const canWrite  = (await canDoAction("operativa:crear")) || (await canDoAction("cambio:operar"));
 
   return (
     <div className="flex flex-col gap-6">

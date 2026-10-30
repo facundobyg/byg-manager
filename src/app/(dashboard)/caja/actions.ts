@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { calcularSaldoCaja, calcularSaldoCajaConCliente } from "@/lib/services/caja.service";
 import { readOnlyPreview } from "@/lib/config";
-import { requireActionPermission } from "@/lib/auth/permissions";
+import { requireActionPermission, requireCajaPermission } from "@/lib/auth/permissions";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
 
@@ -19,11 +19,8 @@ export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   const descripcion = formData.get("descripcion") as string;
   const slug = formData.get("slug") as string; // kept for revalidatePath only — not used for auth
 
-  // Determine permission from DB, not from client-supplied slug
-  const cajaReal = cajaId ? await prisma.caja.findUnique({ where: { id: cajaId }, select: { slug: true } }) : null;
-  const isTrenque = cajaReal?.slug?.includes("trenque") ?? false;
-  const permKey = isTrenque ? "caja:operar_trenque" : "caja:operar_oficina";
-  const denied = await requireActionPermission(permKey, { allowTemporary: !isTrenque });
+  // Scope de la caja resuelto desde DB (Caja.tipo), nunca desde el cliente.
+  const denied = await requireCajaPermission([cajaId]);
   if (denied) return denied;
 
   if (!cajaId || !tipo || !montoRaw || !moneda) {
@@ -67,14 +64,15 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
   const cajaId = (formData.get("cajaId") as string)?.trim();
   const montoCubiertoRaw = (formData.get("montoCubierto") as string)?.trim();
 
-  // Determine permission from DB, not from client-supplied slug
-  const cajaReal = cajaId ? await prisma.caja.findUnique({ where: { id: cajaId }, select: { slug: true } }) : null;
-  const isTrenque = cajaReal?.slug?.includes("trenque") ?? false;
-  const cubrirPermKey = isTrenque ? "caja:operar_trenque" : "caja:operar_oficina";
-  const cubrirDenied = await requireActionPermission(cubrirPermKey, { allowTemporary: !isTrenque });
-  if (cubrirDenied) return cubrirDenied;
-
   if (!movimientoId || !cajaId || !montoCubiertoRaw) return { error: "Faltan datos obligatorios" };
+
+  // Se exige scope sobre AMBAS cajas: la del pendiente original (desde DB) y la
+  // del pago. Cubrir un pendiente de Oficina con efectivo de Trenque (o al
+  // revés) requiere permiso sobre las dos; si no, transferencia interna explícita.
+  const originalScope = await prisma.movimientoCaja.findUnique({ where: { id: movimientoId }, select: { cajaId: true } });
+  if (!originalScope) return { error: "Movimiento no encontrado" };
+  const cubrirDenied = await requireCajaPermission([originalScope.cajaId, cajaId]);
+  if (cubrirDenied) return cubrirDenied;
 
   let montoCubierto: Decimal;
   try {
@@ -97,6 +95,8 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
     await prisma.$transaction(async (tx) => {
       const original = await tx.movimientoCaja.findUnique({ where: { id: movimientoId } });
       if (!original) throw new Error("Movimiento no encontrado");
+      // La caja autorizada arriba debe seguir siendo la del pendiente.
+      if (original.cajaId !== originalScope.cajaId) throw new Error("El movimiento cambió durante la operación");
       if (original.confirmado) throw new Error("El movimiento ya está confirmado");
       if (original.anulado) throw new Error("El movimiento está anulado, no se puede cubrir");
 
@@ -142,7 +142,11 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
 
   revalidatePath("/pendientes");
   revalidatePath("/caja");
-  if (cajaReal?.slug) revalidatePath(`/operativa/${cajaReal.slug}`);
+  const cajasTocadas = await prisma.caja.findMany({
+    where: { id: { in: [cajaId, originalScope.cajaId] } },
+    select: { slug: true },
+  });
+  for (const c of cajasTocadas) revalidatePath(`/operativa/${c.slug}`);
 
   return { success: true };
 }
@@ -160,6 +164,11 @@ export async function anularMovimientoCajaPendiente(
   const motivo       = formData.get("motivo")?.toString().trim();
   if (!movimientoId) return { error: "ID requerido" };
   if (!motivo) return { error: "El motivo es obligatorio" };
+
+  const movScope = await prisma.movimientoCaja.findUnique({ where: { id: movimientoId }, select: { cajaId: true } });
+  if (!movScope) return { error: "Movimiento no encontrado" };
+  const scopeDenied = await requireCajaPermission([movScope.cajaId]);
+  if (scopeDenied) return scopeDenied;
 
   const session  = await auth();
   const userId   = session?.user?.id as string | undefined;
@@ -222,6 +231,9 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
     return { error: "Datos inválidos" };
   }
 
+  const scopeDenied = await requireCajaPermission([origenId, destinoId]);
+  if (scopeDenied) return scopeDenied;
+
   if (!["USD", "ARS"].includes(moneda)) {
     return { error: "Moneda inválida" };
   }
@@ -281,7 +293,7 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
 export async function registrarOperacionCambioEnCajas(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const regCambioDenied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  const regCambioDenied = await requireActionPermission("cambio:operar");
   if (regCambioDenied) return regCambioDenied;
 
   const cajaDivisaId = (formData.get("cajaDivisaId") as string)?.trim();
@@ -293,6 +305,8 @@ export async function registrarOperacionCambioEnCajas(prevState: any, formData: 
   const moneda = ((formData.get("moneda") as string)?.trim() || "USD") as "USD" | "ARS" | "EUR" | "BRL";
 
   if (!cajaDivisaId || !cajaArsId) return { error: "Cajas requeridas" };
+  const scopeDenied = await requireCajaPermission([cajaDivisaId, cajaArsId]);
+  if (scopeDenied) return scopeDenied;
   if (!tipoOperacion || !["COMPRA", "VENTA"].includes(tipoOperacion)) return { error: "tipoOperacion debe ser COMPRA o VENTA" };
 
   let montoDivisa: Decimal;
@@ -387,6 +401,9 @@ export async function revertirMovimientoCaja(
   if (!original.confirmado) return { error: "No se puede revertir un movimiento no confirmado" };
   if (original.descripcion?.startsWith("REVERSO |")) return { error: "Este movimiento ya es un reverso" };
 
+  const scopeDenied = await requireCajaPermission([original.cajaId]);
+  if (scopeDenied) return scopeDenied;
+
   const tipoMap: Record<string, string> = {
     ENTRADA: "SALIDA",
     SALIDA: "ENTRADA",
@@ -436,11 +453,18 @@ export async function confirmarMovimientoCajaPendiente(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const confirmarDenied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
-  if (confirmarDenied) return confirmarDenied;
-
   const movimientoId = formData.get("movimientoId")?.toString().trim();
   if (!movimientoId) return { error: "ID requerido" };
+
+  // Confirmar un pendiente es operar la caja donde vive: Trenque u Oficina.
+  const movScope = await prisma.movimientoCaja.findUnique({ where: { id: movimientoId }, select: { cajaId: true } });
+  if (!movScope) return { error: "Movimiento no encontrado" };
+  const confirmarDenied = await requireCajaPermission([movScope.cajaId]);
+  if (confirmarDenied) return confirmarDenied;
+  // El código anterior exigía caja:operar_oficina para confirmar en CUALQUIER caja
+  // (B ⊆ A). Solo un override explícito de Trenque lo reemplaza (política materializada).
+  const confirmarOficinaDenied = await requireActionPermission("caja:operar_oficina", { orExplicitGrant: "caja:operar_trenque" });
+  if (confirmarOficinaDenied) return confirmarOficinaDenied;
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -480,6 +504,8 @@ export async function transferirCajaACartera(
   if (!cajaId || !carteraId || !moneda || !destinoSaldo || !montoRaw) {
     return { error: "Faltan datos obligatorios" };
   }
+  const scopeDenied = await requireCajaPermission([cajaId]);
+  if (scopeDenied) return scopeDenied;
 
   let monto: Decimal;
   try {
@@ -574,6 +600,8 @@ export async function transferirCarteraACaja(
   if (!carteraId || !cajaId || !origenSaldo || !montoRaw) {
     return { error: "Faltan datos obligatorios" };
   }
+  const scopeDenied = await requireCajaPermission([cajaId]);
+  if (scopeDenied) return scopeDenied;
 
   let monto: Decimal;
   try {

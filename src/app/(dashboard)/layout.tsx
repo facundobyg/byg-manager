@@ -19,10 +19,12 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   let session = null;
   let previewUsers: { id: string; name: string; role: string }[] = [];
   let currentPreviewId: string | null = null;
-  let allowedPermissions: string[] | null = null;
+  // [] = fallo cerrado (UI sin nav restringida) si algo falla abajo; null solo para ADMIN vigente en DB.
+  let allowedPermissions: string[] | null = [];
   let notifications: AppNotification[] = [];
   let mustChangePassword = false;
   let userImage: string | null = null;
+  let dbIsAdmin = false;
 
   try {
     // auth() only decodes/verifies the JWT cookie — no DB round trip — so it
@@ -30,20 +32,15 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     // instead of being serialized behind it.
     session = await auth();
 
-    const isAdmin = session?.user?.role === "ADMIN";
+    // isAdminJwt solo decide qué consultar en paralelo; la decisión final usa el rol de DB (abajo).
+    const isAdminJwt = session?.user?.role === "ADMIN";
+    const isAdmin = isAdminJwt;
     if (isAdmin) {
       const store = await cookies();
       currentPreviewId = store.get(PREVIEW_COOKIE)?.value ?? null;
     }
 
-    const realRole = session?.user?.role as UserRole | undefined;
-    // Non-admin permissions only depend on session (already resolved), so they
-    // can run in the same parallel batch instead of after it.
-    const fastPermissionsPromise = !isAdmin && session?.user?.id
-      ? getEffectivePermissions(session.user.id, realRole as UserRole)
-      : Promise.resolve(null);
-
-    const [carterasRes, cuentasRes, cajasRes, previewUsersRes, userRes, fastPermsRes] = await Promise.allSettled([
+    const [carterasRes, cuentasRes, cajasRes, previewUsersRes, userRes] = await Promise.allSettled([
       prisma.cartera.findMany({
         select: { nombre: true, slug: true },
         orderBy: { orden: "asc" },
@@ -68,10 +65,9 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       session?.user?.id
         ? prisma.user.findUnique({
             where: { id: session.user.id },
-            select: { mustChangePassword: true, image: true },
+            select: { mustChangePassword: true, image: true, role: true, activo: true },
           })
         : Promise.resolve(null),
-      fastPermissionsPromise,
     ]);
 
     if (carterasRes.status === "fulfilled") carteras = carterasRes.value;
@@ -81,19 +77,28 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     if (userRes.status === "fulfilled" && userRes.value) {
       mustChangePassword = userRes.value.mustChangePassword ?? false;
       userImage = userRes.value.image ?? null;
+      dbIsAdmin = userRes.value.activo && userRes.value.role === "ADMIN";
+    }
+    if (!dbIsAdmin) {
+      // JWT dice ADMIN pero DB no (degradado/inactivo): nada de modo admin ni "ver como".
+      previewUsers = [];
+      currentPreviewId = null;
     }
 
     if (session?.user) {
-      if (isAdmin && !currentPreviewId) {
+      if (dbIsAdmin && !currentPreviewId) {
         allowedPermissions = null; // admin sees all
-      } else if (isAdmin && currentPreviewId) {
+      } else if (dbIsAdmin && currentPreviewId) {
         const previewUser = previewUsers.find((u) => u.id === currentPreviewId);
         if (previewUser) {
           const perms = await getEffectivePermissions(previewUser.id, previewUser.role as UserRole);
           allowedPermissions = Array.from(perms);
         }
-      } else if (fastPermsRes.status === "fulfilled" && fastPermsRes.value) {
-        allowedPermissions = Array.from(fastPermsRes.value);
+      } else {
+        // Server-authoritative: permisos del sidebar según el rol VIGENTE en DB
+        // (degradado/inactivo ⇒ nada administrativo). Inactivo ⇒ CLIENTE ⇒ nada.
+        const dbRole = userRes.status === "fulfilled" && userRes.value?.activo ? userRes.value.role : "CLIENTE";
+        allowedPermissions = Array.from(await getEffectivePermissions(session.user.id as string, dbRole));
       }
     }
     notifications = await getNotifications(allowedPermissions);
@@ -101,7 +106,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     console.error("DashboardLayout: Error loading sidebar data", error);
   }
 
-  const isAdmin = session?.user?.role === "ADMIN";
+  const isAdmin = dbIsAdmin;
   const previewUser = currentPreviewId
     ? previewUsers.find((u) => u.id === currentPreviewId)
     : null;

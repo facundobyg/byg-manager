@@ -230,6 +230,9 @@ export async function updatePreciosByTicker(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return denied;
+
   const cuentaId = formData.get("cuentaId")?.toString().trim();
   const ticker   = formData.get("ticker")?.toString().trim().toUpperCase();
   const paRaw    = formData.get("precioActual")?.toString().trim();

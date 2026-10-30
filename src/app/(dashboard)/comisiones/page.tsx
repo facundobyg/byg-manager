@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { auth } from "@/auth";
+import { hasPermission } from "@/lib/auth/permissions";
 import { redirect } from "next/navigation";
 import { UserRole, EstadoComision } from "@prisma/client";
 import { getResumenComisiones, type ProductorMesData } from "@/lib/data/comisiones";
@@ -240,11 +240,9 @@ export default async function ComisionesPage({
 }: {
   searchParams: Promise<{ mes?: string }>;
 }) {
-  const session = await auth();
-  const role = (session?.user as { role?: UserRole })?.role;
-  if (!session?.user || !["ADMIN", "SOCIO"].includes(role ?? "")) redirect("/inicio");
-
-  const isAdmin = role === "ADMIN";
+  // Rol vigente desde DB (registro canónico), no el rol del JWT.
+  if (!(await hasPermission("comisiones:gestionar"))) redirect("/inicio");
+  const isAdmin = await hasPermission("sistema:admin");
 
   const resolvedParams = await searchParams;
   const mes = resolvedParams.mes ?? (await getMesOperativo());

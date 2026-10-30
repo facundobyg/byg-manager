@@ -1,14 +1,12 @@
 import Link from "next/link";
-import { auth } from "@/auth";
-import { requirePermission } from "@/lib/auth/permissions";
+import { hasPermission, requirePermission } from "@/lib/auth/permissions";
 import { getData912Status, getData912AutoSyncStatus } from "./actions";
 import { Data912Panel } from "@/components/modules/configuracion/Data912Panel";
 
 export default async function Data912AdminPage() {
   await requirePermission("configuracion:leer");
 
-  const [session, status, autoSyncEnabled] = await Promise.all([auth(), getData912Status(), getData912AutoSyncStatus()]);
-  const isAdmin = (session?.user as { role?: string } | undefined)?.role === "ADMIN";
+  const [isAdmin, status, autoSyncEnabled] = await Promise.all([hasPermission("sistema:admin"), getData912Status(), getData912AutoSyncStatus()]);
 
   return (
     <div className="flex flex-col gap-8 pb-20 max-w-3xl">

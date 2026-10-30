@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { CategoriaHoldingInversion } from "@prisma/client";
 import * as XLSX from "xlsx";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 // ── Shared types (must be JSON-serialisable) ──────────────────────────────────
 
@@ -84,6 +85,9 @@ export async function parseXlsxAction(
   _: ParseState | null,
   formData: FormData,
 ): Promise<ParseState> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return { error: denied.error };
+
   const cuentaId = formData.get("cuentaId")?.toString().trim();
   const file     = formData.get("file") as File | null;
 
@@ -174,6 +178,9 @@ export async function importHoldingsAction(
   _: ImportState | null,
   formData: FormData,
 ): Promise<ImportState> {
+  const denied = await requireActionPermission("holdings:editar");
+  if (denied) return { errors: [denied.error] };
+
   const cuentaId  = formData.get("cuentaId")?.toString().trim();
   const rowsJson  = formData.get("rows")?.toString();
   const createNew = formData.get("createNew") === "1";

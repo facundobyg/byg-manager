@@ -5,7 +5,15 @@ import { revalidatePath } from "next/cache";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
-import { UserRole } from "@prisma/client";
+import { Prisma, UserRole } from "@prisma/client";
+import { FRANCISCO_POLICY, AUGUSTO_POLICY, SOLO_LECTURA_POLICY, toPresetRules } from "@/lib/auth/user-policy";
+import { OVERRIDABLE_KEYS } from "@/lib/auth/permission-registry";
+
+// Solo claves del registro canónico y nunca las adminOnly (usuarios:administrar,
+// sistema:admin): un override no puede crear vocabulario nuevo ni escalar a ADMIN.
+function isOverridableKey(modulo: string, accion: string): boolean {
+  return (OVERRIDABLE_KEYS as readonly string[]).includes(`${modulo}:${accion}`);
+}
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const bcrypt = require("bcryptjs") as {
@@ -55,20 +63,48 @@ function validateAvatarDataUrl(raw: string): AvatarValidation {
   return { ok: true, value: raw };
 }
 
-async function ensurePermiso(modulo: string, accion: string): Promise<string> {
-  const existing = await prisma.permiso.findUnique({ where: { modulo_accion: { modulo, accion } } });
-  if (existing) return existing.id;
-  const created = await prisma.permiso.create({
-    data: { id: crypto.randomUUID(), modulo, accion },
+class TargetError extends Error {}
+
+/**
+ * PROTOCOLO ÚNICO de escritura de identidad/permisos de un usuario objetivo
+ * (MACRO 1, R2-06): una transacción → SELECT … FOR UPDATE sobre el User →
+ * revalidación del target → escritura. Todos los writers (overrides, presets,
+ * temporales, rol, activo/perfil) pasan por acá, así se serializan entre sí.
+ */
+async function withTargetUserLock<T>(
+  userId: string,
+  opts: { allowAdminTarget: boolean },
+  fn: (tx: Prisma.TransactionClient, target: { id: string; role: string }) => Promise<T>,
+): Promise<T> {
+  return prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ id: string; role: string }[]>`SELECT id, role::text AS role FROM "User" WHERE id = ${userId} FOR UPDATE`;
+    if (locked.length !== 1) throw new TargetError("Usuario no encontrado");
+    if (!opts.allowAdminTarget && locked[0].role === "ADMIN") throw new TargetError("Los permisos por usuario no aplican a un ADMIN");
+    return fn(tx, locked[0]);
   });
-  return created.id;
+}
+
+function targetErrorMessage(e: unknown): string {
+  if (e instanceof TargetError) return e.message;
+  console.error("[permisos] error en escritura de permisos", e instanceof Error ? e.message : "desconocido");
+  return "No se pudo completar la operación";
+}
+
+async function ensurePermiso(db: Prisma.TransactionClient, modulo: string, accion: string): Promise<string> {
+  const permiso = await db.permiso.upsert({
+    where:  { modulo_accion: { modulo, accion } },
+    update: {},
+    create: { id: crypto.randomUUID(), modulo, accion },
+    select: { id: true },
+  });
+  return permiso.id;
 }
 
 export async function setUserPermissionOverride(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
-  const denied = await requireActionPermission("configuracion:editar");
+  const denied = await requireActionPermission("usuarios:administrar");
   if (denied) return denied;
 
   const userId   = formData.get("userId")?.toString();
@@ -80,18 +116,24 @@ export async function setUserPermissionOverride(
   if (concedidoStr !== "true" && concedidoStr !== "false" && concedidoStr !== "remove") {
     return { error: "Valor inválido" };
   }
+  if (!isOverridableKey(modulo, accion)) return { error: "Permiso desconocido o no otorgable" };
 
-  const permisoId = await ensurePermiso(modulo, accion);
-
-  if (concedidoStr === "remove") {
-    await prisma.userPermiso.deleteMany({ where: { userId, permisoId } });
-  } else {
-    const concedido = concedidoStr === "true";
-    await prisma.userPermiso.upsert({
-      where:  { userId_permisoId: { userId, permisoId } },
-      create: { id: crypto.randomUUID(), userId, permisoId, concedido, temporal: false, createdAt: new Date() },
-      update: { concedido, temporal: false, fechaExpiracion: null },
+  try {
+    await withTargetUserLock(userId, { allowAdminTarget: false }, async (tx) => {
+      const permisoId = await ensurePermiso(tx, modulo, accion);
+      if (concedidoStr === "remove") {
+        await tx.userPermiso.deleteMany({ where: { userId, permisoId } });
+      } else {
+        const concedido = concedidoStr === "true";
+        await tx.userPermiso.upsert({
+          where:  { userId_permisoId: { userId, permisoId } },
+          create: { id: crypto.randomUUID(), userId, permisoId, concedido, temporal: false, createdAt: new Date() },
+          update: { concedido, temporal: false, fechaExpiracion: null },
+        });
+      }
     });
+  } catch (e) {
+    return { error: targetErrorMessage(e) };
   }
 
   const sessionPerm = await auth();
@@ -110,7 +152,7 @@ export async function applyRolePreset(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
-  const denied = await requireActionPermission("configuracion:editar");
+  const denied = await requireActionPermission("usuarios:administrar");
   if (denied) return denied;
 
   const userId = formData.get("userId")?.toString();
@@ -118,76 +160,34 @@ export async function applyRolePreset(
 
   if (!userId || !preset) return { error: "Faltan datos" };
 
+  // Presets = política canónica MACRO 1 (ver src/lib/auth/user-policy.ts).
   const PRESETS: Record<string, Array<{ modulo: string; accion: string; concedido: boolean }>> = {
-    // Francisco (SOCIO) — revocar acceso write a caja y clientes
-    francisco_socio: [
-      { modulo: "caja",      accion: "operar_oficina",      concedido: false },
-      { modulo: "caja",      accion: "operar_trenque",      concedido: false },
-      { modulo: "caja",      accion: "editar_movimiento",   concedido: false },
-      { modulo: "caja",      accion: "eliminar_movimiento", concedido: false },
-      { modulo: "caja",      accion: "transferir",          concedido: false },
-      { modulo: "operativa", accion: "crear",               concedido: false },
-      { modulo: "operativa", accion: "eliminar",            concedido: false },
-      { modulo: "cc",        accion: "crear_movimiento",    concedido: false },
-      { modulo: "cc",        accion: "intereses",           concedido: false },
-      { modulo: "clientes",  accion: "crear",               concedido: false },
-      { modulo: "clientes",  accion: "editar",              concedido: false },
-      { modulo: "pf",        accion: "crear",               concedido: false },
-      { modulo: "pf",        accion: "editar",              concedido: false },
-    ],
-    // Augusto/Nanu (EMPLEADO) — acceso estándar operativo
-    augusto_empleado: [
-      { modulo: "caja",      accion: "operar_trenque",      concedido: true  },
-      { modulo: "caja",      accion: "editar_movimiento",   concedido: true  },
-      { modulo: "caja",      accion: "transferir",          concedido: true  },
-      { modulo: "operativa", accion: "crear",               concedido: true  },
-      { modulo: "cc",        accion: "crear_movimiento",    concedido: true  },
-      { modulo: "cc",        accion: "intereses",           concedido: true  },
-      { modulo: "pf",        accion: "crear",               concedido: true  },
-      { modulo: "pf",        accion: "editar",              concedido: true  },
-      { modulo: "clientes",  accion: "crear",               concedido: true  },
-    ],
-    // Solo lectura — revocar todas las acciones write
-    solo_lectura: [
-      { modulo: "bolsa",     accion: "crear",               concedido: false },
-      { modulo: "bolsa",     accion: "concertar",           concedido: false },
-      { modulo: "bolsa",     accion: "anular",              concedido: false },
-      { modulo: "caja",      accion: "operar_oficina",      concedido: false },
-      { modulo: "caja",      accion: "operar_trenque",      concedido: false },
-      { modulo: "caja",      accion: "editar_movimiento",   concedido: false },
-      { modulo: "caja",      accion: "eliminar_movimiento", concedido: false },
-      { modulo: "caja",      accion: "transferir",          concedido: false },
-      { modulo: "operativa", accion: "crear",               concedido: false },
-      { modulo: "operativa", accion: "eliminar",            concedido: false },
-      { modulo: "cc",        accion: "crear_movimiento",    concedido: false },
-      { modulo: "cc",        accion: "intereses",           concedido: false },
-      { modulo: "cc",        accion: "eliminar_movimiento", concedido: false },
-      { modulo: "clientes",  accion: "crear",               concedido: false },
-      { modulo: "clientes",  accion: "editar",              concedido: false },
-      { modulo: "clientes",  accion: "eliminar",            concedido: false },
-      { modulo: "pf",        accion: "crear",               concedido: false },
-      { modulo: "pf",        accion: "editar",              concedido: false },
-      { modulo: "configuracion", accion: "editar",          concedido: false },
-      { modulo: "saldos",    accion: "editar",              concedido: false },
-    ],
+    francisco_socio:  toPresetRules(FRANCISCO_POLICY),
+    augusto_empleado: toPresetRules(AUGUSTO_POLICY),
+    solo_lectura:     toPresetRules(SOLO_LECTURA_POLICY),
     // Limpiar todos los overrides del usuario
     clear: [],
   };
 
   const rules = PRESETS[preset];
   if (!rules) return { error: "Preset desconocido" };
+  if (rules.some((r) => !isOverridableKey(r.modulo, r.accion))) return { error: "Preset con permisos no otorgables" };
 
-  if (preset === "clear") {
-    await prisma.userPermiso.deleteMany({ where: { userId } });
-  } else {
-    for (const rule of rules) {
-      const permisoId = await ensurePermiso(rule.modulo, rule.accion);
-      await prisma.userPermiso.upsert({
-        where:  { userId_permisoId: { userId, permisoId } },
-        create: { id: crypto.randomUUID(), userId, permisoId, concedido: rule.concedido, temporal: false, createdAt: new Date() },
-        update: { concedido: rule.concedido, temporal: false, fechaExpiracion: null },
-      });
-    }
+  // Estado determinístico y ATÓMICO: el preset reemplaza todos los overrides
+  // previos en UNA transacción. Si algo falla, rollback completo: nunca queda
+  // un estado intermedio sin restricciones (defaults amplios del rol).
+  try {
+    await withTargetUserLock(userId, { allowAdminTarget: false }, async (tx) => {
+      await tx.userPermiso.deleteMany({ where: { userId } });
+      for (const rule of rules) {
+        const permisoId = await ensurePermiso(tx, rule.modulo, rule.accion);
+        await tx.userPermiso.create({
+          data: { id: crypto.randomUUID(), userId, permisoId, concedido: rule.concedido, temporal: false, createdAt: new Date() },
+        });
+      }
+    });
+  } catch (e) {
+    return { error: targetErrorMessage(e) };
   }
 
   const sessionPreset = await auth();
@@ -206,7 +206,7 @@ export async function setTemporalPermission(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
-  const denied = await requireActionPermission("configuracion:editar");
+  const denied = await requireActionPermission("usuarios:administrar");
   if (denied) return denied;
 
   const userId      = formData.get("userId")?.toString();
@@ -216,17 +216,24 @@ export async function setTemporalPermission(
   const notas       = formData.get("notas")?.toString() ?? "";
 
   if (!userId || !modulo || !accion || !fechaHasta) return { error: "Faltan datos" };
+  if (!isOverridableKey(modulo, accion)) return { error: "Permiso desconocido o no otorgable" };
 
   const fechaExpiracion = new Date(fechaHasta + "T23:59:59");
   if (isNaN(fechaExpiracion.getTime())) return { error: "Fecha inválida" };
   if (fechaExpiracion < new Date()) return { error: "La fecha debe ser futura" };
 
-  const permisoId = await ensurePermiso(modulo, accion);
-  await prisma.userPermiso.upsert({
-    where:  { userId_permisoId: { userId, permisoId } },
-    create: { id: crypto.randomUUID(), userId, permisoId, concedido: true, temporal: true, fechaExpiracion, notas, createdAt: new Date() },
-    update: { concedido: true, temporal: true, fechaExpiracion, notas },
-  });
+  try {
+    await withTargetUserLock(userId, { allowAdminTarget: false }, async (tx) => {
+      const permisoId = await ensurePermiso(tx, modulo, accion);
+      await tx.userPermiso.upsert({
+        where:  { userId_permisoId: { userId, permisoId } },
+        create: { id: crypto.randomUUID(), userId, permisoId, concedido: true, temporal: true, fechaExpiracion, notas, createdAt: new Date() },
+        update: { concedido: true, temporal: true, fechaExpiracion, notas },
+      });
+    });
+  } catch (e) {
+    return { error: targetErrorMessage(e) };
+  }
 
   const session = await auth();
   await writeAuditLog({
@@ -244,7 +251,7 @@ export async function createUser(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
-  const denied = await requireActionPermission("configuracion:editar");
+  const denied = await requireActionPermission("usuarios:administrar");
   if (denied) return denied;
 
   const nombre   = formData.get("nombre")?.toString().trim();
@@ -291,7 +298,7 @@ export async function adminUpdateUserProfile(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
-  const denied = await requireActionPermission("configuracion:editar");
+  const denied = await requireActionPermission("usuarios:administrar");
   if (denied) return denied;
 
   const targetUserId = formData.get("userId")?.toString();
@@ -317,10 +324,16 @@ export async function adminUpdateUserProfile(
 
   const activo = activoStr === "true";
 
-  await prisma.user.update({
-    where: { id: targetUserId },
-    data:  { name, email, activo, image, updatedAt: new Date() },
-  });
+  try {
+    await withTargetUserLock(targetUserId, { allowAdminTarget: true }, async (tx) => {
+      await tx.user.update({
+        where: { id: targetUserId },
+        data:  { name, email, activo, image, updatedAt: new Date() },
+      });
+    });
+  } catch (e) {
+    return { error: targetErrorMessage(e) };
+  }
 
   const session = await auth();
   await writeAuditLog({
@@ -339,7 +352,7 @@ export async function adminResetPassword(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
-  const denied = await requireActionPermission("configuracion:editar");
+  const denied = await requireActionPermission("usuarios:administrar");
   if (denied) return denied;
 
   const targetUserId    = formData.get("userId")?.toString();
@@ -379,7 +392,7 @@ export async function updateUserRole(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
-  const denied = await requireActionPermission("configuracion:editar");
+  const denied = await requireActionPermission("usuarios:administrar");
   if (denied) return denied;
 
   const userId  = formData.get("userId")?.toString();
@@ -391,7 +404,13 @@ export async function updateUserRole(
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) return { error: "Usuario no encontrado" };
 
-  await prisma.user.update({ where: { id: userId }, data: { role: newRole, updatedAt: new Date() } });
+  try {
+    await withTargetUserLock(userId, { allowAdminTarget: true }, async (tx) => {
+      await tx.user.update({ where: { id: userId }, data: { role: newRole, updatedAt: new Date() } });
+    });
+  } catch (e) {
+    return { error: targetErrorMessage(e) };
+  }
 
   const session = await auth();
   await writeAuditLog({

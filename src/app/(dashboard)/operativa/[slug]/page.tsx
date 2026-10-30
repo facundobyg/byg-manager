@@ -4,7 +4,7 @@ import { MovDiariosTable } from "@/components/modules/operativa/MovDiariosTable"
 import { OperativaFormToggle } from "@/components/modules/operativa/OperativaFormToggle";
 import { calcularSaldoCaja } from "@/lib/services/caja.service";
 import { notFound } from "next/navigation";
-import { hasPermission, requirePermission } from "@/lib/auth/permissions";
+import { canDoAction, requirePermission } from "@/lib/auth/permissions";
 
 type PageProps = {
   params: Promise<{ slug: string }>;
@@ -67,7 +67,7 @@ export default async function OperativaCajaPage({ params }: PageProps) {
     tcBlue: Number(resultadoCambio.tcBlue),
   };
 
-  const canWrite = await hasPermission("mov_diarios:escribir");
+  const canWrite = (await canDoAction("operativa:crear")) || (await canDoAction("cambio:operar"));
 
   return (
     <div className="flex flex-col gap-6">

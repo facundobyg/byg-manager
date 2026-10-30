@@ -5,32 +5,28 @@ import { auth } from "@/auth";
 import { revalidatePath } from "next/cache";
 import { EstadoComision, UserRole } from "@prisma/client";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 type ActionResult = { success: true } | { error: string };
 type AuthSession = { user?: { id?: string; role?: UserRole } } | null;
-
-function getRole(session: AuthSession): UserRole | null {
-  return session?.user?.role ?? null;
-}
 
 export async function marcarEstadoComision(
   _prev: unknown,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("comisiones:gestionar");
+  if (denied) return denied;
   const session = await auth() as AuthSession;
   const userId = session?.user?.id;
-  const role = getRole(session);
-  if (!userId || !role || !["ADMIN", "SOCIO"].includes(role)) {
-    return { error: "Sin permisos" };
-  }
 
   const productorId = formData.get("productorId")?.toString();
   const mes = formData.get("mes")?.toString();
   const estado = formData.get("estado")?.toString() as EstadoComision | undefined;
 
   if (!productorId || !mes || !estado) return { error: "Faltan datos" };
-  if (estado === "PAGADO" && role !== "ADMIN") {
-    return { error: "Solo el administrador puede marcar como pagado" };
+  if (estado === "PAGADO") {
+    const pagoDenied = await requireActionPermission("sistema:admin");
+    if (pagoDenied) return { error: "Solo el administrador puede marcar como pagado" };
   }
 
   const paidAt = estado === "PAGADO" ? new Date() : undefined;
@@ -71,9 +67,9 @@ export async function crearProductor(
   _prev: unknown,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("sistema:admin");
+  if (denied) return denied;
   const session = await auth() as AuthSession;
-  const role = getRole(session);
-  if (role !== "ADMIN") return { error: "Solo el administrador puede crear productores" };
 
   const nombre = formData.get("nombre")?.toString().trim();
   const porcentajeRaw = formData.get("porcentaje")?.toString().replace(",", ".");
@@ -119,9 +115,9 @@ export async function actualizarProductor(
   _prev: unknown,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("sistema:admin");
+  if (denied) return denied;
   const session = await auth() as AuthSession;
-  const role = getRole(session);
-  if (role !== "ADMIN") return { error: "Sin permisos" };
 
   const id = formData.get("id")?.toString();
   const porcentajeRaw = formData.get("porcentaje")?.toString().replace(",", ".");
@@ -152,9 +148,8 @@ export async function asignarProductor(
   _prev: unknown,
   formData: FormData,
 ): Promise<ActionResult> {
-  const session = await auth() as AuthSession;
-  const role = getRole(session);
-  if (!role || !["ADMIN", "SOCIO"].includes(role)) return { error: "Sin permisos" };
+  const denied = await requireActionPermission("comisiones:gestionar");
+  if (denied) return denied;
 
   const clienteId = formData.get("clienteId")?.toString();
   const productorId = formData.get("productorId")?.toString() || null;

@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { readOnlyPreview } from "@/lib/config";
-import { requireActionPermission } from "@/lib/auth/permissions";
+import { requireActionPermission, requireCajaPermission } from "@/lib/auth/permissions";
 import { Moneda, Prisma, TipoMovCaja } from "@prisma/client";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
@@ -27,6 +27,11 @@ export async function crearMovimientoCC(prevState: any, formData: FormData) {
   }
   if (impactaCaja && !cajaImpactoId) {
     return { error: "Seleccionar caja para el impacto" };
+  }
+  if (impactaCaja) {
+    // Mover dinero en una caja exige el scope de esa caja (Oficina vs Trenque).
+    const scopeDenied = await requireCajaPermission([cajaImpactoId]);
+    if (scopeDenied) return scopeDenied;
   }
 
   try {
@@ -942,7 +947,7 @@ export async function reconciliarSaldoCC(
 ): Promise<{ error?: string; ok?: boolean; diferencia?: string }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const denied = await requireActionPermission("saldos:editar");
+  const denied = await requireActionPermission("cc:reconciliar");
   if (denied) return denied;
 
   const cuentaId  = formData.get("cuentaId")?.toString();

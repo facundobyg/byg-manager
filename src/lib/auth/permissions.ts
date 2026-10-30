@@ -1,154 +1,293 @@
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
-import { UserRole } from "@prisma/client";
 import { cookies } from "next/headers";
+import { readOnlyPreview } from "@/lib/config";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import {
+  PERMISSIONS,
+  ROLES_2FA_OBLIGATORIO,
+  effectivePermission,
+  explicitGrant,
+  getPermissionDef,
+  rowKeysFor,
+  type OverrideRow,
+} from "./permission-registry";
 
-// ── Static action permission matrix ───────────────────────────────────────────
-// Primary security layer — no DB required. DB UserPermiso overrides are additive.
-const EMPLEADO_ALLOWED = new Set([
-  "holdings:comprar",
-  "holdings:vender",
-  "holdings:editar",
-  "saldos:editar",
-  // Caja: solo Trenque (oficina requiere permiso temporal)
-  "caja:operar_trenque",
-  // Operativa diaria
-  "operativa:crear",
-  // Clientes / CC / PF
-  "cc:crear_movimiento",
-  "clientes:crear",
-  "pf:crear",
-  // NOT included: holdings:eliminar, bolsa:anular, configuracion:*, mes:editar,
-  //               caja:operar_oficina, caja:editar_movimiento, caja:eliminar_movimiento,
-  //               caja:transferir, operativa:eliminar, cc:eliminar_movimiento,
-  //               cc:intereses, clientes:editar, clientes:eliminar, pf:editar
-]);
+// MACRO 1 — Guard central de autorización.
+//
+// Una sola resolución para Server Actions (requireActionPermission), UI
+// (canDoAction) y páginas/sidebar (requirePermission / hasPermission /
+// getEffectivePermissions): registro canónico en código (permission-registry)
+// + overrides por usuario en UserPermiso con las MISMAS claves. RolPermiso ya
+// no se consulta.
+//
+// requireActionPermission además centraliza, para toda Server Action:
+//   sesión → readOnlyPreview → clave registrada → usuario activo en DB (rol
+//   real, no el del JWT) → 2FA obligatorio → "ver como" de ADMIN (solo
+//   lectura) → permiso. Todo rechazo con actor identificado queda auditado
+//   con un reason code estructurado.
 
-function checkActionRole(role: UserRole, key: string): boolean {
-  if (role === "ADMIN" || role === "SOCIO") return true;
-  if (role === "EMPLEADO") return EMPLEADO_ALLOWED.has(key);
-  return false;
+export const PREVIEW_COOKIE = "byg_preview_user";
+
+const DENIED = "No tenés permisos para realizar esta acción.";
+const PREVIEW_DENIED = "Estás en modo \"ver como\": es solo lectura. Salí de la vista previa para operar.";
+const TWO_FA_DENIED = "Tenés que activar la verificación en dos pasos (2FA) antes de operar.";
+const INACTIVE_DENIED = "Sesión inválida. Volvé a iniciar sesión.";
+
+export type DenyReason =
+  | "UNKNOWN_PERMISSION"
+  | "USER_NOT_FOUND"
+  | "USER_INACTIVE"
+  | "TWO_FACTOR_REQUIRED"
+  | "PREVIEW_READ_ONLY"
+  | "GLOBAL_READ_ONLY"
+  | "PERMISSION_DENIED"
+  | "CAJA_SIN_SCOPE";
+
+type GuardMode = "write" | "read";
+
+interface GuardOptions {
+  /** Compatibilidad: los grants temporales ya son overrides vigentes. */
+  allowTemporary?: boolean;
+  /** "read": acción de solo consulta; se permite en readOnlyPreview y en "ver como". */
+  mode?: GuardMode;
+  /**
+   * Alternativa EXPLÍCITA: también se permite si el usuario tiene un override
+   * canónico vigente concedido=true de esta clave (nunca por default de rol).
+   * Se registra en el registro de claves (debe existir y no ser adminOnly).
+   */
+  orExplicitGrant?: string;
 }
 
-/**
- * Checks for a user-level DB override (grant or revoke).
- * Returns: true = explicitly granted, false = explicitly revoked, null = no override.
- * Works for any role — allows revoking SOCIO/ADMIN on specific actions,
- * and granting EMPLEADO beyond the static matrix.
- */
-async function checkUserLevelOverride(userId: string, permissionKey: string): Promise<boolean | null> {
-  const [modulo, accion] = permissionKey.split(":");
-  if (!modulo || !accion) return null;
+interface DbSubject {
+  id: string;
+  name: string;
+  role: string;
+  activo: boolean;
+  twoFactorEnabled: boolean;
+}
 
-  const permiso = await prisma.permiso.findUnique({ where: { modulo_accion: { modulo, accion } } });
-  if (!permiso) return null;
-
-  const override = await prisma.userPermiso.findUnique({
-    where: { userId_permisoId: { userId, permisoId: permiso.id } },
+async function loadSubject(userId: string): Promise<DbSubject | null> {
+  return prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, name: true, role: true, activo: true, twoFactorEnabled: true },
   });
-  if (!override) return null;
+}
 
-  const expired = override.temporal && override.fechaExpiracion !== null && override.fechaExpiracion < new Date();
-  if (expired) return null;
+/** Filas de override para resolver `key`: canónica + puente legacy + implicación histórica. */
+async function loadOverrideRows(userId: string, key: string): Promise<OverrideRow[]> {
+  const claves = rowKeysFor(key);
+  const rows = await prisma.userPermiso.findMany({
+    where: {
+      userId,
+      OR: claves.map((c) => {
+        const [modulo, accion] = c.split(":");
+        return { Permiso: { modulo, accion } };
+      }),
+    },
+    select: { concedido: true, temporal: true, fechaExpiracion: true, Permiso: { select: { modulo: true, accion: true } } },
+  });
+  return rows.map(toOverrideRow);
+}
 
-  return override.concedido;
+function toOverrideRow(r: { concedido: boolean; temporal: boolean; fechaExpiracion: Date | null; Permiso: { modulo: string; accion: string } }): OverrideRow {
+  return { clave: `${r.Permiso.modulo}:${r.Permiso.accion}`, concedido: r.concedido, temporal: r.temporal, fechaExpiracion: r.fechaExpiracion };
+}
+
+async function getPreviewUserId(): Promise<string | null> {
+  const store = await cookies();
+  return store.get(PREVIEW_COOKIE)?.value || null;
+}
+
+/** Rechazo auditado. Un fallo de auditoría NUNCA cambia el resultado: siempre devuelve el rechazo. */
+async function deny(userId: string, reason: DenyReason, detail: string, error: string) {
+  try {
+    await writeAuditLog({
+      userId,
+      accion: "ACCESO_DENEGADO",
+      entidad: "Permission",
+      description: detail,
+      metadata: { reason },
+    });
+  } catch (e) {
+    console.error("[auth] no se pudo auditar un rechazo", { reason, error: e instanceof Error ? e.message : "desconocido" });
+  }
+  return { error };
 }
 
 /**
- * For server actions — returns { error } on denial instead of redirecting.
- * Usage: const denied = await requireActionPermission("bolsa:concertar");
- *        if (denied) return denied;
- *
- * Check order:
- *  1. User-level DB override (can grant OR revoke, even for SOCIO/ADMIN)
- *  2. Static role matrix
- *  3. Optional temporal DB grant (legacy path, kept for compatibility)
+ * Guard obligatorio de toda Server Action.
+ * Uso: const denied = await requireActionPermission("bolsa:concertar");
+ *      if (denied) return denied;
  */
 export async function requireActionPermission(
   permissionKey: string,
-  opts?: { allowTemporary?: boolean },
+  opts?: GuardOptions,
 ): Promise<{ error: string } | null> {
   const session = await auth();
-  if (!session?.user?.id) return { error: "Sin sesión activa" };
+  const sessionUserId = session?.user?.id;
+  if (!sessionUserId) return { error: "Sin sesión activa" };
 
-  const role = (session.user as { role?: UserRole }).role ?? "CLIENTE";
-
-  // ADMIN always has full access (no overrides), preview mode handled separately
-  if (role === "ADMIN") return null;
-
-  // Check user-level DB override first — can revoke SOCIO or grant EMPLEADO
-  const userOverride = await checkUserLevelOverride(session.user.id, permissionKey);
-  if (userOverride === false) {
-    await writeAuditLog({
-      userId:      session.user.id,
-      accion:      "ACCESO_DENEGADO",
-      entidad:     "Permission",
-      description: `${(session.user as { name?: string }).name ?? session.user.id} bloqueado por override: ${permissionKey}`,
-    });
-    return { error: "No tenés permisos para realizar esta acción." };
+  const mode: GuardMode = opts?.mode ?? "write";
+  if (mode === "write" && readOnlyPreview) {
+    return deny(sessionUserId, "GLOBAL_READ_ONLY", permissionKey, "Modo lectura activo");
   }
-  if (userOverride === true) return null;
 
-  // Static role check
-  if (checkActionRole(role, permissionKey)) return null;
+  const alt = opts?.orExplicitGrant;
+  if (!getPermissionDef(permissionKey) || (alt !== undefined && (!getPermissionDef(alt) || getPermissionDef(alt)!.adminOnly))) {
+    return deny(sessionUserId, "UNKNOWN_PERMISSION", alt ? `${permissionKey}|${alt}` : permissionKey, DENIED);
+  }
 
-  // Temporal DB grant (additive, for one-off supervisor overrides)
-  if (opts?.allowTemporary && await hasTemporaryPermission(permissionKey)) return null;
+  const [subject, overrideRows, altRows] = await Promise.all([
+    loadSubject(sessionUserId),
+    loadOverrideRows(sessionUserId, permissionKey),
+    alt ? loadOverrideRows(sessionUserId, alt) : Promise.resolve([] as OverrideRow[]),
+  ]);
+  if (!subject) return deny(sessionUserId, "USER_NOT_FOUND", permissionKey, INACTIVE_DENIED);
+  if (!subject.activo) return deny(subject.id, "USER_INACTIVE", `${subject.name}: ${permissionKey}`, INACTIVE_DENIED);
 
-  await writeAuditLog({
-    userId:      session.user.id,
-    accion:      "ACCESO_DENEGADO",
-    entidad:     "Permission",
-    description: `${(session.user as { name?: string }).name ?? session.user.id} intentó acción sin permiso: ${permissionKey}`,
-  });
+  if (ROLES_2FA_OBLIGATORIO.has(subject.role) && !subject.twoFactorEnabled) {
+    return deny(subject.id, "TWO_FACTOR_REQUIRED", `${subject.name}: ${permissionKey}`, TWO_FA_DENIED);
+  }
 
-  return { error: "No tenés permisos para realizar esta acción." };
+  if (mode === "write" && subject.role === "ADMIN" && (await getPreviewUserId())) {
+    return deny(subject.id, "PREVIEW_READ_ONLY", `${subject.name}: ${permissionKey}`, PREVIEW_DENIED);
+  }
+
+  if (effectivePermission(subject.role, permissionKey, overrideRows)) return null;
+  if (alt && explicitGrant(alt, altRows)) return null;
+
+  return deny(subject.id, "PERMISSION_DENIED", `${subject.name}: ${permissionKey}`, DENIED);
+}
+
+// ── Scope de caja ───────────────────────────────────────────────────────────
+//
+// Fuente canónica: Caja.tipo (no el slug). SUCURSAL_OPERATIVA = caja de
+// sucursal (hoy: Trenque) → caja:operar_trenque. CENTRAL_CONTABLE,
+// CAJA_SEGURIDAD y BANCO → caja:operar_oficina. Un tipo sin regla o una caja
+// inexistente → rechazo (nunca se asume un scope).
+
+export type CajaScope = "OFICINA" | "TRENQUE";
+
+const SCOPE_POR_TIPO: Readonly<Record<string, CajaScope>> = {
+  SUCURSAL_OPERATIVA: "TRENQUE",
+  CENTRAL_CONTABLE: "OFICINA",
+  CAJA_SEGURIDAD: "OFICINA",
+  BANCO: "OFICINA",
+};
+
+const PERMISO_POR_SCOPE: Readonly<Record<CajaScope, string>> = {
+  OFICINA: "caja:operar_oficina",
+  TRENQUE: "caja:operar_trenque",
+};
+
+export function scopeDeTipoCaja(tipo: string | null | undefined): CajaScope | null {
+  return (tipo && SCOPE_POR_TIPO[tipo]) || null;
 }
 
 /**
- * For server components — returns boolean to conditionally render UI.
- * Checks the same user-level DB override as requireActionPermission (no audit log),
- * so buttons stay consistent with what the server action will actually allow.
+ * Exige el permiso de CADA scope involucrado: [Oficina, Trenque] requiere
+ * caja:operar_oficina Y caja:operar_trenque.
+ */
+export async function requireCajaPermission(
+  cajaIds: readonly (string | null | undefined)[],
+): Promise<{ error: string } | null> {
+  const ids = Array.from(new Set(cajaIds.filter((id): id is string => !!id && id.trim() !== "")));
+  if (ids.length === 0) return null;
+
+  const cajas = await prisma.caja.findMany({ where: { id: { in: ids } }, select: { id: true, tipo: true } });
+  const tipoById = new Map(cajas.map((c) => [c.id, c.tipo as string]));
+
+  const scopes = new Set<CajaScope>();
+  for (const id of ids) {
+    const scope = scopeDeTipoCaja(tipoById.get(id));
+    if (!scope) {
+      const session = await auth();
+      if (!session?.user?.id) return { error: "Sin sesión activa" };
+      return deny(session.user.id, "CAJA_SIN_SCOPE", `caja ${id} sin scope conocido`, DENIED);
+    }
+    scopes.add(scope);
+  }
+
+  for (const scope of (["OFICINA", "TRENQUE"] as const).filter((s) => scopes.has(s))) {
+    const denied = await requireActionPermission(PERMISO_POR_SCOPE[scope]);
+    if (denied) return denied;
+  }
+  return null;
+}
+
+// ── Cuenta propia ───────────────────────────────────────────────────────────
+
+/**
+ * Guard para acciones sobre la cuenta propia (perfil, contraseña, 2FA).
+ * Exige sesión, usuario existente y activo, actor real (no "ver como") y no
+ * readOnlyPreview. El 2FA previo solo se omite si allowWithout2FA (necesario
+ * para poder activarlo). Devuelve el id del actor real.
+ */
+export async function requireOwnAccountGuard(opts: { allowWithout2FA: boolean }):
+  Promise<{ userId: string } | { error: string }> {
+  const session = await auth();
+  const sessionUserId = session?.user?.id;
+  if (!sessionUserId) return { error: "Sin sesión activa" };
+
+  if (readOnlyPreview) return deny(sessionUserId, "GLOBAL_READ_ONLY", "cuenta propia", "Modo lectura activo");
+
+  const subject = await loadSubject(sessionUserId);
+  if (!subject) return deny(sessionUserId, "USER_NOT_FOUND", "cuenta propia", INACTIVE_DENIED);
+  if (!subject.activo) return deny(subject.id, "USER_INACTIVE", `${subject.name}: cuenta propia`, INACTIVE_DENIED);
+
+  // La cookie de "ver como" solo tiene efecto para un ADMIN vigente (igual que
+  // en requireActionPermission); para cualquier otro rol es inerte.
+  if (subject.role === "ADMIN" && (await getPreviewUserId())) {
+    return deny(subject.id, "PREVIEW_READ_ONLY", `${subject.name}: cuenta propia`, PREVIEW_DENIED);
+  }
+
+  if (!opts.allowWithout2FA && ROLES_2FA_OBLIGATORIO.has(subject.role) && !subject.twoFactorEnabled) {
+    return deny(subject.id, "TWO_FACTOR_REQUIRED", `${subject.name}: cuenta propia`, TWO_FA_DENIED);
+  }
+
+  return { userId: subject.id };
+}
+
+/** ADMIN vigente según DB (activo + 2FA). Para "ver como" y rutas solo-ADMIN. */
+export async function isCurrentAdmin(): Promise<boolean> {
+  const session = await auth();
+  if (!session?.user?.id) return false;
+  const subject = await loadSubject(session.user.id);
+  return !!subject && subject.activo && subject.role === "ADMIN" && subject.twoFactorEnabled;
+}
+
+/**
+ * Para UI (mostrar/ocultar botones). Misma resolución que el guard. En "ver como"
+ * evalúa al usuario previsualizado para que la vista sea fiel (la mutación igual
+ * será rechazada por el guard).
  */
 export async function canDoAction(permissionKey: string): Promise<boolean> {
+  const def = getPermissionDef(permissionKey);
+  if (!def) return false;
+
   const session = await auth();
-  if (!session?.user?.id) return false;
-  const role = (session.user as { role?: UserRole }).role ?? "CLIENTE";
+  const sessionUserId = session?.user?.id;
+  if (!sessionUserId) return false;
+  if (readOnlyPreview && def.kind === "accion") return false;
 
-  if (role === "ADMIN") return true;
+  let subject = await loadSubject(sessionUserId);
+  if (!subject || !subject.activo) return false;
 
-  const userOverride = await checkUserLevelOverride(session.user.id, permissionKey);
-  if (userOverride !== null) return userOverride;
+  if (subject.role === "ADMIN") {
+    const previewId = await getPreviewUserId();
+    if (previewId) {
+      const previewSubject = await loadSubject(previewId);
+      if (previewSubject) subject = previewSubject;
+    }
+  }
 
-  return checkActionRole(role, permissionKey);
+  if (ROLES_2FA_OBLIGATORIO.has(subject.role) && !subject.twoFactorEnabled) return false;
+
+  if (subject.role === "ADMIN") return true;
+  return effectivePermission(subject.role, permissionKey, await loadOverrideRows(subject.id, permissionKey));
 }
-
-/**
- * Checks whether a user has an active *temporary* DB grant for a given key.
- * Useful for one-off supervisor overrides (e.g. Augusto + Caja Oficina for a day).
- * This is additive on top of the static matrix — it only grants, never revokes.
- */
-export async function hasTemporaryPermission(permissionKey: string): Promise<boolean> {
-  const session = await auth();
-  if (!session?.user?.id) return false;
-
-  const [modulo, accion] = permissionKey.split(":");
-  if (!modulo || !accion) return false;
-
-  const permiso = await prisma.permiso.findUnique({ where: { modulo_accion: { modulo, accion } } });
-  if (!permiso) return false;
-
-  const override = await prisma.userPermiso.findUnique({
-    where: { userId_permisoId: { userId: session.user.id, permisoId: permiso.id } },
-  });
-  if (!override || !override.temporal || !override.concedido) return false;
-  if (override.fechaExpiracion && override.fechaExpiracion < new Date()) return false;
-  return true;
-}
-
-const PREVIEW_COOKIE = "byg_preview_user";
 
 export async function getCurrentUser() {
   const session = await auth();
@@ -156,55 +295,31 @@ export async function getCurrentUser() {
   return session.user;
 }
 
+/**
+ * Para páginas. Clave desconocida → false incluso para ADMIN. ADMIN en
+ * "ver como" evalúa al usuario previsualizado.
+ */
 export async function hasPermission(permissionKey: string): Promise<boolean> {
+  if (!getPermissionDef(permissionKey)) return false;
+
   const session = await auth();
-  if (!session?.user) return false;
+  const sessionUserId = session?.user?.id;
+  if (!sessionUserId) return false;
 
-  const realRole = session.user.role as UserRole;
+  let subject = await loadSubject(sessionUserId);
+  if (!subject || !subject.activo) return false;
+  // Lecturas sensibles también exigen 2FA del usuario REAL (no se apoya solo en el middleware).
+  if (ROLES_2FA_OBLIGATORIO.has(subject.role) && !subject.twoFactorEnabled) return false;
 
-  if (realRole === "ADMIN") {
-    const store = await cookies();
-    const previewUserId = store.get(PREVIEW_COOKIE)?.value;
-    if (!previewUserId) return true;
-
-    const previewUser = await prisma.user.findUnique({
-      where: { id: previewUserId },
-      select: { role: true },
-    });
-    if (!previewUser) return true;
-
-    return checkPermission(previewUserId, previewUser.role, permissionKey);
+  if (subject.role === "ADMIN") {
+    const previewId = await getPreviewUserId();
+    if (!previewId) return true;
+    const previewSubject = await loadSubject(previewId);
+    if (!previewSubject) return true;
+    subject = previewSubject;
   }
 
-  return checkPermission(session.user.id, realRole, permissionKey);
-}
-
-async function checkPermission(userId: string, role: UserRole, permissionKey: string): Promise<boolean> {
-  const [modulo, accion] = permissionKey.split(":");
-  if (!modulo || !accion) return false;
-
-  const permiso = await prisma.permiso.findUnique({
-    where: { modulo_accion: { modulo, accion } },
-  });
-  if (!permiso) return false;
-
-  const userOverride = await prisma.userPermiso.findUnique({
-    where: { userId_permisoId: { userId, permisoId: permiso.id } },
-  });
-
-  if (userOverride) {
-    const expired =
-      userOverride.temporal &&
-      userOverride.fechaExpiracion !== null &&
-      userOverride.fechaExpiracion < new Date();
-    if (!expired) return userOverride.concedido;
-  }
-
-  const rolPermiso = await prisma.rolPermiso.findUnique({
-    where: { role_permisoId: { role, permisoId: permiso.id } },
-  });
-
-  return !!rolPermiso;
+  return effectivePermission(subject.role, permissionKey, await loadOverrideRows(subject.id, permissionKey));
 }
 
 export async function requirePermission(permissionKey: string): Promise<void> {
@@ -212,34 +327,22 @@ export async function requirePermission(permissionKey: string): Promise<void> {
   if (!allowed) redirect("/");
 }
 
-export async function getEffectivePermissions(userId: string, role: UserRole): Promise<Set<string>> {
-  const [rolePermisos, userOverrides] = await Promise.all([
-    prisma.rolPermiso.findMany({
-      where: { role },
-      select: { Permiso: { select: { modulo: true, accion: true } } },
-    }),
-    prisma.userPermiso.findMany({
-      where: { userId },
-      select: {
-        concedido: true,
-        temporal: true,
-        fechaExpiracion: true,
-        Permiso: { select: { modulo: true, accion: true } },
-      },
-    }),
-  ]);
+/** Set de claves efectivas (registro canónico) para sidebar / notificaciones. */
+export async function getEffectivePermissions(userId: string, role: string): Promise<Set<string>> {
+  const userOverrides = await prisma.userPermiso.findMany({
+    where: { userId },
+    select: {
+      concedido: true,
+      temporal: true,
+      fechaExpiracion: true,
+      Permiso: { select: { modulo: true, accion: true } },
+    },
+  });
 
+  const rows = userOverrides.map(toOverrideRow);
   const allowed = new Set<string>();
-  for (const rp of rolePermisos) {
-    allowed.add(`${rp.Permiso.modulo}:${rp.Permiso.accion}`);
-  }
-  for (const up of userOverrides) {
-    const key = `${up.Permiso.modulo}:${up.Permiso.accion}`;
-    const expired = up.temporal && up.fechaExpiracion !== null && up.fechaExpiracion < new Date();
-    if (!expired) {
-      if (up.concedido) allowed.add(key);
-      else allowed.delete(key);
-    }
+  for (const p of PERMISSIONS) {
+    if (effectivePermission(role, p.key, rows)) allowed.add(p.key);
   }
   return allowed;
 }

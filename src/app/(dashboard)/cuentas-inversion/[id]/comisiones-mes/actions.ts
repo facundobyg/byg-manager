@@ -3,12 +3,15 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { readOnlyPreview } from "@/lib/config";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function saveConfigComisionesBolsa(
   _prevState: unknown,
   formData: FormData,
 ) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
 
   const iibbPct  = parseFloat(formData.get("iibbPct")  as string);
   const bancoPct = parseFloat(formData.get("bancoPct") as string);

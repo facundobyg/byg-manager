@@ -8,7 +8,7 @@ import { writeAuditLog } from "@/lib/services/audit.service";
 import { buildData912PriceSyncPreview } from "@/lib/services/data912-price-sync-preview.service";
 import { applyData912PriceSync } from "@/lib/services/data912-price-sync.service";
 import { getData912AutoSyncEnabled, setData912AutoSyncEnabled } from "@/lib/services/config.service";
-import type { PriceSource, PriceStatus, UserRole } from "@prisma/client";
+import type { PriceSource, PriceStatus } from "@prisma/client";
 
 export interface Data912StatusBucket {
   DATA912:   number;
@@ -42,7 +42,7 @@ function bucketize(rows: { priceSource: PriceSource; priceStatus: PriceStatus }[
 
 /** Estado actual de cobertura de precios — solo lectura. */
 export async function getData912Status(): Promise<Data912StatusResult> {
-  const denied = await requireActionPermission("configuracion:leer");
+  const denied = await requireActionPermission("configuracion:leer", { mode: "read" });
   if (denied) return { lastSyncedAt: null, activos: emptyBucket(), holdings: emptyBucket() };
 
   const [activos, holdings, activoMax, holdingMax] = await Promise.all([
@@ -81,7 +81,7 @@ export type PreviewActionResult =
 
 /** Dry-run de cobertura — nunca escribe nada. */
 export async function runData912Preview(): Promise<PreviewActionResult> {
-  const denied = await requireActionPermission("configuracion:leer");
+  const denied = await requireActionPermission("configuracion:leer", { mode: "read" });
   if (denied) return { ok: false, error: "No tenés permisos para ver esta información." };
 
   try {
@@ -126,18 +126,10 @@ export type SyncActionResult =
  * cualquier acción, y este botón debe quedar reservado solo a ADMIN).
  */
 export async function runData912Sync(): Promise<SyncActionResult> {
+  const denied = await requireActionPermission("sistema:admin");
+  if (denied) return { ok: false, error: denied.error };
   const session = await auth();
-  const role = (session?.user as { role?: UserRole } | undefined)?.role;
-
-  if (!session?.user?.id || role !== "ADMIN") {
-    await writeAuditLog({
-      userId: session?.user?.id ?? null,
-      accion: "ACCESO_DENEGADO",
-      entidad: "Data912Sync",
-      description: `Intento de ejecutar sync Data912 sin rol ADMIN (role=${role ?? "sin sesión"})`,
-    });
-    return { ok: false, error: "Solo un administrador puede ejecutar la sincronización." };
-  }
+  if (!session?.user?.id) return { ok: false, error: "Sin sesión activa" };
 
   try {
     const result = await applyData912PriceSync({ dryRun: false });
@@ -163,7 +155,7 @@ export async function runData912Sync(): Promise<SyncActionResult> {
 
 /** Estado del flag de cron — solo lectura. */
 export async function getData912AutoSyncStatus(): Promise<boolean> {
-  const denied = await requireActionPermission("configuracion:leer");
+  const denied = await requireActionPermission("configuracion:leer", { mode: "read" });
   if (denied) return false;
   return getData912AutoSyncEnabled();
 }
@@ -173,18 +165,10 @@ export async function getData912AutoSyncStatus(): Promise<boolean> {
  * mismo motivo que runData912Sync: la matriz genérica le daría acceso a SOCIO.
  */
 export async function setData912AutoSync(enabled: boolean): Promise<{ ok: true } | { ok: false; error: string }> {
+  const denied = await requireActionPermission("sistema:admin");
+  if (denied) return { ok: false, error: denied.error };
   const session = await auth();
-  const role = (session?.user as { role?: UserRole } | undefined)?.role;
-
-  if (!session?.user?.id || role !== "ADMIN") {
-    await writeAuditLog({
-      userId: session?.user?.id ?? null,
-      accion: "ACCESO_DENEGADO",
-      entidad: "Data912AutoSync",
-      description: `Intento de cambiar el flag de cron Data912 sin rol ADMIN (role=${role ?? "sin sesión"})`,
-    });
-    return { ok: false, error: "Solo un administrador puede cambiar esta configuración." };
-  }
+  if (!session?.user?.id) return { ok: false, error: "Sin sesión activa" };
 
   await setData912AutoSyncEnabled(enabled);
   await writeAuditLog({

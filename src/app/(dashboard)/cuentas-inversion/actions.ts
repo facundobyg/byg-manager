@@ -28,6 +28,9 @@ export async function createComitente(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("comitentes:editar");
+  if (denied) return denied;
+
   const cuentaId      = formData.get("cuentaInversionId")?.toString().trim();
   const nroComitente  = formData.get("nroComitente")?.toString().trim();
   const nombre        = formData.get("nombre")?.toString().trim();
@@ -65,6 +68,9 @@ export async function updateComitente(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("comitentes:editar");
+  if (denied) return denied;
+
   const id           = formData.get("id")?.toString().trim();
   const cuentaId     = formData.get("cuentaInversionId")?.toString().trim();
   const nroComitente = formData.get("nroComitente")?.toString().trim();
@@ -142,6 +148,9 @@ export async function deleteComitente(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("comitentes:editar");
+  if (denied) return denied;
+
   const id       = formData.get("id")?.toString().trim();
   const cuentaId = formData.get("cuentaInversionId")?.toString().trim();
 

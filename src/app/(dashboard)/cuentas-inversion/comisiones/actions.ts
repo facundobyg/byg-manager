@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 type ActionResult = { error?: string; success?: boolean };
 
@@ -9,6 +10,9 @@ export async function saveComisionesConfig(
   _: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
   const iibbRaw = formData.get("iibb_pct")?.toString().trim();
   const ipsRaw  = formData.get("ips_pct")?.toString().trim();
   const otroRaw = formData.get("otro_pct")?.toString().trim();

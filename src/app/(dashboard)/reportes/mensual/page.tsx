@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
-import { auth } from "@/auth";
-import { UserRole } from "@prisma/client";
+import { hasPermission } from "@/lib/auth/permissions";
 import { getUtilidadMes } from "@/lib/data/reportes-ejecutivo";
 import { getResumenComisiones, type ProductorMesData } from "@/lib/data/comisiones";
 import { getMesOperativo } from "@/lib/services/config.service";
@@ -73,9 +72,8 @@ export default async function ReporteMensualPage({
 }: {
   searchParams: Promise<{ mes?: string }>;
 }) {
-  const session = await auth();
-  const role = (session?.user as { role?: UserRole })?.role;
-  if (!session?.user || !["ADMIN", "SOCIO"].includes(role ?? "")) redirect("/inicio");
+  // Política canónica (usuario en DB, activo, 2FA, permiso de lectura); no el rol del JWT.
+  if (!(await hasPermission("patrimonio:leer"))) redirect("/inicio");
 
   const resolvedParams = await searchParams;
   const mes = resolvedParams.mes ?? (await getMesOperativo());

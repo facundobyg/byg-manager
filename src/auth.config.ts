@@ -10,17 +10,15 @@ export const authConfig = {
     signIn: '/login',
   },
   callbacks: {
-    async jwt({ token, user, trigger, session }) {
+    async jwt({ token, user }) {
       if (user) {
         const u = user as { role?: string; id?: string; twoFactorEnabled?: boolean };
         token.role = u.role ?? '';
         token.id = u.id ?? '';
         token.twoFactorEnabled = u.twoFactorEnabled ?? false;
       }
-      // Permite refrescar el flag sin re-loguear (ver unstable_update en 2fa/actions.ts)
-      if (trigger === 'update' && session?.user && typeof session.user.twoFactorEnabled === 'boolean') {
-        token.twoFactorEnabled = session.user.twoFactorEnabled;
-      }
+      // trigger === 'update' NO se maneja acá: el payload viene del cliente y no
+      // es confiable. auth.ts (runtime Node) lo refresca desde DB (jwt-refresh.ts).
       return token;
     },
     async session({ session, token }) {

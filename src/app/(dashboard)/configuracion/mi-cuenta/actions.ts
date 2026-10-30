@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { requireOwnAccountGuard } from "@/lib/auth/permissions";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const bcrypt = require("bcryptjs") as {
@@ -59,8 +60,10 @@ export async function changeOwnPassword(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
-  const session = await auth() as { user?: { id?: string; name?: string } } | null;
-  if (!session?.user?.id) redirect("/login");
+  // Cuenta propia: usuario activo, actor real (no "ver como"), no readOnly.
+  // Sin 2FA previo a propósito: el primer cambio de contraseña puede ser anterior a activarlo.
+  const guard = await requireOwnAccountGuard({ allowWithout2FA: true });
+  if ("error" in guard) return guard;
 
   const currentPassword = formData.get("currentPassword")?.toString();
   const newPassword     = formData.get("newPassword")?.toString();
@@ -76,7 +79,7 @@ export async function changeOwnPassword(
     return { error: "La nueva contraseña debe ser diferente a la actual" };
 
   const user = await prisma.user.findUnique({
-    where:  { id: session.user.id },
+    where:  { id: guard.userId },
     select: { id: true, name: true, email: true, passwordHash: true },
   });
   if (!user) redirect("/login");
@@ -106,8 +109,9 @@ export async function updateOwnProfile(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const guard = await requireOwnAccountGuard({ allowWithout2FA: true });
+  if ("error" in guard) return guard;
   const session = await auth() as { user?: { id?: string; name?: string } } | null;
-  if (!session?.user?.id) redirect("/login");
 
   const name      = formData.get("name")?.toString().trim();
   const rawImage  = formData.get("image")?.toString() ?? "";
@@ -122,16 +126,16 @@ export async function updateOwnProfile(
   const imageValue = imageResult.value;
 
   await prisma.user.update({
-    where: { id: session.user.id },
+    where: { id: guard.userId },
     data:  { name, image: imageValue, phone, cargo, ubicacion, updatedAt: new Date() },
   });
 
   await writeAuditLog({
-    userId:      session.user.id,
+    userId:      guard.userId,
     accion:      "UPDATE_OWN_PROFILE",
     entidad:     "User",
-    entidadId:   session.user.id,
-    description: `${session.user.name ?? "Usuario"} actualizó su perfil`,
+    entidadId:   guard.userId,
+    description: `${session?.user?.name ?? "Usuario"} actualizó su perfil`,
   });
 
   revalidatePath("/configuracion/mi-cuenta");

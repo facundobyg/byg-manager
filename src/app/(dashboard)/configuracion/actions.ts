@@ -804,7 +804,7 @@ export interface ActivoUsageSummary {
 
 /** Resumen de dónde está usado un Activo, para mostrar antes de editar su catálogo. No escribe nada. */
 export async function getActivoUsageSummary(activoId: string): Promise<ActivoUsageSummary | { error: string }> {
-  const denied = await requireActionPermission("configuracion:leer");
+  const denied = await requireActionPermission("configuracion:leer", { mode: "read" });
   if (denied) return { error: denied.error };
 
   const activo = await prisma.activo.findUnique({ where: { id: activoId } });
@@ -840,11 +840,10 @@ export async function updateActivoMetadata(
   _prev: { error?: string; ok?: boolean } | null,
   formData: FormData,
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("sistema:admin");
+  if (denied) return { error: "Solo un administrador puede editar el catálogo de activos." };
   const session = await auth();
-  const role = (session?.user as { role?: string } | undefined)?.role;
-  if (!session?.user?.id || role !== "ADMIN") {
-    return { error: "Solo un administrador puede editar el catálogo de activos." };
-  }
+  if (!session?.user?.id) return { error: "Sin sesión activa" };
 
   const activoId = formData.get("activoId")?.toString().trim();
   if (!activoId) return { error: "Falta el activo a editar." };

@@ -6,25 +6,28 @@ import { generateTOTPSecret, verifyTOTP } from "@/lib/auth/totp";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import { requireOwnAccountGuard } from "@/lib/auth/permissions";
 
 type ActionResult = { success: true } | { error: string };
 
 const ROLES_CON_2FA = new Set(["ADMIN", "SOCIO", "EMPLEADO"]);
 
-async function getAdminUser() {
-  const session = await auth() as { user?: { id?: string; role?: string } } | null;
-  if (!session?.user?.role || !ROLES_CON_2FA.has(session.user.role)) redirect("/");
-  if (!session.user?.id) redirect("/login");
+// Cuenta propia: usuario activo, actor real (no "ver como"), no readOnly.
+// Sin 2FA previo a propósito: es el flujo que lo activa. El rol sale de DB.
+async function getOwnUser() {
+  const guard = await requireOwnAccountGuard({ allowWithout2FA: true });
+  if ("error" in guard) return guard;
   const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { id: true, email: true, twoFactorEnabled: true, twoFactorSecret: true, twoFactorLastUsedAt: true },
+    where: { id: guard.userId },
+    select: { id: true, email: true, role: true, twoFactorEnabled: true, twoFactorSecret: true, twoFactorLastUsedAt: true },
   });
-  if (!user) redirect("/");
+  if (!user || !ROLES_CON_2FA.has(user.role)) return { error: "Sin permisos" };
   return user;
 }
 
 export async function generateSetupSecret(): Promise<void> {
-  const user = await getAdminUser();
+  const user = await getOwnUser();
+  if ("error" in user) return;
   if (user.twoFactorEnabled) return;
   const secret = generateTOTPSecret();
   await prisma.user.update({ where: { id: user.id }, data: { twoFactorSecret: secret } });
@@ -32,7 +35,8 @@ export async function generateSetupSecret(): Promise<void> {
 }
 
 export async function confirmEnable2FA(_prev: unknown, formData: FormData): Promise<ActionResult> {
-  const user = await getAdminUser();
+  const user = await getOwnUser();
+  if ("error" in user) return user;
   if (!user.twoFactorSecret) return { error: "Generá el código QR primero." };
 
   const code = ((formData.get("code") as string) ?? "").trim();
@@ -49,7 +53,9 @@ export async function confirmEnable2FA(_prev: unknown, formData: FormData): Prom
 }
 
 export async function disable2FA(_prev: unknown, formData: FormData): Promise<ActionResult> {
-  const user = await getAdminUser();
+  // Exige el código TOTP actual (abajo): solo puede desactivarlo quien lo tiene.
+  const user = await getOwnUser();
+  if ("error" in user) return user;
   if (!user.twoFactorEnabled) return { error: "2FA no está activado." };
   if (!user.twoFactorSecret) return { error: "Estado inconsistente. Contactá soporte." };
 

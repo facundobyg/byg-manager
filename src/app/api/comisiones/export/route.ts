@@ -1,13 +1,11 @@
-import { auth } from "@/auth";
-import { UserRole } from "@prisma/client";
 import { getResumenComisiones } from "@/lib/data/comisiones";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function GET(request: Request) {
-  const session = await auth();
-  const role = (session?.user as { role?: UserRole })?.role;
-  if (!session?.user || !["ADMIN", "SOCIO"].includes(role ?? "")) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+  // Misma política que las Server Actions: usuario en DB, activo, 2FA, permiso.
+  // (El middleware excluye /api, así que este guard es la única barrera.)
+  const denied = await requireActionPermission("comisiones:gestionar", { mode: "read" });
+  if (denied) return new Response(denied.error, { status: 403 });
 
   const { searchParams } = new URL(request.url);
   const mes = searchParams.get("mes") ?? new Date().toISOString().slice(0, 7);

@@ -1,4 +1,4 @@
-import { auth } from "@/auth";
+import { hasPermission } from "@/lib/auth/permissions";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { UserRole } from "@prisma/client";
@@ -7,12 +7,9 @@ import { CrearHonorarioForm } from "@/components/modules/honorarios/CrearHonorar
 import { RegistrarMesForm } from "@/components/modules/honorarios/RegistrarMesForm";
 
 export default async function HonorariosPage() {
-  const session = await auth();
-  const role = (session?.user as { role?: UserRole })?.role;
-  if (!session?.user || !["ADMIN", "SOCIO"].includes(role ?? "")) {
-    redirect("/inicio");
-  }
-  const isAdmin = role === "ADMIN";
+  // Rol vigente desde DB (registro canónico), no el rol del JWT.
+  if (!(await hasPermission("comisiones:gestionar"))) redirect("/inicio");
+  const isAdmin = await hasPermission("sistema:admin");
 
   const [honorarios, comitentes, clientes, lastTcMep] = await Promise.all([
     prisma.honorarioBYG.findMany({

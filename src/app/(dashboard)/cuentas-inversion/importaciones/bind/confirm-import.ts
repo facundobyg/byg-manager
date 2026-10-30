@@ -49,9 +49,20 @@ const EMPTY_RESULT: Omit<ConfirmBindFileResult, "ok" | "error"> = {
 
 // ── Main function ─────────────────────────────────────────────────────────────
 
+export interface ConfirmBindFileOptions {
+  /**
+   * Autoriza escribir SaldoComitenteInversion (efectivo ARS/MEP/Cable).
+   * holdings:editar NO implica saldos:editar: si el archivo trae filas de
+   * efectivo, esto se invoca antes de cualquier escritura y un rechazo aborta
+   * la confirmación COMPLETA (no hay confirmación parcial sin cash).
+   */
+  authorizeCashWrite: () => Promise<{ error: string } | null>;
+}
+
 export async function confirmBindFileImport(
   fileId: string,
   userId: string | null,
+  opts: ConfirmBindFileOptions,
 ): Promise<ConfirmBindFileResult> {
 
   // ── Pre-flight reads (outside transaction) ────────────────────────────────
@@ -94,6 +105,18 @@ export async function confirmBindFileImport(
   // Classify rows
   const cashRows   = file.Rows.filter((r) => CASH_SECTION_TYPES.has(r.sectionType));
   const holdingRows = file.Rows.filter((r) => !CASH_SECTION_TYPES.has(r.sectionType) && r.sectionType !== "CAUCION_ALERT");
+
+  // Autorización de efectivo sobre las MISMAS filas que se escriben abajo.
+  if (cashRows.length > 0) {
+    const cashDenied = await opts.authorizeCashWrite();
+    if (cashDenied) {
+      return {
+        ok: false,
+        error: `El archivo modifica saldos de efectivo (ARS/MEP/Cable) y no tenés permiso de saldos: ${cashDenied.error}`,
+        ...EMPTY_RESULT,
+      };
+    }
+  }
 
   // Non-cash rows without matchedActivoId are a data integrity issue
   const unmappedNonCash = holdingRows.filter((r) => !r.matchedActivoId);

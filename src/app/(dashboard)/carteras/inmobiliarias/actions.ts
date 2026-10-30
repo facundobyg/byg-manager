@@ -4,11 +4,15 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { TipoInversionInmobiliaria, Moneda } from "@prisma/client";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 export async function crearMovimientoInmobiliario(
   _prev: { error?: string; ok?: boolean },
   formData: FormData
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("inmobiliarias:editar");
+  if (denied) return denied;
+
   const propiedadId = formData.get("propiedadId")?.toString();
   const fechaStr = formData.get("fecha")?.toString();
   const tipo = formData.get("tipo")?.toString() as TipoInversionInmobiliaria;
@@ -56,6 +60,9 @@ export async function crearPropiedad(
   _prev: { error?: string; ok?: boolean },
   formData: FormData
 ): Promise<{ error?: string; ok?: boolean }> {
+  const denied = await requireActionPermission("inmobiliarias:editar");
+  if (denied) return denied;
+
   const nombre = formData.get("nombre")?.toString().trim();
 
   if (!nombre) {
@@ -78,6 +85,9 @@ export async function crearPropiedad(
 }
 
 export async function desactivarPropiedad(propiedadId: string) {
+  const denied = await requireActionPermission("inmobiliarias:editar");
+  if (denied) return denied;
+
   try {
     await prisma.propiedad.update({
       where: { id: propiedadId },

@@ -1,13 +1,14 @@
 "use server";
 import { cookies } from "next/headers";
 import { auth } from "@/auth";
+import { isCurrentAdmin } from "@/lib/auth/permissions";
 import { revalidatePath } from "next/cache";
 
 const COOKIE = "byg_preview_user";
 
+/** Fijar (o limpiar) "ver como": solo ADMIN vigente según DB (no el rol del JWT). */
 export async function setPreviewUser(userId: string) {
-  const session = await auth();
-  if (session?.user?.role !== "ADMIN") return;
+  if (!(await isCurrentAdmin())) return;
 
   const store = await cookies();
   if (!userId) {
@@ -21,5 +22,17 @@ export async function setPreviewUser(userId: string) {
     });
   }
 
+  revalidatePath("/", "layout");
+}
+
+/**
+ * Limpiar la cookie PROPIA de "ver como": cualquier sesión autenticada (p. ej.
+ * un ex-ADMIN degradado que quedó con la cookie). Solo borra; nunca fija.
+ */
+export async function clearPreviewUser() {
+  const session = await auth();
+  if (!session?.user?.id) return;
+  const store = await cookies();
+  store.delete(COOKIE);
   revalidatePath("/", "layout");
 }

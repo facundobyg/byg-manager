@@ -5,18 +5,14 @@ import { revalidatePath } from "next/cache";
 import { Decimal } from "@prisma/client/runtime/library";
 import { Moneda, TipoMovCaja, TipoOperacionCambio } from "@prisma/client";
 import { readOnlyPreview } from "@/lib/config";
-import { requireActionPermission } from "@/lib/auth/permissions";
+import { requireActionPermission, requireCajaPermission } from "@/lib/auth/permissions";
+import { leerLiquidacionesPorCaja, type LiquidacionPorCaja } from "@/lib/parse-monto";
 import { auth } from "@/auth";
-import { cookies } from "next/headers";
 import { writeAuditLog } from "@/lib/services/audit.service";
 
 async function getCajaSlug(cajaId: string): Promise<string | null> {
   const c = await prisma.caja.findUnique({ where: { id: cajaId }, select: { slug: true } });
   return c?.slug ?? null;
-}
-
-function isTrenqueCaja(slug: string | null): boolean {
-  return !!slug?.includes("trenque");
 }
 
 export async function crearMovimientoDiario(
@@ -67,11 +63,9 @@ export async function crearMovimientoDiario(
         prisma.caja.findUnique({ where: { id: cajaDestinoId }, select: { label: true, slug: true } }),
       ]);
 
-      // B3.3: if either caja is not Trenque, require oficina permission
-      if (!isTrenqueCaja(cajaOrigen?.slug ?? null) || !isTrenqueCaja(cajaDest?.slug ?? null)) {
-        const oficinaDenied = await requireActionPermission("caja:operar_oficina");
-        if (oficinaDenied) return oficinaDenied;
-      }
+      // Scope de caja: Trenque exige caja:operar_trenque; cualquier otra, caja:operar_oficina.
+      const scopeDenied = await requireCajaPermission([cajaId, cajaDestinoId]);
+      if (scopeDenied) return scopeDenied;
 
       await prisma.$transaction(async (tx) => {
         await tx.movimientoCaja.create({
@@ -107,12 +101,10 @@ export async function crearMovimientoDiario(
     } else {
       if (!cajaId || !tipo || !subtipoOperativo) return { error: "Faltan campos para registrar movimiento" };
 
-      // B3.3: if caja is not Trenque, require oficina permission
+      // Scope de caja: Trenque exige caja:operar_trenque; cualquier otra, caja:operar_oficina.
       const cajaSlug = await getCajaSlug(cajaId);
-      if (!isTrenqueCaja(cajaSlug)) {
-        const oficinaDenied = await requireActionPermission("caja:operar_oficina");
-        if (oficinaDenied) return oficinaDenied;
-      }
+      const scopeDenied = await requireCajaPermission([cajaId]);
+      if (scopeDenied) return scopeDenied;
 
       const prefix = `[${clasificacion}:${subtipoOperativo}]`;
       const finalDesc = `${prefix} ${descripcion?.trim() || "Movimiento operativo manual"} | usr:${userName}`;
@@ -160,21 +152,27 @@ export async function crearOperacionCambio(
   // Liquidación completa en una caja
   const cajaLiqId       = formData.get("cajaLiqId")?.toString() || null;
 
-  const opCambioDenied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  const opCambioDenied = await requireActionPermission("cambio:operar");
   if (opCambioDenied) return opCambioDenied;
 
-  const session = await auth();
-  const realUser = session?.user as { name?: string; role?: string };
-  let userName = realUser?.name ?? "Sistema";
-  // Use preview identity for operator recording (respects "Ver como" mode)
-  if (realUser?.role === "ADMIN") {
-    const cookieStore = await cookies();
-    const previewId = cookieStore.get("byg_preview_user")?.value;
-    if (previewId) {
-      const prevUser = await prisma.user.findUnique({ where: { id: previewId }, select: { name: true } });
-      if (prevUser?.name) userName = prevUser.name;
-    }
+  // Montos parciales por caja: parser estricto UNA vez; el scope y la escritura
+  // usan exactamente estos valores (H1: nada de parseFloat vs Decimal).
+  let parciales: LiquidacionPorCaja[] = [];
+  if (estadoOp === "PARCIAL") {
+    const leidos = leerLiquidacionesPorCaja(formData, "cajaLiq_");
+    if (!leidos.ok) return { error: leidos.error };
+    parciales = leidos.items;
   }
+
+  // Cajas donde se liquida: scope por tipo de caja (Oficina / Trenque).
+  const cajasLiquidacion: string[] = parciales.map((p) => p.cajaId);
+  if (estadoOp === "LIQUIDADA" && cajaLiqId) cajasLiquidacion.push(cajaLiqId);
+  const scopeDenied = await requireCajaPermission(cajasLiquidacion);
+  if (scopeDenied) return scopeDenied;
+
+  // El operador registrado es siempre el usuario autenticado real.
+  const session = await auth();
+  const userName = (session?.user as { name?: string })?.name ?? "Sistema";
 
   if (!fechaStr || !tipoOp || !moneda || !rawCantidad || !rawTipoCambio) {
     return { error: "Todos los campos obligatorios deben completarse" };
@@ -298,16 +296,13 @@ export async function crearOperacionCambio(
           await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cid, fecha, tipo: "ENTRADA", moneda: "ARS", monto: totalARS, descripcion: `[Cambio ${op.id}] Cobro ARS x Venta`, confirmado: true } });
         }
       } else if (esParcial) {
-        for (const caja of activeCajasForParcial) {
-          const rawDiv = formData.get(`cajaLiq_${caja.id}_div`)?.toString()?.replace(",", ".");
-          if (!rawDiv || isNaN(parseFloat(rawDiv))) continue;
-          const cantDiv = new Decimal(rawDiv);
-          if (cantDiv.lte(0)) continue;
-
-          const rawArs = formData.get(`cajaLiq_${caja.id}_ars`)?.toString()?.replace(",", ".");
-          const arsParc = rawArs && parseFloat(rawArs) > 0
-            ? new Decimal(rawArs)
-            : cantDiv.mul(new Decimal(tc));
+        const activas = new Set(activeCajasForParcial.map((c) => c.id));
+        for (const p of parciales) {
+          // Solo cajas activas operativas (mismo criterio que antes); el scope ya se exigió sobre todas.
+          if (!activas.has(p.cajaId)) continue;
+          const caja = { id: p.cajaId };
+          const cantDiv = p.div;
+          const arsParc = p.ars ?? cantDiv.mul(new Decimal(tc));
 
           if (esCompra) {
             await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "ENTRADA", moneda, monto: cantDiv, descripcion: `[Cambio ${op.id}] Compra divisa parcial | usr:${userName}`, confirmado: true } });
@@ -352,6 +347,9 @@ export async function eliminarMovimientoCaja(
 
   const mov = await prisma.movimientoCaja.findUnique({ where: { id } });
   if (!mov) return { error: "Movimiento no encontrado" };
+
+  const scopeDenied = await requireCajaPermission([mov.cajaId]);
+  if (scopeDenied) return scopeDenied;
 
   const desc = mov.descripcion || "";
   if (
@@ -398,13 +396,12 @@ export async function editarFechaMovimientoCaja(
 
   if (!id || !fechaStr) return { error: "ID y fecha requeridos" };
 
-  // B3.3: block EMPLEADO from editing non-Trenque caja movements
+  // Scope de caja del movimiento editado (Trenque vs Oficina).
   const movForCheck = await prisma.movimientoCaja.findUnique({ where: { id }, select: { cajaId: true } });
-  const cajaSlug = movForCheck ? await getCajaSlug(movForCheck.cajaId) : null;
-  if (!isTrenqueCaja(cajaSlug)) {
-    const oficinaDenied = await requireActionPermission("caja:operar_oficina");
-    if (oficinaDenied) return oficinaDenied;
-  }
+  if (!movForCheck) return { error: "Movimiento no encontrado" };
+  const scopeDenied = await requireCajaPermission([movForCheck.cajaId]);
+  if (scopeDenied) return scopeDenied;
+  const cajaSlug = await getCajaSlug(movForCheck.cajaId);
 
   const d = new Date(fechaStr);
   if (isNaN(d.getTime())) return { error: "Fecha inválida" };
@@ -454,13 +451,12 @@ export async function editarMovimientoCajaCompleto(
     return { error: "Faltan campos obligatorios" };
   }
 
-  // B3.3: block EMPLEADO from editing non-Trenque caja movements
+  // Scope de caja del movimiento editado (Trenque vs Oficina).
   const movToEdit = await prisma.movimientoCaja.findUnique({ where: { id }, select: { cajaId: true } });
-  const editCajaSlug = movToEdit ? await getCajaSlug(movToEdit.cajaId) : null;
-  if (!isTrenqueCaja(editCajaSlug)) {
-    const oficinaDenied = await requireActionPermission("caja:operar_oficina");
-    if (oficinaDenied) return oficinaDenied;
-  }
+  if (!movToEdit) return { error: "Movimiento no encontrado" };
+  const scopeDenied = await requireCajaPermission([movToEdit.cajaId]);
+  if (scopeDenied) return scopeDenied;
+  const editCajaSlug = await getCajaSlug(movToEdit.cajaId);
 
   const monto = parseFloat(rawMonto);
   if (isNaN(monto) || monto < 0) return { error: "Monto inválido" };
@@ -506,7 +502,7 @@ export async function editarOperacionCambio(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const denied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  const denied = await requireActionPermission("cambio:operar");
   if (denied) return denied;
 
   const id = formData.get("id")?.toString();
@@ -570,6 +566,8 @@ export async function editarOperacionCambio(
         where: { OR: [{ esPrincipal: true }, { slug: "oficina" }], activa: true },
       });
       if (!cajaOficina) return { error: "Caja Oficina no configurada" };
+      const cobroScopeDenied = await requireCajaPermission([cajaOficina.id]);
+      if (cobroScopeDenied) return cobroScopeDenied;
 
       const fechaFinal = (updateData.fecha as Date | undefined) ?? op.fecha;
       const finalTipoStr = (updateData.tipo as string | undefined) ?? op.tipo;
@@ -612,7 +610,7 @@ export async function editarOperacionCambio(
 export async function relocalizarMovimientosIniciales(): Promise<{ error?: string; ok?: boolean; count?: number }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const relocDenied = await requireActionPermission("configuracion:editar");
+  const relocDenied = await requireActionPermission("sistema:admin");
   if (relocDenied) return relocDenied;
 
   try {
@@ -643,8 +641,11 @@ export async function cancelarOperacionCambioPendiente(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const cancelOpDenied = await requireActionPermission("caja:eliminar_movimiento");
+  const cancelOpDenied = await requireActionPermission("cambio:operar");
   if (cancelOpDenied) return cancelOpDenied;
+  // El código anterior exigía caja:eliminar_movimiento: se conserva (B ⊆ A).
+  const cancelElimDenied = await requireActionPermission("caja:eliminar_movimiento");
+  if (cancelElimDenied) return cancelElimDenied;
 
   const id = formData.get("id")?.toString();
   if (!id) return { error: "ID requerido" };
@@ -678,7 +679,7 @@ export async function cobrarOperacionCambio(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const cobrarDenied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  const cobrarDenied = await requireActionPermission("cambio:operar");
   if (cobrarDenied) return cobrarDenied;
 
   const ids = formData.getAll("operacionId").map((v) => v.toString().trim()).filter(Boolean);
@@ -693,6 +694,8 @@ export async function cobrarOperacionCambio(
     where: { OR: [{ esPrincipal: true }, { slug: "oficina" }], activa: true },
   });
   if (!cajaOficina) return { error: "Caja Oficina no configurada" };
+  const scopeDenied = await requireCajaPermission([cajaOficina.id]);
+  if (scopeDenied) return scopeDenied;
 
   const fecha = new Date();
 
@@ -755,7 +758,7 @@ export async function liquidarPagoPendiente(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const denied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  const denied = await requireActionPermission("cambio:operar");
   if (denied) return denied;
 
   const ids = formData.getAll("operacionId").map(v => v.toString().trim()).filter(Boolean);
@@ -763,6 +766,22 @@ export async function liquidarPagoPendiente(
 
   const modo = formData.get("modo")?.toString() ?? "total";
   if (modo !== "total" && modo !== "parcial") return { error: "Modo inválido" };
+
+  // Parser estricto UNA vez: scope y escritura usan los mismos valores (H1).
+  let parciales: LiquidacionPorCaja[] = [];
+  if (modo === "parcial") {
+    const leidos = leerLiquidacionesPorCaja(formData, "caja_");
+    if (!leidos.ok) return { error: leidos.error };
+    parciales = leidos.items;
+  }
+
+  const cajasLiquidacion: string[] = parciales.map((p) => p.cajaId);
+  if (modo === "total") {
+    const cajaTotal = formData.get("cajaId")?.toString();
+    if (cajaTotal) cajasLiquidacion.push(cajaTotal);
+  }
+  const scopeDenied = await requireCajaPermission(cajasLiquidacion);
+  if (scopeDenied) return scopeDenied;
 
   const ops = await prisma.operacionCambio.findMany({ where: { id: { in: ids } } });
   const eligibleOps = ops.filter(op => op.pendiente || (op.descripcion ?? "").includes("[PARCIAL]"));
@@ -823,15 +842,10 @@ export async function liquidarPagoPendiente(
           let hasAnyInput = false;
 
           for (const caja of cajasActivas) {
-            const rawDiv = formData.get(`caja_${caja.id}_div`)?.toString()?.replace(",", ".");
-            if (!rawDiv || isNaN(parseFloat(rawDiv)) || parseFloat(rawDiv) <= 0) continue;
-            const cantDiv = new Decimal(parseFloat(rawDiv).toString());
-            if (cantDiv.lte(0)) continue;
-
-            const rawArs = formData.get(`caja_${caja.id}_ars`)?.toString()?.replace(",", ".");
-            const cantArs = rawArs && parseFloat(rawArs) > 0
-              ? new Decimal(parseFloat(rawArs).toString())
-              : cantDiv.mul(new Decimal(op.tipoCambio.toString()));
+            const p = parciales.find((x) => x.cajaId === caja.id);
+            if (!p) continue;
+            const cantDiv = p.div;
+            const cantArs = p.ars ?? cantDiv.mul(new Decimal(op.tipoCambio.toString()));
 
             hasAnyInput = true;
             if (caja.slug) slugsToRevalidate.add(caja.slug);
@@ -898,7 +912,7 @@ export async function revertirOperacionCambio(
 ): Promise<{ error?: string; ok?: boolean }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
-  const denied = await requireActionPermission("caja:operar_oficina", { allowTemporary: true });
+  const denied = await requireActionPermission("cambio:operar");
   if (denied) return denied;
 
   const id = formData.get("id")?.toString();
@@ -909,17 +923,9 @@ export async function revertirOperacionCambio(
   if (op.pendiente) return { error: "La operación ya es NO_LIQUIDADA, no necesita reversión" };
   if ((op.descripcion ?? "").includes("[REVERTIDA POR:")) return { error: "Esta operación ya fue revertida" };
 
+  // El operador registrado es siempre el usuario autenticado real.
   const sessionRev = await auth();
-  const realUserRev = sessionRev?.user as { name?: string; role?: string };
-  let revertidoPor = realUserRev?.name ?? "Sistema";
-  if (realUserRev?.role === "ADMIN") {
-    const cookieStoreRev = await cookies();
-    const previewIdRev = cookieStoreRev.get("byg_preview_user")?.value;
-    if (previewIdRev) {
-      const prevUserRev = await prisma.user.findUnique({ where: { id: previewIdRev }, select: { name: true } });
-      if (prevUserRev?.name) revertidoPor = prevUserRev.name;
-    }
-  }
+  const revertidoPor = (sessionRev?.user as { name?: string })?.name ?? "Sistema";
 
   const [cajaMov, ccMov] = await Promise.all([
     prisma.movimientoCaja.findMany({ where: { descripcion: { contains: id } } }),
@@ -928,6 +934,10 @@ export async function revertirOperacionCambio(
       include: { CuentaCorriente: { select: { id: true, saldo: true } } },
     }),
   ]);
+
+  // Revertir toca las cajas donde se liquidó: mismo scope Trenque/Oficina.
+  const scopeDenied = await requireCajaPermission(cajaMov.map((m) => m.cajaId));
+  if (scopeDenied) return scopeDenied;
 
   const hoy = new Date();
   const fechaRev = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));

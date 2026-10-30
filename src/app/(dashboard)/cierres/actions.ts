@@ -8,14 +8,16 @@ import { revalidatePath } from "next/cache";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { buildSnapshotData } from "@/lib/data/cierres";
 import { getLastTcMep } from "@/lib/services/config.service";
+import { requireActionPermission } from "@/lib/auth/permissions";
 
 type ActionResult = { success: true } | { error: string };
 
-async function getAdminUser() {
-  const session = await auth() as { user?: { id?: string; role?: string } } | null;
-  if (session?.user?.role !== "ADMIN") redirect("/");
-  if (!session.user?.id) redirect("/login");
-  return session.user as { id: string; role: string };
+async function getAdminUser(): Promise<{ id: string } | { error: string }> {
+  const denied = await requireActionPermission("sistema:admin");
+  if (denied) return denied;
+  const session = await auth();
+  if (!session?.user?.id) redirect("/login");
+  return { id: session.user.id };
 }
 
 export async function cerrarMes(
@@ -23,6 +25,7 @@ export async function cerrarMes(
   formData: FormData,
 ): Promise<ActionResult> {
   const user  = await getAdminUser();
+  if ("error" in user) return user;
   const mes   = ((formData.get("mes") as string) ?? "").trim();
   const notas = ((formData.get("notas") as string) ?? "").trim() || null;
 
@@ -142,6 +145,7 @@ export async function reabrirMes(
   formData: FormData,
 ): Promise<ActionResult> {
   const user = await getAdminUser();
+  if ("error" in user) return user;
   const mes  = ((formData.get("mes") as string) ?? "").trim();
   if (!mes) return { error: "Mes inválido." };
 

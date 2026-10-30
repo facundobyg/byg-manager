@@ -1,5 +1,5 @@
 import { auth } from "@/auth";
-import { requirePermission } from "@/lib/auth/permissions";
+import { hasPermission, requirePermission } from "@/lib/auth/permissions";
 import { prisma } from "@/lib/prisma";
 import { CategoriaActivo, PriceSource, PriceStatus } from "@prisma/client";
 import { UpdatePrecioActivoForm } from "@/components/modules/configuracion/UpdatePrecioActivoForm";
@@ -261,7 +261,7 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
     }),
     historialActivoId ? buildHistorial(historialActivoId) : Promise.resolve(null),
   ]);
-  const isAdmin = (session?.user as { role?: string } | undefined)?.role === "ADMIN";
+  const isAdmin = await hasPermission("sistema:admin");
 
   // Build plain rows — no Decimal
   const rows: Row[] = activosRaw.map((a) => {

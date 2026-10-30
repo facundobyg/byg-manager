@@ -8,6 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { authConfig } from "@/auth.config";
 import { verifyTOTP } from "@/lib/auth/totp";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import { refreshTokenOnUpdate } from "@/lib/auth/jwt-refresh";
 
 export const { handlers, signIn, signOut, auth, unstable_update } = NextAuth({
   ...authConfig,
@@ -52,7 +53,19 @@ export const { handlers, signIn, signOut, auth, unstable_update } = NextAuth({
       },
     }),
   ],
-  // jwt/session/authorized callbacks heredados de authConfig (ver auth.config.ts)
+  // session/authorized heredados de authConfig. jwt se extiende: en un update
+  // (que el cliente puede disparar con payload arbitrario) 2FA/rol/activo se
+  // releen desde DB; nunca del payload (MACRO 1, R2-02).
+  callbacks: {
+    ...authConfig.callbacks,
+    async jwt(params) {
+      const token = await authConfig.callbacks.jwt(params);
+      if (params.trigger !== "update") return token;
+      return refreshTokenOnUpdate(token, (id) =>
+        prisma.user.findUnique({ where: { id }, select: { role: true, activo: true, twoFactorEnabled: true } }),
+      );
+    },
+  },
   session: {
     strategy:   "jwt",
     maxAge:     8 * 60 * 60,  // 8 hours

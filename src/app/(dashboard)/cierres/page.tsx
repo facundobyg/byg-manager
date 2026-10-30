@@ -1,4 +1,4 @@
-import { auth } from "@/auth";
+import { hasPermission } from "@/lib/auth/permissions";
 import { redirect } from "next/navigation";
 import { getCierres } from "@/lib/data/cierres";
 import { getMesOperativo } from "@/lib/services/config.service";
@@ -22,8 +22,8 @@ function fmtDate(d: Date | null | undefined) {
 }
 
 export default async function CierresPage() {
-  const session = await auth() as { user?: { id?: string; role?: string } } | null;
-  if (session?.user?.role !== "ADMIN") redirect("/inicio");
+  // Rol vigente desde DB (registro canónico), no el rol del JWT.
+  if (!(await hasPermission("sistema:admin"))) redirect("/inicio");
 
   const [cierres, mesActual] = await Promise.all([getCierres(), getMesOperativo()]);
 

@@ -54,7 +54,7 @@ export async function uploadBindPdfsAction(
 // ─── Lectura para preview (solo lectura, no escribe nada) ──────────────────────
 
 export async function getBindImportBatch(batchId: string) {
-  const denied = await requireActionPermission("holdings:editar");
+  const denied = await requireActionPermission("holdings:editar", { mode: "read" });
   if (denied) return null;
 
   return prisma.bindTenenciasImportBatch.findUnique({
@@ -69,7 +69,7 @@ export async function getBindImportBatch(batchId: string) {
 }
 
 export async function getBindImportFileDetail(fileId: string) {
-  const denied = await requireActionPermission("holdings:editar");
+  const denied = await requireActionPermission("holdings:editar", { mode: "read" });
   if (denied) return null;
 
   const file = await prisma.bindTenenciasImportFile.findUnique({
@@ -99,14 +99,14 @@ export async function getBindImportFileDetail(fileId: string) {
 
 /** Cuentas/tickers pendientes de un lote, agrupados para la UI de resolución. Solo lectura. */
 export async function getPendingBindMappings(batchId: string) {
-  const denied = await requireActionPermission("holdings:editar");
+  const denied = await requireActionPermission("holdings:editar", { mode: "read" });
   if (denied) return null;
   return getPendingBindMappingsImpl(batchId);
 }
 
 /** Selector de comitentes existentes — nunca crea uno nuevo. */
 export async function getComitentesForSelect() {
-  const denied = await requireActionPermission("holdings:editar");
+  const denied = await requireActionPermission("holdings:editar", { mode: "read" });
   if (denied) return [];
   return prisma.comitenteInversion.findMany({
     where: { activo: true },
@@ -117,7 +117,7 @@ export async function getComitentesForSelect() {
 
 /** Selector de activos existentes — nunca crea uno nuevo. */
 export async function getActivosForSelect() {
-  const denied = await requireActionPermission("holdings:editar");
+  const denied = await requireActionPermission("holdings:editar", { mode: "read" });
   if (denied) return [];
   return prisma.activo.findMany({
     select: { id: true, ticker: true, descripcion: true, categoria: true, monedaPrecio: true },
@@ -344,7 +344,9 @@ export async function confirmBindFileImportAction(
   const session  = await auth();
   const userId   = (session?.user?.id as string | undefined) ?? null;
 
-  const result = await confirmBindFileImport(fileId, userId);
+  const result = await confirmBindFileImport(fileId, userId, {
+    authorizeCashWrite: () => requireActionPermission("saldos:editar"),
+  });
 
   if (result.ok) {
     try { revalidatePath("/cuentas-inversion/importaciones/bind"); } catch { /* no bloquear */ }
@@ -372,7 +374,7 @@ export type BindFileConfirmPreview = {
 };
 
 export async function getBindFileConfirmPreview(fileId: string): Promise<BindFileConfirmPreview | null> {
-  const denied = await requireActionPermission("holdings:editar");
+  const denied = await requireActionPermission("holdings:editar", { mode: "read" });
   if (denied) return null;
 
   const file = await prisma.bindTenenciasImportFile.findUnique({
