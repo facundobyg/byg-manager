@@ -397,6 +397,19 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
                 `Stock insuficiente para ${op.ticker}. Disponible: ${existQty.toLocaleString("es-AR", { maximumFractionDigits: 6 })}, solicitado: ${cantidad.toLocaleString("es-AR", { maximumFractionDigits: 6 })}.`,
               );
             }
+            // Costo promedio de las unidades vendidas, para el resultado realizado
+            // de cartera propia (motor financiero, MACRO 2). No se persiste en otro lado.
+            await tx.operacionBolsaLog.create({
+              data: {
+                id:             crypto.randomUUID(),
+                operacionId,
+                userId,
+                accion:         "COSTO_CARTERA",
+                estadoAnterior: op.estado,
+                estadoNuevo:    "CONCERTADA",
+                snapshot:       { costoUnitario: Number(posExisting.precioCompra), cantidad },
+              },
+            });
             const newQty   = Math.max(0, existQty - cantidad);
             if (newQty === 0) {
               await tx.posicionCartera.delete({ where: { id: posExisting.id } });

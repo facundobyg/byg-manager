@@ -47,25 +47,8 @@ export default async function OperativaCajaPage({ params }: PageProps) {
     totalARS: r.totalARS ? Number(r.totalARS) : undefined,
   }));
 
-  const resultadoCambioPlain = {
-    USD: {
-      netoDivisa: Number(resultadoCambio.USD.netoDivisa),
-      netoARS: Number(resultadoCambio.USD.netoARS),
-      resultado: Number(resultadoCambio.USD.resultado),
-    },
-    EUR: {
-      netoDivisa: Number(resultadoCambio.EUR.netoDivisa),
-      netoARS: Number(resultadoCambio.EUR.netoARS),
-      resultado: Number(resultadoCambio.EUR.resultado),
-    },
-    BRL: {
-      netoDivisa: Number(resultadoCambio.BRL.netoDivisa),
-      netoARS: Number(resultadoCambio.BRL.netoARS),
-      resultado: Number(resultadoCambio.BRL.resultado),
-    },
-    totalUSD: Number(resultadoCambio.totalUSD),
-    tcBlue: Number(resultadoCambio.tcBlue),
-  };
+  // MACRO 2: el wrapper ya devuelve números planos (o null = incompleto); no convertir null a 0.
+  const resultadoCambioPlain = resultadoCambio;
 
   const canWrite = (await canDoAction("operativa:crear")) || (await canDoAction("cambio:operar"));
 

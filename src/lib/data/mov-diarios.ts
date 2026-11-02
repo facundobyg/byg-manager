@@ -2,6 +2,8 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
+import { getFinanceDataset, getLedger, getResultadoRealizadoMes } from "@/lib/finance";
+import { mapResultadoCambio } from "@/lib/finance/compat";
 import type { MovDiarioRow, TipoMovDiario, EstadoMovDiario, OrigenMovDiario } from "@/lib/data/mov-diarios-utils";
 
 export type { MovDiarioRow, TipoMovDiario, EstadoMovDiario, OrigenMovDiario };
@@ -287,71 +289,12 @@ export async function getMovimientosDiarios(slug?: string): Promise<MovDiarioRow
   });
 }
 
+/**
+ * MACRO 2 — Delegado al motor canónico (src/lib/finance). totalUSD es el
+ * resultado realizado canónico del mes; el desglose por moneda es el FX
+ * realizado por costo promedio. Ya no calcula una fórmula propia.
+ */
 export async function getResultadoCambioMensual(mes: string) {
-  const [ops, movs] = await Promise.all([
-    prisma.operacionCambio.findMany({ where: { mesContable: mes } }),
-    prisma.movimientoCaja.findMany({ 
-      where: { 
-        confirmado: true,
-        descripcion: { startsWith: "[RESULTADO_OPERATIVO:" },
-        Caja: { esPrincipal: true } // Enforce central accounting logic
-      } 
-    })
-  ]);
-
-  const config = await prisma.config.findUnique({ where: { clave: "tc_blue" } });
-  const tcBlue = new Decimal(config?.valor || "1000");
-
-  const results = {
-    USD: { netoDivisa: new Decimal(0), netoARS: new Decimal(0) },
-    EUR: { netoDivisa: new Decimal(0), netoARS: new Decimal(0) },
-    BRL: { netoDivisa: new Decimal(0), netoARS: new Decimal(0) },
-  };
-
-  // 1. Impacto de Operaciones de Cambio
-  for (const op of ops) {
-    const m = op.moneda as keyof typeof results;
-    if (!results[m]) continue;
-
-    const cant = op.cantidad;
-    const totARS = op.totalARS;
-    const esCompra = op.tipo.startsWith("COMPRA");
-
-    if (esCompra) {
-      results[m].netoDivisa = results[m].netoDivisa.plus(cant);
-      results[m].netoARS = results[m].netoARS.minus(totARS);
-    } else if (op.tipo.startsWith("VENTA")) {
-      results[m].netoDivisa = results[m].netoDivisa.minus(cant);
-      results[m].netoARS = results[m].netoARS.plus(totARS);
-    }
-  }
-
-  // 2. Impacto de Resultados Operativos (Alquileres, Honorarios, etc.)
-  let extraUSD = new Decimal(0);
-  for (const m of movs) {
-    const monto = new Decimal(m.monto.toString());
-    const isIngreso = m.tipo === "ENTRADA";
-    
-    // Convertir a USD para consolidar
-    let montoUSD = monto;
-    if (m.moneda === "ARS") montoUSD = monto.div(tcBlue);
-    else if (m.moneda === "EUR" || m.moneda === "BRL") montoUSD = monto; // Simplificación
-
-    if (isIngreso) extraUSD = extraUSD.plus(montoUSD);
-    else extraUSD = extraUSD.minus(montoUSD);
-  }
-
-  const resUSD = results.USD.netoDivisa.plus(results.USD.netoARS.div(tcBlue));
-  const resEUR = results.EUR.netoDivisa.plus(results.EUR.netoARS.div(tcBlue));
-  const resBRL = results.BRL.netoDivisa.plus(results.BRL.netoARS.div(tcBlue));
-
-
-  return {
-    USD: { ...results.USD, resultado: resUSD.toNumber() },
-    EUR: { ...results.EUR, resultado: resEUR.toNumber() },
-    BRL: { ...results.BRL, resultado: resBRL.toNumber() },
-    totalUSD: resUSD.plus(resEUR).plus(resBRL).plus(extraUSD).toNumber(),
-    tcBlue: tcBlue.toNumber(),
-  };
+  const [r, ledger, ds] = await Promise.all([getResultadoRealizadoMes(mes), getLedger(), getFinanceDataset()]);
+  return mapResultadoCambio(r, ledger, ds);
 }
-

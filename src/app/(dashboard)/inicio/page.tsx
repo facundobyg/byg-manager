@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { getResumenConsolidado, getExposicionPorCliente, getPosicionPN } from "@/lib/data/reportes";
 import { getPlazosFijosVencimientos } from "@/lib/data/plazos-fijos";
+import { presentarTotal } from "@/lib/finance/quality";
+import { CalidadBadge } from "@/components/ui/CalidadFinanciera";
 
 const ACCESOS = [
   { href: "/pendientes",  title: "Pendientes",  desc: "CC negativas, PF vencidos y próximos a vencer."  },
@@ -76,9 +78,20 @@ export default async function InicioDashboardPage() {
         <div className="bg-byg-surface rounded-xl border border-byg-border p-5 grid grid-cols-1 sm:grid-cols-2 gap-6">
           <div className="flex flex-col gap-1">
             <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Patrimonio neto</p>
-            <p className={`text-xl font-black tabular-nums ${pn !== null ? (pn >= 0 ? "text-emerald-400" : "text-red-400") : "text-byg-text"}`}>
-              {pn !== null ? fmtUSD(pn) : "—"}
-            </p>
+            {pn ? (() => {
+              // MACRO 2: el PN se muestra según su calidad (INCOMPLETE nunca como total).
+              const vista = presentarTotal({ quality: pn.quality, totalUSD: pn.pnUSD, knownSubtotalUSD: pn.knownSubtotalUSD }, fmtUSD);
+              return (
+                <>
+                  <p className={`text-xl font-black tabular-nums ${!vista.esTotal ? "text-amber-400" : (pn.pnUSD ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                    {vista.principal} <CalidadBadge quality={pn.quality} reasons={pn.qualityReasons} />
+                  </p>
+                  {vista.nota && <p className="text-[10px] font-medium text-byg-muted">{vista.nota}</p>}
+                </>
+              );
+            })() : (
+              <p className="text-xl font-black tabular-nums text-byg-text">—</p>
+            )}
           </div>
           <div className="flex flex-col gap-1">
             <p className="text-[10px] font-black uppercase tracking-widest text-byg-muted">Mayor exposición</p>

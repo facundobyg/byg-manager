@@ -2,14 +2,8 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
 import { getReportesBaseData } from "@/lib/data/reportes-base";
-
-const VENTA_TIPOS_ARB = new Set([
-  "VENTA_BONO", "VENTA_ACCION", "VENTA_CEDEAR", "CAUCION_COLOCADORA",
-]);
-const INGRESO_CAMBIO = new Set([
-  "HONORARIO_CLIENTE", "HONORARIO_EXTERNO", "COMISION", "AJUSTE", "OTRO",
-]);
-const EGRESO_CAMBIO = new Set(["GASTO_OPERATIVO", "DISTRIBUCION_UTILIDADES"]);
+import { getFinanceDataset, getResultadoRealizadoMes } from "@/lib/finance";
+import { arsPorUsd, mapUtilidadMes } from "@/lib/finance/compat";
 
 function mesRango(mes: string): { desde: Date; hasta: Date } {
   const [y, m] = mes.split("-").map(Number);
@@ -20,154 +14,13 @@ function mesRango(mes: string): { desde: Date; hasta: Date } {
 }
 
 // ── Bloque 1: Utilidad Real del Mes ─────────────────────────────────────────
+// MACRO 2 — Delegado al motor canónico (src/lib/finance): resultado REALIZADO
+// del mes (sin pendientes/revertidos/valuaciones; TC de la fecha de cada hecho).
+// La forma de retorno se mantiene para las pantallas y el cierre.
 
 export async function getUtilidadMes(mes: string) {
-  const { desde, hasta } = mesRango(mes);
-
-  const [opsCambio, opsBolsaArb, movsCajaOp, tcConfig] = await Promise.all([
-    prisma.operacionCambio.findMany({ where: { mesContable: mes } }),
-    prisma.operacionBolsa.findMany({
-      where: {
-        grupoArbitrajeId: { not: null },
-        anulada: false,
-        fechaOperativa: { gte: desde, lt: hasta },
-      },
-      select: { tipoOperacion: true, cantidad: true, precio: true, moneda: true, grupoArbitrajeId: true, estado: true },
-    }),
-    prisma.movimientoCaja.findMany({
-      where: {
-        confirmado: true,
-        fecha: { gte: desde, lt: hasta },
-        descripcion: { startsWith: "[RESULTADO_OPERATIVO:" },
-      },
-      select: { tipo: true, monto: true, moneda: true, descripcion: true },
-    }),
-    prisma.config.findUnique({ where: { clave: "tc_blue" } }),
-  ]);
-
-  const tc = new Decimal(tcConfig?.valor ?? "1000");
-
-  // ── INVARIANTE ANTI-DOBLE CONTEO ────────────────────────────────────────────
-  // Source 1 — OperacionCambio (tipos INGRESO/EGRESO_CAMBIO): honorarios, comisiones,
-  //   ajustes y distribuciones registrados en el módulo de cambio (mesContable).
-  //   Estos son la fuente de verdad para honorarios FX.
-  // Source 2 — OperacionBolsa (grupoArbitrajeId, allClosed): resultado de arbitrajes
-  //   cerrados en el día. No se superpone con Source 1 ni Source 3.
-  // Source 3 — MovimientoCaja [RESULTADO_OPERATIVO:]: ingresos/egresos operativos
-  //   cargados manualmente para conceptos que NO están en OperacionCambio ni OperacionBolsa.
-  //   REGLA OPERATIVA: nunca cargar un honorario/comisión en Source 3 si ya fue cargado
-  //   en OperacionCambio. El sistema no puede detectar esto automáticamente.
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  // 1. Cambio FX
-  type DivisaRec = { divisa: Decimal; ars: Decimal };
-  const cambioMap: Record<string, DivisaRec> = {
-    USD: { divisa: new Decimal(0), ars: new Decimal(0) },
-    EUR: { divisa: new Decimal(0), ars: new Decimal(0) },
-    BRL: { divisa: new Decimal(0), ars: new Decimal(0) },
-  };
-  let ingresosDirectosARS = new Decimal(0);
-  let egresosDirectosARS  = new Decimal(0);
-  const ingresosItems: { categoria: string; montoARS: number }[] = [];
-  const egresosItems:  { categoria: string; montoARS: number }[] = [];
-
-  for (const op of opsCambio) {
-    const m  = op.moneda as string;
-    const cant   = new Decimal(op.cantidad.toString());
-    const totARS = new Decimal(op.totalARS.toString());
-
-    if (op.tipo.startsWith("COMPRA_")) {
-      if (cambioMap[m]) {
-        cambioMap[m].divisa = cambioMap[m].divisa.plus(cant);
-        cambioMap[m].ars    = cambioMap[m].ars.minus(totARS);
-      }
-    } else if (op.tipo.startsWith("VENTA_")) {
-      if (cambioMap[m]) {
-        cambioMap[m].divisa = cambioMap[m].divisa.minus(cant);
-        cambioMap[m].ars    = cambioMap[m].ars.plus(totARS);
-      }
-    } else if (INGRESO_CAMBIO.has(op.tipo)) {
-      const cobUSD = op.cobroUSD != null ? new Decimal(op.cobroUSD.toString()).mul(tc) : new Decimal(0);
-      const monto  = totARS.plus(cobUSD);
-      ingresosDirectosARS = ingresosDirectosARS.plus(monto);
-      ingresosItems.push({ categoria: op.tipo, montoARS: Number(monto) });
-    } else if (EGRESO_CAMBIO.has(op.tipo)) {
-      egresosDirectosARS = egresosDirectosARS.plus(totARS);
-      egresosItems.push({ categoria: op.tipo, montoARS: Number(totARS) });
-    }
-  }
-
-  let cambioUSD = new Decimal(0);
-  Object.values(cambioMap).forEach((v: DivisaRec) => {
-    cambioUSD = cambioUSD.plus(v.divisa).plus(v.ars.div(tc));
-  });
-
-  // 2. Arbitrajes
-  const arbGrupos = new Map<string, typeof opsBolsaArb>();
-  for (const op of opsBolsaArb) {
-    const gid = op.grupoArbitrajeId!;
-    if (!arbGrupos.has(gid)) arbGrupos.set(gid, []);
-    arbGrupos.get(gid)!.push(op);
-  }
-  let arbARS = new Decimal(0);
-  let arbUSD = new Decimal(0);
-  Array.from(arbGrupos.values()).forEach((gops) => {
-    const allClosed = gops.every((op) => op.estado !== "PENDIENTE_CONCERTACION");
-    if (!allClosed) return;
-    for (const op of gops) {
-      const valor = new Decimal(op.cantidad.toString()).mul(new Decimal(op.precio.toString()));
-      const sign  = VENTA_TIPOS_ARB.has(op.tipoOperacion) ? 1 : -1;
-      if (op.moneda === "ARS") arbARS = arbARS.plus(valor.mul(sign));
-      else if (op.moneda === "USD") arbUSD = arbUSD.plus(valor.mul(sign));
-    }
-  });
-
-  // 3. Ingresos/egresos operativos caja
-  let ingCajaARS = new Decimal(0);
-  let egrCajaARS = new Decimal(0);
-  const ingCajaItems: { desc: string; montoARS: number }[] = [];
-  const egrCajaItems: { desc: string; montoARS: number }[] = [];
-  for (const mov of movsCajaOp) {
-    const monto    = new Decimal(mov.monto.toString());
-    const montoARS = mov.moneda === "USD" ? monto.mul(tc) : monto;
-    const tagMatch = mov.descripcion?.match(/^\[RESULTADO_OPERATIVO:([^\]]+)\]/);
-    const subTipo  = tagMatch?.[1] ?? "MOV";
-    const descCln  = (mov.descripcion ?? "").replace(/^\[[^\]]+\]\s*/, "").split("|")[0].trim() || subTipo;
-    if (mov.tipo === "ENTRADA") {
-      ingCajaARS = ingCajaARS.plus(montoARS);
-      ingCajaItems.push({ desc: descCln, montoARS: Number(montoARS) });
-    } else {
-      egrCajaARS = egrCajaARS.plus(montoARS);
-      egrCajaItems.push({ desc: descCln, montoARS: Number(montoARS) });
-    }
-  }
-
-  const utilidadTotalUSD = cambioUSD
-    .plus(arbUSD)
-    .plus(arbARS.div(tc))
-    .plus(ingresosDirectosARS.div(tc))
-    .minus(egresosDirectosARS.div(tc))
-    .plus(ingCajaARS.div(tc))
-    .minus(egrCajaARS.div(tc));
-
-  return {
-    mes,
-    cambioUSD:        Number(cambioUSD),
-    arbitrajesARS:    Number(arbARS),
-    arbitrajesUSD:    Number(arbUSD),
-    ingresosARS:      Number(ingresosDirectosARS.plus(ingCajaARS)),
-    egresosARS:       Number(egresosDirectosARS.plus(egrCajaARS)),
-    ingresosItems:    [
-      ...ingresosItems.map((it) => ({ label: it.categoria, montoARS: it.montoARS })),
-      ...ingCajaItems.map((it) => ({ label: it.desc,       montoARS: it.montoARS })),
-    ] as { label: string; montoARS: number }[],
-    egresosItems:     [
-      ...egresosItems.map((it) => ({ label: it.categoria, montoARS: it.montoARS })),
-      ...egrCajaItems.map((it) => ({ label: it.desc,      montoARS: it.montoARS })),
-    ] as { label: string; montoARS: number }[],
-    utilidadTotalUSD: Number(utilidadTotalUSD),
-    tcBlue:           Number(tc),
-  };
+  const [r, ds] = await Promise.all([getResultadoRealizadoMes(mes), getFinanceDataset()]);
+  return mapUtilidadMes(r, ds);
 }
 
 // ── Bloque 2: Apertura Moneda ────────────────────────────────────────────────
@@ -325,14 +178,11 @@ export async function getKPIsEjecutivos(mes: string) {
         ],
       },
     }),
-    prisma.operacionCambio.aggregate({
-      where: {
-        mesContable: mes,
-        tipo: { in: ["COMISION", "HONORARIO_CLIENTE", "HONORARIO_EXTERNO"] },
-      },
-      _sum: { totalARS: true },
-    }),
+    // MACRO 2: comisiones/honorarios del resultado canónico (ambas fuentes, sin duplicados).
+    getResultadoRealizadoMes(mes),
   ]);
+  const SUB_COMISION = new Set(["COMISION", "HONORARIO_CLIENTE", "HONORARIO_EXTERNO", "HONORARIO_BANCO"]);
+  const ds = await getFinanceDataset();
 
   const rawTasaCC = ccTasaAvg._avg?.tasaCC;
   const tasaCC = rawTasaCC != null ? Number(rawTasaCC) : null;
@@ -352,7 +202,15 @@ export async function getKPIsEjecutivos(mes: string) {
     arbsMes,
     opsByIndustrial,
     opsPropias,
-    comisionesMes:   Number(comisionesMes._sum.totalARS ?? 0),
+    // Equivalente ARS al TC de la fecha de cada partida; null si alguna no es convertible (nunca 0).
+    comisionesMes:   comisionesMes.partidas
+      .filter((p) => (p.categoria === "HONORARIO_CAMBIO" || p.categoria === "RESULTADO_OPERATIVO") && SUB_COMISION.has(p.subtipo ?? ""))
+      .reduce<number | null>((s, p) => {
+        if (s === null) return null;
+        if (p.moneda === "ARS") return s + p.monto;
+        const tc = arsPorUsd(ds, p.fecha);
+        return p.usd === null || tc === null ? null : s + p.usd * tc;
+      }, 0),
   };
 }
 

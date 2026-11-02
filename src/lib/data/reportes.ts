@@ -1,8 +1,7 @@
 import { prisma } from "@/lib/prisma";
-import { Decimal } from "@prisma/client/runtime/library";
 import { Moneda } from "@prisma/client";
-import { getCajasWithBalances } from "@/lib/data/caja";
-import { getReportesBaseData } from "@/lib/data/reportes-base";
+import { getPatrimonioNeto, type PatrimonioNeto } from "@/lib/finance";
+import { mapBalanceGeneral } from "@/lib/finance/compat";
 
 export async function getExposicionPorCliente() {
   const [clientes, tcConfig] = await Promise.all([
@@ -65,313 +64,50 @@ export async function getExposicionPorCliente() {
   return rows;
 }
 
+/**
+ * Conteos del Home. MACRO 2: ya no calcula un "patrimonio total" propio (sumaba
+ * ARS y USD sin convertir e incluía custodia de clientes). El PN canónico es
+ * getPatrimonioNeto (src/lib/finance).
+ */
 export async function getResumenConsolidado() {
-  const [
-    totalClientes,
-    totalCuentasCorrientes,
-    totalPlazosFijos,
-    totalPosicionesCartera,
-    totalPosicionesCustodia,
-    saldoCCAgg,
-    capitalPFAgg,
-    posicionesCartera,
-    posicionesCustodia,
-    tcConfig,
-  ] = await Promise.all([
-    prisma.cliente.count({ where: { activo: true } }),
-    prisma.cuentaCorriente.count(),
-    prisma.plazoFijo.count({ where: { estado: "ACTIVO" } }),
-    prisma.posicionCartera.count(),
-    prisma.custodiaCliente.count(),
-    prisma.cuentaCorriente.aggregate({ _sum: { saldo: true } }),
-    prisma.plazoFijo.aggregate({ _sum: { capital: true }, where: { estado: "ACTIVO" } }),
-    prisma.posicionCartera.findMany({
-      select: {
-        cantidad: true,
-        precioCompra: true,
-        Activo: { select: { precioActual: true } },
-      },
-    }),
-    prisma.custodiaCliente.findMany({
-      select: {
-        cantidadTotal: true,
-        precioPromedio: true,
-        Activo: { select: { precioActual: true } },
-      },
-    }),
-    prisma.config.findUnique({ where: { clave: "tc_blue" } }),
-  ]);
-
-  const totalSaldoCC = new Decimal(saldoCCAgg._sum.saldo?.toString() ?? "0");
-  const totalCapitalPF = new Decimal(capitalPFAgg._sum.capital?.toString() ?? "0");
-
-  const totalValorCartera = posicionesCartera.reduce(
-    (acc, p) => {
-      const precio = p.Activo?.precioActual != null
-        ? new Decimal(p.Activo.precioActual.toString())
-        : new Decimal(p.precioCompra.toString());
-      return acc.plus(new Decimal(p.cantidad.toString()).mul(precio));
-    },
-    new Decimal(0)
-  );
-
-  const totalValorCustodia = posicionesCustodia.reduce(
-    (acc, p) => {
-      const precio = p.Activo?.precioActual != null
-        ? new Decimal(p.Activo.precioActual.toString())
-        : new Decimal(p.precioPromedio.toString());
-      return acc.plus(new Decimal(p.cantidadTotal.toString()).mul(precio));
-    },
-    new Decimal(0)
-  );
-
-  const tcBlue = new Decimal(tcConfig?.valor ?? "1");
-  const patrimonioTotalARS = totalSaldoCC
-    .plus(totalCapitalPF)
-    .plus(totalValorCartera)
-    .plus(totalValorCustodia);
-  const patrimonioTotalUSD = tcBlue.gt(0) ? patrimonioTotalARS.div(tcBlue) : new Decimal(0);
-
-  return {
-    totalClientes,
-    totalCuentasCorrientes,
-    totalPlazosFijos,
-    totalPosicionesCartera,
-    totalPosicionesCustodia,
-    totalSaldoCC,
-    totalCapitalPF,
-    totalValorCartera,
-    totalValorCustodia,
-    tcBlue,
-    patrimonioTotalARS,
-    patrimonioTotalUSD,
-  };
+  const [totalClientes, totalCuentasCorrientes, totalPlazosFijos, totalPosicionesCartera, totalPosicionesCustodia] =
+    await Promise.all([
+      prisma.cliente.count({ where: { activo: true } }),
+      prisma.cuentaCorriente.count(),
+      prisma.plazoFijo.count({ where: { estado: "ACTIVO" } }),
+      prisma.posicionCartera.count(),
+      prisma.custodiaCliente.count(),
+    ]);
+  return { totalClientes, totalCuentasCorrientes, totalPlazosFijos, totalPosicionesCartera, totalPosicionesCustodia };
 }
 
+/** Exposición por moneda NATIVA, desde el PN canónico (cajas con saldo inicial, CC y PF vigentes). */
 export async function getExposicionPorMoneda() {
-  const { movCaja, cuentasCorrientes, plazosFijos } = await getReportesBaseData();
-
-  const monedas = new Set<Moneda>();
-  const caja = new Map<Moneda, Decimal>();
-  const cc   = new Map<Moneda, Decimal>();
-  const pf   = new Map<Moneda, Decimal>();
-
-  for (const m of movCaja) {
-    monedas.add(m.moneda);
-    const sign = m.tipo === "ENTRADA" || m.tipo === "TRANSFERENCIA_IN" ? 1 : -1;
-    caja.set(m.moneda, (caja.get(m.moneda) ?? new Decimal(0)).plus(new Decimal(m.monto.toString()).mul(sign)));
+  const pn = await getPatrimonioNeto();
+  const cc = new Map<Moneda, number>();
+  for (const cl of pn.detalle.clientes) {
+    for (const m of Object.keys(cl.ccNativo) as Moneda[]) cc.set(m, (cc.get(m) ?? 0) + cl.ccNativo[m]);
   }
-
-  for (const c of cuentasCorrientes) {
-    monedas.add(c.moneda);
-    cc.set(c.moneda, (cc.get(c.moneda) ?? new Decimal(0)).plus(new Decimal(c.saldo.toString())));
-  }
-
-  for (const p of plazosFijos) {
-    monedas.add(p.moneda);
-    pf.set(p.moneda, (pf.get(p.moneda) ?? new Decimal(0)).plus(new Decimal(p.capital.toString())));
-  }
-
-  const rows = Array.from(monedas).map((moneda) => {
-    const cajaVal = caja.get(moneda) ?? new Decimal(0);
-    const ccVal   = cc.get(moneda)   ?? new Decimal(0);
-    const pfVal   = pf.get(moneda)   ?? new Decimal(0);
-    const total   = cajaVal.plus(ccVal).plus(pfVal);
-    return {
-      moneda,
-      caja:             Number(cajaVal),
-      cuentasCorrientes: Number(ccVal),
-      plazosFijos:       Number(pfVal),
-      operaciones:       0,
-      total:             Number(total),
-    };
-  });
-
+  const rows = (["ARS", "USD", "EUR", "BRL"] as Moneda[]).map((moneda) => {
+    const caja = pn.componentes.cajas.nativo[moneda];
+    const cuentasCorrientes = cc.get(moneda) ?? 0;
+    const plazosFijos = pn.componentes.pf.nativo[moneda];
+    return { moneda, caja, cuentasCorrientes, plazosFijos, operaciones: 0, total: caja + cuentasCorrientes + plazosFijos };
+  }).filter((r) => r.caja !== 0 || r.cuentasCorrientes !== 0 || r.plazosFijos !== 0);
   rows.sort((a, b) => b.total - a.total);
   return rows;
 }
 
 /**
- * Patrimonio Neto con la misma fuente y cálculo que /posicion.
- * Incluye cajas (saldo real), carteras, inmobiliarias, CC, PF y pendientes.
+ * Patrimonio Neto canónico (misma fuente que /posicion y /reportes) CON su calidad.
+ * pnUSD = null si INCOMPLETE; knownSubtotalUSD es diagnóstico (no es el PN).
  */
-export async function getPosicionPN(): Promise<number> {
-  const [cajas, clientes, carteras, propiedades, tcConfig, movPendientes] = await Promise.all([
-    getCajasWithBalances(),
-    prisma.cliente.findMany({
-      where: { activo: true },
-      include: {
-        CuentaCorriente: true,
-        PlazoFijo: { where: { estado: "ACTIVO" } },
-      },
-    }),
-    prisma.cartera.findMany({
-      where: { activa: true },
-      include: {
-        PosicionCartera: {
-          include: { Activo: { select: { precioActual: true, monedaPrecio: true } } },
-        },
-      },
-    }),
-    prisma.propiedad.findMany({
-      where: { activa: true },
-      include: { InversionInmobiliaria: true },
-    }),
-    prisma.config.findUnique({ where: { clave: "tc_blue" } }),
-    prisma.movimientoCaja.findMany({
-      where: { confirmado: false, anulado: false, tipo: { in: ["ENTRADA", "SALIDA"] as never[] } },
-      select: { tipo: true, monto: true, moneda: true },
-    }),
-  ]);
-
-  const tcBlue = Number(tcConfig?.valor ?? "1000");
-  const arsToUSD = (ars: number) => (tcBlue > 0 ? ars / tcBlue : 0);
-
-  const cajaTotalUSD = cajas.reduce(
-    (s, c) => s + Number(c.saldoActualUSD) + arsToUSD(Number(c.saldoActualARS)),
-    0,
-  );
-
-  const carteraTotalUSD = carteras.reduce((s, c) => {
-    let posValUSD = 0;
-    for (const pos of c.PosicionCartera) {
-      if (pos.Activo.precioActual != null) {
-        const p =
-          pos.Activo.monedaPrecio === "ARS"
-            ? Number(pos.Activo.precioActual) / tcBlue
-            : Number(pos.Activo.precioActual);
-        posValUSD += Number(pos.cantidad) * p;
-      }
-    }
-    const cashUSD =
-      Number(c.saldoUSDCable) + Number(c.saldoUSDMep) + arsToUSD(Number(c.saldoPesos));
-    return s + posValUSD + cashUSD;
-  }, 0);
-
-  const propiedadTotalUSD = propiedades.reduce((s, p) => {
-    let netUSD = 0, netARS = 0;
-    for (const m of p.InversionInmobiliaria) {
-      if (m.tipo === "RENTA") continue;
-      const sign = m.tipo === "INGRESO" || m.tipo === "MEJORA" ? 1 : -1;
-      if (m.moneda === "USD") netUSD += sign * Number(m.monto);
-      else if (m.moneda === "ARS") netARS += sign * Number(m.monto);
-    }
-    return s + netUSD + arsToUSD(netARS);
-  }, 0);
-
-  let activoCCUSD = 0, pasivoCCUSD = 0, pasivoPFUSD = 0;
-  for (const c of clientes) {
-    let ccUSD = 0, ccARS = 0;
-    for (const cc of c.CuentaCorriente) {
-      const sv = Number(cc.saldo);
-      if (cc.moneda === "USD") ccUSD += sv;
-      else if (cc.moneda === "ARS") ccARS += sv;
-    }
-    const ccTotalUSD = ccUSD + arsToUSD(ccARS);
-    activoCCUSD += Math.max(0, -ccTotalUSD);
-    pasivoCCUSD += Math.max(0, ccTotalUSD);
-    for (const pf of c.PlazoFijo) {
-      const m = Number(pf.saldoActual);
-      pasivoPFUSD += pf.moneda === "USD" ? m : arsToUSD(m);
-    }
-  }
-
-  const pendingRec = movPendientes.filter((m) => m.tipo === "ENTRADA");
-  const pendingPay = movPendientes.filter((m) => m.tipo === "SALIDA");
-  const pendRecUSD = pendingRec.reduce(
-    (s, m) => s + (m.moneda === "ARS" ? arsToUSD(Number(m.monto)) : Number(m.monto)),
-    0,
-  );
-  const pendPayUSD = pendingPay.reduce(
-    (s, m) => s + (m.moneda === "ARS" ? arsToUSD(Number(m.monto)) : Number(m.monto)),
-    0,
-  );
-
-  const activoTotal = cajaTotalUSD + carteraTotalUSD + propiedadTotalUSD + activoCCUSD + pendRecUSD;
-  const pasivoTotal = pasivoCCUSD + pasivoPFUSD + pendPayUSD;
-  return activoTotal - pasivoTotal;
+export async function getPosicionPN(): Promise<Pick<PatrimonioNeto, "pnUSD" | "quality" | "qualityReasons" | "knownSubtotalUSD">> {
+  const pn = await getPatrimonioNeto();
+  return { pnUSD: pn.pnUSD, quality: pn.quality, qualityReasons: pn.qualityReasons, knownSubtotalUSD: pn.knownSubtotalUSD };
 }
 
+/** Balance de /reportes: reexpresión del PN canónico (sin fórmula propia). */
 export async function getBalanceGeneral() {
-  const [{ movCaja, cuentasCorrientes, plazosFijos, posicionesCartera, posicionesCustodia }, tcConfig] = await Promise.all([
-    getReportesBaseData(),
-    prisma.config.findUnique({ where: { clave: "tc_blue" } }),
-  ]);
-
-  const TC_FALLBACK = new Decimal(1000);
-  const tc = tcConfig?.valor ? new Decimal(tcConfig.valor) : TC_FALLBACK;
-
-  const toUSD = (amount: Decimal, moneda: string): Decimal => {
-    if (moneda === "USD") return amount;
-    if (moneda === "ARS") return tc.gt(0) ? amount.div(tc) : amount.div(TC_FALLBACK);
-    return amount;
-  };
-
-  // Cajas: net confirmed balance per currency → convert to USD
-  const cajaByMoneda = new Map<string, Decimal>();
-  for (const m of movCaja) {
-    const sign = m.tipo === "ENTRADA" || m.tipo === "TRANSFERENCIA_IN" ? 1 : -1;
-    cajaByMoneda.set(m.moneda, (cajaByMoneda.get(m.moneda) ?? new Decimal(0)).plus(new Decimal(m.monto.toString()).mul(sign)));
-  }
-  let cajasUSD = new Decimal(0);
-  for (const moneda of Array.from(cajaByMoneda.keys())) {
-    cajasUSD = cajasUSD.plus(toUSD(cajaByMoneda.get(moneda)!, moneda));
-  }
-
-  // CC: positive saldo = BYG owes client → PASIVO. Negative saldo = client owes BYG → ACTIVO.
-  let ccActivoUSD = new Decimal(0);   // abs(negative saldos) = deudas de clientes a BYG
-  let ccPasivoUSD = new Decimal(0);   // positive saldos = BYG debe a clientes
-  for (const c of cuentasCorrientes) {
-    const saldoUSD = toUSD(new Decimal(c.saldo.toString()), c.moneda);
-    if (saldoUSD.lt(0)) {
-      ccActivoUSD = ccActivoUSD.plus(saldoUSD.abs());   // client owes BYG → asset
-    } else {
-      ccPasivoUSD = ccPasivoUSD.plus(saldoUSD);         // BYG owes client → liability
-    }
-  }
-
-  // Cartera propia: convert ARS-priced positions to USD using TC
-  const carteraUSD = posicionesCartera.reduce((acc, p) => {
-    const rawPrecio = p.Activo?.precioActual != null
-      ? new Decimal(p.Activo.precioActual.toString())
-      : new Decimal(p.precioCompra.toString());
-    const precioUSD = p.Activo?.monedaPrecio === "ARS"
-      ? (tc.gt(0) ? rawPrecio.div(tc) : rawPrecio.div(TC_FALLBACK))
-      : rawPrecio;
-    return acc.plus(new Decimal(p.cantidad.toString()).mul(precioUSD));
-  }, new Decimal(0));
-
-  // Custodia: informational only
-  const custodiaUSD = posicionesCustodia.reduce((acc, p) => {
-    const precio = p.Activo?.precioActual != null
-      ? new Decimal(p.Activo.precioActual.toString())
-      : new Decimal(p.precioPromedio.toString());
-    return acc.plus(new Decimal(p.cantidadTotal.toString()).mul(precio));
-  }, new Decimal(0));
-
-  // PF: pasivo
-  let pfUSD = new Decimal(0);
-  for (const p of plazosFijos) {
-    pfUSD = pfUSD.plus(toUSD(new Decimal(p.capital.toString()), p.moneda));
-  }
-
-  const activoTotal    = cajasUSD.plus(ccActivoUSD).plus(carteraUSD);
-  const pasivoTotal    = pfUSD.plus(ccPasivoUSD);
-  const patrimonioNeto = activoTotal.minus(pasivoTotal);
-
-  return {
-    activoTotal:    Number(activoTotal),
-    pasivoTotal:    Number(pasivoTotal),
-    patrimonioNeto: Number(patrimonioNeto),
-    activo: {
-      cajas:             Number(cajasUSD),
-      cuentasCorrientes: Number(ccActivoUSD),
-      cartera:           Number(carteraUSD),
-      custodia:          Number(custodiaUSD),
-    },
-    pasivo: {
-      plazosFijos:      Number(pfUSD),
-      cuentasNegativas: Number(ccPasivoUSD),
-    },
-  };
+  return mapBalanceGeneral(await getPatrimonioNeto());
 }

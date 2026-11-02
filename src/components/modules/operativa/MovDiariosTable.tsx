@@ -4,6 +4,8 @@ import { useState, useMemo, useActionState, useEffect, Fragment } from "react";
 import Link from "next/link";
 import type { MovDiarioRow, TipoMovDiario, EstadoMovDiario } from "@/lib/data/mov-diarios-utils";
 import { agruparPorCliente, normalizarNombreCliente } from "@/lib/data/mov-diarios-utils";
+import type { Quality, QualityReason } from "@/lib/finance/quality";
+import { CalidadBadge } from "@/components/ui/CalidadFinanciera";
 import { Trash2, Activity, Plus, User, X, RotateCcw } from "lucide-react";
 import {
   liquidarPagoPendiente,
@@ -570,12 +572,16 @@ function RevertirButton({ id }: { id: string }) {
 
 type Props = {
   rows: MovDiarioRow[];
+  // MACRO 2: totalUSD/resultado null = INCOMPLETO (nunca 0); tcBlue null = sin TC utilizable.
   resultadoCambio?: {
-    USD: { netoDivisa: number; netoARS: number; resultado: number };
-    EUR: { netoDivisa: number; netoARS: number; resultado: number };
-    BRL: { netoDivisa: number; netoARS: number; resultado: number };
-    totalUSD: number;
-    tcBlue: number;
+    USD: { netoDivisa: number; netoARS: number; resultado: number | null };
+    EUR: { netoDivisa: number; netoARS: number; resultado: number | null };
+    BRL: { netoDivisa: number; netoARS: number; resultado: number | null };
+    totalUSD: number | null;
+    tcBlue: number | null;
+    quality: Quality;
+    qualityReasons: QualityReason[];
+    knownSubtotalUSD: number;
   };
   children?: React.ReactNode;
   cajas?: any[];
@@ -816,11 +822,19 @@ export function MovDiariosTable({ rows, resultadoCambio, children, cajas, title,
           {resultadoCambio ? (
             <>
               <p className="text-xl font-black tabular-nums tracking-tighter text-byg-text relative truncate">
-                {resultadoCambio.totalUSD >= 0 ? "+" : ""}{formatMoney(resultadoCambio.totalUSD, "USD")}
+                {resultadoCambio.totalUSD === null
+                  ? "Incompleto"
+                  : <>{resultadoCambio.totalUSD >= 0 ? "+" : ""}{formatMoney(resultadoCambio.totalUSD, "USD")}</>}
               </p>
               <p className="text-[10px] font-bold text-byg-muted uppercase relative">
-                TC Blue: {resultadoCambio.tcBlue.toLocaleString("es-AR")}
+                TC Blue: {resultadoCambio.tcBlue === null ? "sin TC" : resultadoCambio.tcBlue.toLocaleString("es-AR")}{" "}
+                <CalidadBadge quality={resultadoCambio.quality} reasons={resultadoCambio.qualityReasons} />
               </p>
+              {resultadoCambio.quality === "INCOMPLETE" && (
+                <p className="text-[10px] font-medium text-byg-muted relative">
+                  Faltan datos históricos · parcial conocido {formatMoney(resultadoCambio.knownSubtotalUSD, "USD")} (no es un total)
+                </p>
+              )}
               <div className="flex gap-3 mt-1 relative flex-wrap">
                 <span className="text-[10px] font-black text-byg-muted">
                   Neto USD: {formatMoney(resultadoCambio.USD.netoDivisa, "USD")}

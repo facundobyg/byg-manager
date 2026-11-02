@@ -1,8 +1,11 @@
 import { getResultadoCambioMensual, getMovimientosDiarios } from "@/lib/data/mov-diarios";
+import { CalidadBadge } from "@/components/ui/CalidadFinanciera";
 import { getTotalesRulos } from "@/lib/data/rulos-bolsa";
 import { getTotalesDivIntereses } from "@/lib/data/div-intereses";
 
-function fmt(n: number, dec = 2) {
+/** MACRO 2: null = cifra INCOMPLETA (nunca se muestra como 0). */
+function fmt(n: number | null, dec = 2) {
+  if (n === null) return "Incompleto";
   return n.toLocaleString("es-AR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
@@ -88,8 +91,8 @@ export default async function AnalisisPage() {
                       </div>
                       <div className="text-right">
                         <p className="text-[9px] text-slate-400 uppercase font-bold">Resultado USD</p>
-                        <p className={`text-sm font-black tabular-nums ${r.resultado >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-                          {r.resultado >= 0 ? "+" : ""}USD {fmt(r.resultado)}
+                        <p className={`text-sm font-black tabular-nums ${(r.resultado ?? 0) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                          {(r.resultado ?? 0) > 0 ? "+" : ""}USD {fmt(r.resultado)}
                         </p>
                       </div>
                     </div>
@@ -97,9 +100,9 @@ export default async function AnalisisPage() {
                 );
               })}
               <div className="flex justify-between items-center pt-2 border-t border-slate-200">
-                <p className="text-xs font-black text-slate-700 uppercase tracking-widest">Total mes</p>
-                <p className={`text-xl font-black tabular-nums ${cambio.totalUSD >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-                  {cambio.totalUSD >= 0 ? "+" : ""}USD {fmt(cambio.totalUSD)}
+                <p className="text-xs font-black text-slate-700 uppercase tracking-widest">Total mes <CalidadBadge quality={cambio.quality} reasons={cambio.qualityReasons} /></p>
+                <p className={`text-xl font-black tabular-nums ${(cambio.totalUSD ?? 0) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                  {(cambio.totalUSD ?? 0) > 0 ? "+" : ""}USD {fmt(cambio.totalUSD)}
                 </p>
               </div>
             </div>

@@ -1,14 +1,18 @@
 import type { ReactNode } from "react";
-import { getCajasWithBalances } from "@/lib/data/caja";
-import { getResultadoCambioMensual } from "@/lib/data/mov-diarios";
+import { getFinanceDataset, getPatrimonioNeto, getResultadoRealizadoMes } from "@/lib/finance";
+import { arsPorUsd } from "@/lib/finance/compat";
+import { CalidadBadge, DetalleIncompleto } from "@/components/ui/CalidadFinanciera";
 import { calcExposicionCambiaria } from "@/lib/data/exposicion-cambiaria";
 import { prisma } from "@/lib/prisma";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function fmt(n: number, dec = 2) {
+/** MACRO 2: null = cifra INCOMPLETA (nunca se muestra como 0). */
+function fmt(n: number | null, dec = 2) {
+  if (n === null) return "Incompleto";
   return n.toLocaleString("es-AR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
+const sumaN = (a: number | null, b: number | null) => (a === null || b === null ? null : a + b);
 
 function Kpi({
   label, value, sub, color = "text-byg-text",
@@ -74,187 +78,89 @@ function Empty({ text }: { text: string }) {
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 export default async function PosicionPage() {
-  const [cajas, clientes, carteras, propiedades, tcConfig, movPendientes, mesActivo, todaCustodia] =
-    await Promise.all([
-      getCajasWithBalances(),
-      prisma.cliente.findMany({
-        where: { activo: true },
-        orderBy: { nombre: "asc" },
-        include: {
-          CuentaCorriente: true,
-          PlazoFijo: { where: { estado: "ACTIVO" } },
-        },
-      }),
-      prisma.cartera.findMany({
-        where: { activa: true },
-        orderBy: { orden: "asc" },
-        include: {
-          PosicionCartera: {
-            include: {
-              Activo: { select: { ticker: true, precioActual: true, monedaPrecio: true } },
-            },
-          },
-        },
-      }),
-      prisma.propiedad.findMany({
-        where: { activa: true },
-        orderBy: { nombre: "asc" },
-        include: { InversionInmobiliaria: true },
-      }),
-      prisma.config.findUnique({ where: { clave: "tc_blue" } }),
-      prisma.movimientoCaja.findMany({
-        where: { confirmado: false, anulado: false, tipo: { in: ["ENTRADA", "SALIDA"] as never[] } },
-        include: { Caja: { select: { label: true } } },
-        orderBy: { fecha: "desc" },
-      }),
-      prisma.mesContable.findFirst({ where: { activo: true } }),
-      prisma.custodiaCliente.findMany({
-        include: { Activo: { select: { precioActual: true, monedaPrecio: true } } },
-      }),
-    ]);
+  // MACRO 2 — Todo número patrimonial sale del motor canónico (src/lib/finance):
+  // la página ya no recalcula el PN. Home y Reportes reciben el mismo PN.
+  const [pn, mesActivo, cajasLabel] = await Promise.all([
+    getPatrimonioNeto(),
+    prisma.mesContable.findFirst({ where: { activo: true } }),
+    prisma.caja.findMany({ select: { id: true, label: true } }),
+  ]);
+  const ds = await getFinanceDataset();
+  const tcBlue = arsPorUsd(ds, pn.corte);
 
-  const tcBlue = Number(tcConfig?.valor ?? "1000");
-  const arsToUSD = (ars: number) => ars / tcBlue;
+  // Utilidad del mes: resultado realizado canónico con su calidad (null = incompleto).
+  const resultadoMes = mesActivo ? await getResultadoRealizadoMes(mesActivo.mes) : null;
+  const utilidadMes = resultadoMes?.totalUSD ?? null;
 
-  // Utilidad del mes (best-effort)
-  let utilidadMes: number | null = null;
-  if (mesActivo) {
-    try {
-      const r = await getResultadoCambioMensual(mesActivo.mes);
-      utilidadMes = r.totalUSD;
-    } catch {
-      // omit gracefully
-    }
-  }
+  const c = pn.componentes;
+  const activoTotal = pn.activoUSD;
+  const pasivoTotal = pn.pasivoUSD;
+  const patrimonioNeto = pn.pnUSD;
+  const custodiaValorUSD = pn.custodiaExcluidaUSD;
+  const todaCustodia = ds.custodia;
+  const carteras = pn.detalle.carteras.filter((k) => k.activa);
+  const cajas = pn.detalle.cajas.filter((k) => k.activa);
 
   // ── Cajas ──────────────────────────────────────────────────────────────────
-  const cajasRows = cajas.map((c) => {
-    const usd = Number(c.saldoActualUSD);
-    const ars = Number(c.saldoActualARS);
-    return { label: c.label, usd, ars, totalUSD: usd + arsToUSD(ars) };
-  });
-  const cajaTotalUSD = cajasRows.reduce((s, c) => s + c.totalUSD, 0);
+  const cajasRows = pn.detalle.cajas
+    .filter((k) => k.activa || k.usd !== 0)
+    .map((k) => ({ label: k.label, usd: k.nativo.USD, ars: k.nativo.ARS, totalUSD: k.usd }));
+  const cajaTotalUSD = c.cajas.usd;
 
   // ── Carteras ───────────────────────────────────────────────────────────────
-  const carterasRows = carteras.map((c) => {
-    let posValUSD = 0;
-    let sinPrecio = 0;
-    for (const pos of c.PosicionCartera) {
-      if (pos.Activo.precioActual != null) {
-        const precioUSD =
-          pos.Activo.monedaPrecio === "ARS"
-            ? Number(pos.Activo.precioActual) / tcBlue
-            : Number(pos.Activo.precioActual);
-        posValUSD += Number(pos.cantidad) * precioUSD;
-      } else {
-        sinPrecio++;
-      }
-    }
-    const cashUSD =
-      Number(c.saldoUSDCable) + Number(c.saldoUSDMep) + arsToUSD(Number(c.saldoPesos));
-    return { nombre: c.nombre, posValUSD, cashUSD, total: posValUSD + cashUSD, sinPrecio };
-  });
-  const carteraTotalUSD = carterasRows.reduce((s, c) => s + c.total, 0);
+  const carterasRows = pn.detalle.carteras.map((k) => ({
+    nombre: k.nombre, posValUSD: k.posicionesUSD, cashUSD: k.cashUSD, total: k.totalUSD, sinPrecio: k.sinPrecio,
+  }));
+  const carteraTotalUSD = c.carteras.usd;
 
   // ── Inmobiliarias ──────────────────────────────────────────────────────────
-  const propiedadesRows = propiedades.map((p) => {
-    let netUSD = 0;
-    let netARS = 0;
-    for (const m of p.InversionInmobiliaria) {
-      if (m.tipo === "RENTA") continue; // rental income, not capital
-      const sign = m.tipo === "INGRESO" || m.tipo === "MEJORA" ? 1 : -1;
-      if (m.moneda === "USD") netUSD += sign * Number(m.monto);
-      else if (m.moneda === "ARS") netARS += sign * Number(m.monto);
-    }
-    return { nombre: p.nombre, netUSD, netARS, totalUSD: netUSD + arsToUSD(netARS) };
-  });
-  const propiedadTotalUSD = propiedadesRows.reduce((s, p) => s + p.totalUSD, 0);
+  const propiedadesRows = pn.detalle.inmuebles
+    .filter((p) => p.activa || p.usd !== 0)
+    .map((p) => ({ nombre: p.nombre, netUSD: p.nativo.USD, netARS: p.nativo.ARS, totalUSD: p.usd }));
+  const propiedadTotalUSD = c.inmuebles.usd;
 
   // ── Clientes CC & PF ───────────────────────────────────────────────────────
-  const clientesData = clientes.map((c) => {
-    let ccUSD = 0;
-    let ccARS = 0;
-    for (const cc of c.CuentaCorriente) {
-      const s = Number(cc.saldo);
-      if (cc.moneda === "USD") ccUSD += s;
-      else if (cc.moneda === "ARS") ccARS += s;
-    }
-    const ccTotalUSD = ccUSD + arsToUSD(ccARS);
-    let pfUSD = 0;
-    let pfARS = 0;
-    for (const pf of c.PlazoFijo) {
-      const m = Number(pf.saldoActual);
-      if (pf.moneda === "USD") pfUSD += m;
-      else if (pf.moneda === "ARS") pfARS += m;
-    }
-    const pfCap = pfUSD + arsToUSD(pfARS);
-    return { id: c.id, nombre: c.nombre, ccUSD, ccARS, ccTotalUSD, pfCap, pfUSD, pfARS };
-  });
+  const clientesData = pn.detalle.clientes.map((k) => ({
+    id: k.id, nombre: k.nombre,
+    ccUSD: k.ccNativo.USD, ccARS: k.ccNativo.ARS, ccTotalUSD: k.ccUSD,
+    pfCap: k.pfUSD, pfUSD: k.pfNativo.USD, pfARS: k.pfNativo.ARS,
+  }));
+  const pasivoCCTotalUSD = c.ccAcreedora.usd;
+  const activoCCTotalUSD = c.ccDeudora.usd;
+  const pasivoPFTotalUSD = c.pf.usd;
 
-  // positive CC = BYG owes client → Pasivo
-  const pasivoCCTotalUSD = clientesData.reduce((s, c) => s + Math.max(0, c.ccTotalUSD), 0);
-  // negative CC = client owes BYG → Activo
-  const activoCCTotalUSD = clientesData.reduce((s, c) => s + Math.max(0, -c.ccTotalUSD), 0);
-  const pasivoPFTotalUSD = clientesData.reduce((s, c) => s + c.pfCap, 0);
+  // ── Pendientes (saldo residual: monto − pagos parciales confirmados) ───────
+  const labelCaja = new Map(cajasLabel.map((k) => [k.id, k.label]));
+  const pendientes = pn.detalle.pendientes
+    .filter((p) => p.residual > 0)
+    .sort((a, b) => (a.fecha < b.fecha ? 1 : -1))
+    .map((p) => ({ ...p, monto: p.residual, Caja: { label: labelCaja.get(p.cajaId) ?? "—" } }));
+  const pendingRec = pendientes.filter((m) => m.lado === "COBRAR");
+  const pendingPay = pendientes.filter((m) => m.lado === "PAGAR");
+  const pendingRecUSD = pendingRec.reduce((s, m) => m.moneda === "USD" ? s + m.monto : s, 0);
+  const pendingRecARS = pendingRec.reduce((s, m) => m.moneda === "ARS" ? s + m.monto : s, 0);
+  const pendingPayUSD = pendingPay.reduce((s, m) => m.moneda === "USD" ? s + m.monto : s, 0);
+  const pendingPayARS = pendingPay.reduce((s, m) => m.moneda === "ARS" ? s + m.monto : s, 0);
 
-  // ── Movimientos pendientes ─────────────────────────────────────────────────
-  const pendingRec = movPendientes.filter((m) => m.tipo === "ENTRADA");
-  const pendingPay = movPendientes.filter((m) => m.tipo === "SALIDA");
-
-  const pendingRecTotalUSD = pendingRec.reduce((s, m) => {
-    const n = Number(m.monto);
-    return s + (m.moneda === "ARS" ? arsToUSD(n) : n);
-  }, 0);
-  const pendingPayTotalUSD = pendingPay.reduce((s, m) => {
-    const n = Number(m.monto);
-    return s + (m.moneda === "ARS" ? arsToUSD(n) : n);
-  }, 0);
-
-  // Currency split for compact display
-  const pendingRecUSD = pendingRec.reduce((s, m) => m.moneda === "USD" ? s + Number(m.monto) : s, 0);
-  const pendingRecARS = pendingRec.reduce((s, m) => m.moneda === "ARS" ? s + Number(m.monto) : s, 0);
-  const pendingPayUSD = pendingPay.reduce((s, m) => m.moneda === "USD" ? s + Number(m.monto) : s, 0);
-  const pendingPayARS = pendingPay.reduce((s, m) => m.moneda === "ARS" ? s + Number(m.monto) : s, 0);
-
-  // ── Custodia clientes (SOLO informativo — NUNCA suma al activo) ───────────
-  const custodiaValorUSD = todaCustodia.reduce((s, c) => {
-    const pa = c.Activo.precioActual;
-    if (!pa) return s;
-    const precioUSD = c.Activo.monedaPrecio === "ARS" ? Number(pa) / tcBlue : Number(pa);
-    return s + Number(c.cantidadTotal) * precioUSD;
-  }, 0);
-
-  // ── Balance ────────────────────────────────────────────────────────────────
-  const activoTotal =
-    cajaTotalUSD + carteraTotalUSD + propiedadTotalUSD + activoCCTotalUSD + pendingRecTotalUSD;
-  const pasivoTotal = pasivoCCTotalUSD + pasivoPFTotalUSD + pendingPayTotalUSD;
-  const patrimonioNeto = activoTotal - pasivoTotal;
-
-  // ── Exposición Cambiaria ───────────────────────────────────────────────────
-  const cajaUSD = cajasRows.reduce((s, c) => s + c.usd, 0);
-  const cajaARS = cajasRows.reduce((s, c) => s + c.ars, 0);
-
+  // ── Exposición Cambiaria (desde los mismos saldos nativos del PN) ──────────
+  const cajaUSD = c.cajas.nativo.USD;
+  const cajaARS = c.cajas.nativo.ARS;
   let carteraUSDDirecto = 0;
   let carteraARSDirecto = 0;
-  for (const c of carteras) {
-    carteraUSDDirecto += Number(c.saldoUSDCable) + Number(c.saldoUSDMep);
-    carteraARSDirecto += Number(c.saldoPesos);
-    for (const pos of c.PosicionCartera) {
-      if (pos.Activo.precioActual == null) continue;
-      const valor = Number(pos.cantidad) * Number(pos.Activo.precioActual);
-      if (pos.Activo.monedaPrecio === "ARS") carteraARSDirecto += valor;
-      else carteraUSDDirecto += valor;
-    }
+  for (const k of pn.detalle.carteras) {
+    carteraUSDDirecto += k.cashNativo.USD + k.posicionesNativo.USD;
+    carteraARSDirecto += k.cashNativo.ARS + k.posicionesNativo.ARS;
   }
+  const pasivoCCUSD  = clientesData.reduce((s, k) => s + Math.max(0,  k.ccUSD), 0);
+  const pasivoCCARS  = clientesData.reduce((s, k) => s + Math.max(0,  k.ccARS), 0);
+  const activoCCUSD  = clientesData.reduce((s, k) => s + Math.max(0, -k.ccUSD), 0);
+  const activoCCARS  = clientesData.reduce((s, k) => s + Math.max(0, -k.ccARS), 0);
+  const pasivoPFUSD  = clientesData.reduce((s, k) => s + k.pfUSD, 0);
+  const pasivoPFARS  = clientesData.reduce((s, k) => s + k.pfARS, 0);
 
-  const pasivoCCUSD  = clientesData.reduce((s, c) => s + Math.max(0,  c.ccUSD), 0);
-  const pasivoCCARS  = clientesData.reduce((s, c) => s + Math.max(0,  c.ccARS), 0);
-  const activoCCUSD  = clientesData.reduce((s, c) => s + Math.max(0, -c.ccUSD), 0);
-  const activoCCARS  = clientesData.reduce((s, c) => s + Math.max(0, -c.ccARS), 0);
-  const pasivoPFUSD  = clientesData.reduce((s, c) => s + c.pfUSD, 0);
-  const pasivoPFARS  = clientesData.reduce((s, c) => s + c.pfARS, 0);
 
-  const exposicion = calcExposicionCambiaria({
+  // Sin TC utilizable al corte no hay exposición en USD que mostrar.
+  const exposicion = tcBlue === null ? null : calcExposicionCambiaria({
     cajaUSD, cajaARS,
     carteraUSDDirecto, carteraARSDirecto,
     activoCCUSD, activoCCARS,
@@ -263,11 +169,12 @@ export default async function PosicionPage() {
     tcBlue,
   });
 
+  // (?? 0 solo para filtrar/ordenar; los montos mostrados conservan null)
   const clientesPasivo = clientesData
-    .filter((c) => Math.max(0, c.ccTotalUSD) > 0 || c.pfCap > 0)
+    .filter((c) => c.ccTotalUSD === null || c.pfCap === null || Math.max(0, c.ccTotalUSD) > 0 || c.pfCap > 0)
     .sort(
       (a, b) =>
-        b.pfCap + Math.max(0, b.ccTotalUSD) - (a.pfCap + Math.max(0, a.ccTotalUSD)),
+        (b.pfCap ?? 0) + Math.max(0, b.ccTotalUSD ?? 0) - ((a.pfCap ?? 0) + Math.max(0, a.ccTotalUSD ?? 0)),
     );
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -278,8 +185,9 @@ export default async function PosicionPage() {
         <p className="text-[10px] font-black text-byg-accent uppercase tracking-[0.3em]">General</p>
         <h1 className="text-4xl font-black text-byg-text tracking-tight">Posición</h1>
         <p className="text-sm text-byg-muted font-medium mt-1">
-          Balance patrimonial · TC Blue ${fmt(tcBlue, 0)} ARS/USD
+          Balance patrimonial · TC Blue ${fmt(tcBlue, 0)} ARS/USD <CalidadBadge quality={pn.quality} reasons={pn.qualityReasons} />
         </p>
+        <DetalleIncompleto quality={pn.quality} reasons={pn.qualityReasons} knownSubtotalUSD={pn.knownSubtotalUSD} fmt={(n) => `USD ${fmt(n)}`} />
       </header>
 
       {/* KPI row 1 */}
@@ -289,14 +197,15 @@ export default async function PosicionPage() {
         <Kpi
           label="Patrimonio Neto"
           value={`USD ${fmt(patrimonioNeto)}`}
-          color={patrimonioNeto >= 0 ? "text-byg-accent" : "text-red-400"}
+          sub={pn.quality === "EXACT" ? undefined : pn.quality === "APPROXIMATE" ? "Aproximado" : `Incompleto · parcial conocido USD ${fmt(pn.knownSubtotalUSD)}`}
+          color={patrimonioNeto === null ? "text-amber-400" : patrimonioNeto >= 0 ? "text-byg-accent" : "text-red-400"}
         />
-        {utilidadMes != null ? (
+        {resultadoMes ? (
           <Kpi
             label="Utilidad del Mes"
-            value={`USD ${fmt(utilidadMes)}`}
-            sub={mesActivo?.mes}
-            color={utilidadMes >= 0 ? "text-emerald-400" : "text-red-400"}
+            value={utilidadMes === null ? "Incompleto" : `USD ${fmt(utilidadMes)}`}
+            sub={`${mesActivo?.mes}${resultadoMes.quality === "EXACT" ? "" : resultadoMes.quality === "APPROXIMATE" ? " · aproximado" : ` · parcial conocido USD ${fmt(resultadoMes.knownSubtotalUSD)}`}`}
+            color={utilidadMes === null ? "text-amber-400" : utilidadMes >= 0 ? "text-emerald-400" : "text-red-400"}
           />
         ) : (
           <Kpi label="Utilidad del Mes" value="—" sub="Sin mes activo" />
@@ -318,9 +227,9 @@ export default async function PosicionPage() {
         />
         <Kpi
           label="Pasivo Clientes"
-          value={`USD ${fmt(pasivoCCTotalUSD + pasivoPFTotalUSD)}`}
+          value={`USD ${fmt(sumaN(pasivoCCTotalUSD, pasivoPFTotalUSD))}`}
           sub={`CC ${fmt(pasivoCCTotalUSD)} · PF ${fmt(pasivoPFTotalUSD)}`}
-          color={(pasivoCCTotalUSD + pasivoPFTotalUSD) > 0 ? "text-red-400" : "text-byg-text"}
+          color={(sumaN(pasivoCCTotalUSD, pasivoPFTotalUSD) ?? 0) > 0 ? "text-red-400" : "text-byg-text"}
         />
         <div className="bg-byg-surface rounded-2xl border border-byg-border border-l-[5px] border-l-amber-400 p-5 flex flex-col gap-1">
           <p className="text-[10px] font-black uppercase tracking-widest text-amber-500">Custodia Clientes</p>
@@ -463,7 +372,7 @@ export default async function PosicionPage() {
                     </tr>
                     <tr className="bg-byg-bg">
                       <td className="px-4 py-3 text-left font-black text-byg-muted uppercase tracking-wider text-[10px]">Total Pasivo Clientes</td>
-                      <td className="px-4 py-3 text-right tabular-nums font-mono text-byg-text font-black">{`USD ${fmt(pasivoCCTotalUSD + pasivoPFTotalUSD)}`}</td>
+                      <td className="px-4 py-3 text-right tabular-nums font-mono text-byg-text font-black">{`USD ${fmt(sumaN(pasivoCCTotalUSD, pasivoPFTotalUSD))}`}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -481,15 +390,15 @@ export default async function PosicionPage() {
                   <div className="border-t border-byg-border/40">
                     <FinTable headers={["Cliente", "CC", "PF", "Total"]}>
                       {clientesPasivo.map((c) => {
-                        const ccPas = Math.max(0, c.ccTotalUSD);
+                        const ccPas = c.ccTotalUSD === null ? null : Math.max(0, c.ccTotalUSD);
                         return (
                           <Tr
                             key={c.id}
                             cells={[
                               <a key="n" href={`/clientes/${c.id}`} className="hover:text-byg-accent transition-colors">{c.nombre}</a>,
-                              ccPas > 0 ? `USD ${fmt(ccPas)}` : "—",
-                              c.pfCap > 0 ? `USD ${fmt(c.pfCap)}` : "—",
-                              `USD ${fmt(ccPas + c.pfCap)}`,
+                              ccPas === null || ccPas > 0 ? `USD ${fmt(ccPas)}` : "—",
+                              c.pfCap === null || c.pfCap > 0 ? `USD ${fmt(c.pfCap)}` : "—",
+                              `USD ${fmt(sumaN(ccPas, c.pfCap))}`,
                             ]}
                           />
                         );
@@ -502,7 +411,7 @@ export default async function PosicionPage() {
           </div>
 
           {/* CC Activo note */}
-          {activoCCTotalUSD > 0 && (
+          {(activoCCTotalUSD === null || activoCCTotalUSD > 0) && (
             <div className="rounded-xl border border-byg-accent/20 bg-byg-accent/10 p-4 flex flex-col gap-1">
               <p className="text-[10px] font-black uppercase tracking-widest text-byg-accent">
                 Nota — CC en Activo
@@ -569,6 +478,7 @@ export default async function PosicionPage() {
       )}
 
       {/* ── Exposición Cambiaria BYG ─────────────────────────────────────── */}
+      {exposicion && (
       <div className="flex flex-col gap-6">
         <div className="flex items-center gap-3">
           <div className="w-1 h-5 bg-byg-accent rounded-full" />
@@ -649,6 +559,7 @@ export default async function PosicionPage() {
           </FinTable>
         </div>
       </div>
+      )}
     </div>
   );
 }

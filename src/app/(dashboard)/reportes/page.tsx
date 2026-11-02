@@ -4,6 +4,7 @@ import { getMesOperativo } from "@/lib/services/config.service";
 import Link from "next/link";
 import { ExportCsvButton } from "@/components/modules/reportes/ExportCsvButton";
 import { requirePermission } from "@/lib/auth/permissions";
+import { CalidadBadge, DetalleIncompleto } from "@/components/ui/CalidadFinanciera";
 
 const MONEDA_CLS: Record<string, { badge: string; row: string }> = {
   USD: { badge: "bg-emerald-100 text-emerald-700", row: "bg-emerald-50/40" },
@@ -13,9 +14,15 @@ const MONEDA_CLS: Record<string, { badge: string; row: string }> = {
 };
 const DEFAULT_CLS = { badge: "bg-slate-100 text-slate-600", row: "" };
 
-function fmtN(n: number) {
+/** MACRO 2: null = cifra INCOMPLETA (nunca se muestra como 0). */
+function fmtN(n: number | null) {
+  if (n === null) return "Incompleto";
   return n.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+const absN = (n: number | null) => (n === null ? null : Math.abs(n));
+const restaN = (a: number | null, b: number | null) => (a === null || b === null ? null : a - b);
+/** Solo para color/signo visual: un null no es negativo. */
+const signo = (n: number | null) => n ?? 0;
 
 function fmtDate(d: Date) {
   return d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
@@ -116,9 +123,11 @@ export default async function ReportesPage() {
           mayor
             ? { level: mayor.estado === "RIESGO" ? "error" : "ok", label: "Mayor exposición", value: mayor.clienteNombre, sub: fmtN(mayor.exposicionTotal) }
             : { level: "ok", label: "Mayor exposición", value: "Sin datos", sub: "" },
-          balance.patrimonioNeto >= 0
-            ? { level: "ok",    label: "Patrimonio neto", value: fmtN(balance.patrimonioNeto), sub: "Positivo" }
-            : { level: "error", label: "Patrimonio neto", value: fmtN(Math.abs(balance.patrimonioNeto)), sub: "Negativo" },
+          balance.patrimonioNeto === null
+            ? { level: "warn",  label: "Patrimonio neto", value: "Incompleto", sub: "Faltan datos" }
+            : signo(balance.patrimonioNeto) >= 0
+            ? { level: "ok",    label: "Patrimonio neto", value: fmtN(balance.patrimonioNeto), sub: balance.quality === "APPROXIMATE" ? "Positivo · aproximado" : "Positivo" }
+            : { level: "error", label: "Patrimonio neto", value: fmtN(absN(balance.patrimonioNeto)), sub: "Negativo" },
         ];
 
         const CLS: Record<"ok" | "warn" | "error", { border: string; dot: string; label: string; val: string }> = {
@@ -151,23 +160,24 @@ export default async function ReportesPage() {
 
       {/* ── Utilidad Real del Mes ───────────────────────────────────────────── */}
       <section className="flex flex-col gap-4">
-        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Utilidad real del mes — {mes}</h2>
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Utilidad real del mes — {mes} <CalidadBadge quality={utilidad.quality} reasons={utilidad.qualityReasons} /></h2>
+        <DetalleIncompleto quality={utilidad.quality} reasons={utilidad.qualityReasons} knownSubtotalUSD={utilidad.knownSubtotalUSD} fmt={(n) => `USD ${fmtN(n)}`} />
         <p className="text-[10px] text-slate-400 font-medium -mt-2">
-          La utilidad depende de clasificar correctamente ingresos/egresos. No duplicar honorarios o comisiones ya cargados como operación de cambio.
+          Resultado REALIZADO del mes (motor canónico): excluye pendientes, revertidos y valuaciones; cada partida al TC de su fecha. Un honorario vinculado a su operación de cambio se cuenta una sola vez.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className={`bg-white rounded-xl border shadow-sm px-5 py-4 flex flex-col gap-1 ${utilidad.utilidadTotalUSD >= 0 ? "border-emerald-300" : "border-red-300"}`}>
-            <p className={`text-[10px] font-black uppercase tracking-[0.15em] ${utilidad.utilidadTotalUSD >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+          <div className={`bg-white rounded-xl border shadow-sm px-5 py-4 flex flex-col gap-1 ${signo(utilidad.utilidadTotalUSD) >= 0 ? "border-emerald-300" : "border-red-300"}`}>
+            <p className={`text-[10px] font-black uppercase tracking-[0.15em] ${signo(utilidad.utilidadTotalUSD) >= 0 ? "text-emerald-600" : "text-red-500"}`}>
               Utilidad total USD
             </p>
-            <p className={`text-2xl font-black tabular-nums ${utilidad.utilidadTotalUSD >= 0 ? "text-emerald-700" : "text-red-600"}`}>
-              {utilidad.utilidadTotalUSD >= 0 ? "+" : ""}{fmtN(utilidad.utilidadTotalUSD)}
+            <p className={`text-2xl font-black tabular-nums ${signo(utilidad.utilidadTotalUSD) >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+              {signo(utilidad.utilidadTotalUSD) >= 0 ? "+" : ""}{fmtN(utilidad.utilidadTotalUSD)}
             </p>
           </div>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4 flex flex-col gap-1">
             <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Cambio FX (USD eq.)</p>
-            <p className={`text-xl font-black tabular-nums ${utilidad.cambioUSD >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-              {utilidad.cambioUSD >= 0 ? "+" : ""}{fmtN(utilidad.cambioUSD)}
+            <p className={`text-xl font-black tabular-nums ${signo(utilidad.cambioUSD) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {signo(utilidad.cambioUSD) >= 0 ? "+" : ""}{fmtN(utilidad.cambioUSD)}
             </p>
           </div>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4 flex flex-col gap-1">
@@ -183,8 +193,8 @@ export default async function ReportesPage() {
           </div>
           <div className="bg-white rounded-xl border border-slate-200 shadow-sm px-5 py-4 flex flex-col gap-1">
             <p className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Ingresos − Egresos ARS</p>
-            <p className={`text-xl font-black tabular-nums ${utilidad.ingresosARS - utilidad.egresosARS >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-              {fmtN(utilidad.ingresosARS - utilidad.egresosARS)}
+            <p className={`text-xl font-black tabular-nums ${signo(restaN(utilidad.ingresosARS, utilidad.egresosARS)) >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+              {fmtN(restaN(utilidad.ingresosARS, utilidad.egresosARS))}
             </p>
           </div>
         </div>
@@ -273,7 +283,8 @@ export default async function ReportesPage() {
 
       {/* ── Balance General ─────────────────────────────────────────────────── */}
       <section className="flex flex-col gap-4">
-        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Balance General</h2>
+        <h2 className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Balance General <CalidadBadge quality={balance.quality} reasons={balance.qualityReasons} /></h2>
+        <DetalleIncompleto quality={balance.quality} reasons={balance.qualityReasons} knownSubtotalUSD={balance.knownSubtotalUSD} fmt={(n) => `USD ${fmtN(n)}`} />
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="bg-white rounded-xl border border-emerald-200 shadow-sm px-6 py-5 flex flex-col gap-1">
@@ -290,12 +301,12 @@ export default async function ReportesPage() {
             </p>
             <p className="text-[10px] text-slate-400 font-medium mt-0.5">USD equivalente</p>
           </div>
-          <div className={`bg-white rounded-xl border shadow-sm px-6 py-5 flex flex-col gap-1 ${balance.patrimonioNeto >= 0 ? "border-emerald-300" : "border-red-300"}`}>
-            <p className={`text-[10px] font-black uppercase tracking-[0.2em] ${balance.patrimonioNeto >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+          <div className={`bg-white rounded-xl border shadow-sm px-6 py-5 flex flex-col gap-1 ${signo(balance.patrimonioNeto) >= 0 ? "border-emerald-300" : "border-red-300"}`}>
+            <p className={`text-[10px] font-black uppercase tracking-[0.2em] ${signo(balance.patrimonioNeto) >= 0 ? "text-emerald-600" : "text-red-500"}`}>
               Patrimonio neto
             </p>
-            <p className={`text-3xl font-black tabular-nums ${balance.patrimonioNeto >= 0 ? "text-emerald-700" : "text-red-600"}`}>
-              {balance.patrimonioNeto >= 0 ? "" : "−"}{fmtN(Math.abs(balance.patrimonioNeto))}
+            <p className={`text-3xl font-black tabular-nums ${signo(balance.patrimonioNeto) >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+              {signo(balance.patrimonioNeto) >= 0 ? "" : "−"}{fmtN(absN(balance.patrimonioNeto))}
             </p>
             <p className="text-[10px] text-slate-400 font-medium mt-0.5">Activo − Pasivo</p>
           </div>
@@ -310,8 +321,10 @@ export default async function ReportesPage() {
               <tbody>
                 {[
                   { label: "Cajas",              value: balance.activo.cajas,             note: "" },
-                  { label: "CC positivas",        value: balance.activo.cuentasCorrientes, note: "" },
+                  { label: "CC deudoras",         value: balance.activo.cuentasCorrientes, note: "" },
                   { label: "Cartera propia",      value: balance.activo.cartera,           note: "" },
+                  { label: "Inmuebles (base)",    value: balance.activo.inmuebles,         note: "" },
+                  { label: "Pendientes a cobrar", value: balance.activo.pendientes,        note: "" },
                   { label: "Custodia (inform.)",  value: balance.activo.custodia,          note: "no suma" },
                 ].map(({ label, value, note }, i, arr) => (
                   <tr key={label} className={`border-b border-slate-50 last:border-0 ${note ? "opacity-50" : ""}`}>
@@ -338,8 +351,9 @@ export default async function ReportesPage() {
             <table className="w-full text-xs">
               <tbody>
                 {[
-                  { label: "Plazos fijos activos", value: balance.pasivo.plazosFijos },
-                  { label: "CC negativas",          value: balance.pasivo.cuentasNegativas },
+                  { label: "Plazos fijos (capital + interés)", value: balance.pasivo.plazosFijos },
+                  { label: "CC acreedoras",         value: balance.pasivo.cuentasNegativas },
+                  { label: "Pendientes a pagar",    value: balance.pasivo.pendientes },
                 ].map(({ label, value }) => (
                   <tr key={label} className="border-b border-slate-50 last:border-0">
                     <td className="px-4 py-3 text-slate-600 font-medium">{label}</td>
@@ -356,12 +370,12 @@ export default async function ReportesPage() {
         </div>
 
         {/* Patrimonio Neto — cierre visual debajo de ambas tablas */}
-        <div className={`rounded-xl border px-6 py-4 flex items-center justify-between ${balance.patrimonioNeto >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-red-50 border-red-200"}`}>
-          <p className={`text-[10px] font-black uppercase tracking-[0.25em] ${balance.patrimonioNeto >= 0 ? "text-emerald-700" : "text-red-600"}`}>
+        <div className={`rounded-xl border px-6 py-4 flex items-center justify-between ${signo(balance.patrimonioNeto) >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-red-50 border-red-200"}`}>
+          <p className={`text-[10px] font-black uppercase tracking-[0.25em] ${signo(balance.patrimonioNeto) >= 0 ? "text-emerald-700" : "text-red-600"}`}>
             Patrimonio Neto · Activo − Pasivo
           </p>
-          <p className={`text-2xl font-black tabular-nums ${balance.patrimonioNeto >= 0 ? "text-emerald-800" : "text-red-700"}`}>
-            {balance.patrimonioNeto >= 0 ? "" : "−"}{fmtN(Math.abs(balance.patrimonioNeto))}
+          <p className={`text-2xl font-black tabular-nums ${signo(balance.patrimonioNeto) >= 0 ? "text-emerald-800" : "text-red-700"}`}>
+            {signo(balance.patrimonioNeto) >= 0 ? "" : "−"}{fmtN(absN(balance.patrimonioNeto))}
           </p>
         </div>
       </section>

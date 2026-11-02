@@ -5,9 +5,12 @@ import { getResumenComisiones, type ProductorMesData } from "@/lib/data/comision
 import { getMesOperativo } from "@/lib/services/config.service";
 import { prisma } from "@/lib/prisma";
 import type { SnapshotData } from "@/lib/data/cierres";
+import { CalidadBadge, DetalleIncompleto } from "@/components/ui/CalidadFinanciera";
 import Link from "next/link";
 
-function fmt(n: number, dec = 2) {
+/** MACRO 2: null = cifra INCOMPLETA (nunca se muestra como 0). */
+function fmt(n: number | null, dec = 2) {
+  if (n === null) return "Incompleto";
   return n.toLocaleString("es-AR", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
@@ -37,9 +40,9 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 className="text-[10px] font-black uppercase tracking-[0.25em] text-byg-muted">{children}</h2>;
 }
 
-function LineTable({ items, title }: { items: { label: string; montoARS: number }[]; title: string }) {
+function LineTable({ items, title }: { items: { label: string; montoARS: number | null }[]; title: string }) {
   if (items.length === 0) return null;
-  const total = items.reduce((s, it) => s + it.montoARS, 0);
+  const total = items.some((it) => it.montoARS === null) ? null : items.reduce((s, it) => s + (it.montoARS ?? 0), 0);
   return (
     <div className="rounded-xl border border-byg-border overflow-hidden">
       <div className="bg-byg-bg px-4 py-2 text-[10px] font-black uppercase tracking-widest text-byg-muted border-b border-byg-border">
@@ -82,7 +85,8 @@ export default async function ReporteMensualPage({
   const cierre = await prisma.cierreMensual.findUnique({ where: { mes } }).catch(() => null);
   const isClosed = cierre?.estado === "CERRADO" && cierre?.snapshotData != null;
 
-  let utilidad: Awaited<ReturnType<typeof getUtilidadMes>>;
+  // Snapshots anteriores a MACRO 2 no traen los campos USD canónicos (opcionales).
+  let utilidad: SnapshotData["utilidad"] & Partial<Awaited<ReturnType<typeof getUtilidadMes>>>;
   let comisiones: Pick<ProductorMesData, "productor" | "estado" | "totalBaseUSD" | "totalComisionUSD"> & { lineas: { length: number }[] }[] | ProductorMesData[];
 
   if (isClosed) {
@@ -107,11 +111,17 @@ export default async function ReporteMensualPage({
   const mesLabel = new Date(mesY, mesM - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" });
 
   const tc = utilidad.tcBlue;
-  const arbUSDEquiv = utilidad.arbitrajesUSD + utilidad.arbitrajesARS / tc;
-  const honorariosUSD = utilidad.ingresosARS / tc;
-  const egresosUSD    = utilidad.egresosARS / tc;
+  // MACRO 2: cada partida viene convertida al TC de su fecha; solo los snapshots
+  // previos (sin esos campos) usan la derivación vieja al TC del snapshot.
+  // Un snapshot previo no trae "quality": solo ahí se deriva al TC del snapshot.
+  const esSnapshotPrevio = utilidad.quality === undefined;
+  const div = (a: number | null, b: number | null) => (a === null || b === null || b === 0 ? null : a / b);
+  const arbUSDEquiv   = esSnapshotPrevio ? (tc ? utilidad.arbitrajesUSD + utilidad.arbitrajesARS / tc : null) : (utilidad.arbitrajesUSDEquiv ?? null);
+  const honorariosUSD = esSnapshotPrevio ? div(utilidad.ingresosARS, tc) : (utilidad.ingresosUSD ?? null);
+  const egresosUSD    = esSnapshotPrevio ? div(utilidad.egresosARS, tc) : (utilidad.egresosUSD ?? null);
   const comisionesPagar = comisiones.reduce((s, d) => s + d.totalComisionUSD, 0);
-  const utilidadNeta = utilidad.utilidadTotalUSD - comisionesPagar;
+  const utilidadNeta = utilidad.utilidadTotalUSD === null ? null : utilidad.utilidadTotalUSD - comisionesPagar;
+  const signo = (n: number | null) => n ?? 0;
 
   return (
     <div className="flex flex-col gap-8 pb-20">
@@ -158,17 +168,20 @@ export default async function ReporteMensualPage({
 
       {/* Result KPIs */}
       <div className="flex flex-col gap-3">
-        <SectionTitle>Resultado del mes</SectionTitle>
+        <SectionTitle>Resultado del mes {utilidad.quality && <CalidadBadge quality={utilidad.quality} reasons={utilidad.qualityReasons} />}</SectionTitle>
+        {utilidad.quality && (
+          <DetalleIncompleto quality={utilidad.quality} reasons={utilidad.qualityReasons ?? []} knownSubtotalUSD={utilidad.knownSubtotalUSD ?? 0} fmt={(n) => `USD ${fmt(n)}`} />
+        )}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <KPI
             label="Resultado Cambio FX"
             value={`USD ${fmt(utilidad.cambioUSD)}`}
-            color={utilidad.cambioUSD >= 0 ? "text-emerald-400" : "text-red-400"}
+            color={signo(utilidad.cambioUSD) >= 0 ? "text-emerald-400" : "text-red-400"}
           />
           <KPI
             label="Arbitrajes (equiv. USD)"
             value={`USD ${fmt(arbUSDEquiv)}`}
-            color={arbUSDEquiv >= 0 ? "text-emerald-400" : "text-red-400"}
+            color={signo(arbUSDEquiv) >= 0 ? "text-emerald-400" : "text-red-400"}
           />
           <KPI
             label="Honorarios / ingresos"
@@ -180,7 +193,7 @@ export default async function ReporteMensualPage({
             label="Egresos operativos"
             value={`USD ${fmt(egresosUSD)}`}
             sub={`$ ${fmt(utilidad.egresosARS)}`}
-            color={egresosUSD > 0 ? "text-red-400" : "text-byg-muted"}
+            color={signo(egresosUSD) > 0 ? "text-red-400" : "text-byg-muted"}
           />
         </div>
       </div>
@@ -192,7 +205,7 @@ export default async function ReporteMensualPage({
           <KPI
             label="Utilidad bruta estimada"
             value={`USD ${fmt(utilidad.utilidadTotalUSD)}`}
-            color={utilidad.utilidadTotalUSD >= 0 ? "text-byg-text" : "text-red-400"}
+            color={signo(utilidad.utilidadTotalUSD) >= 0 ? "text-byg-text" : "text-red-400"}
           />
           <KPI
             label="Comisiones a productores"
@@ -203,7 +216,7 @@ export default async function ReporteMensualPage({
           <KPI
             label="Utilidad neta estimada"
             value={`USD ${fmt(utilidadNeta)}`}
-            color={utilidadNeta >= 0 ? "text-emerald-400" : "text-red-400"}
+            color={signo(utilidadNeta) >= 0 ? "text-emerald-400" : "text-red-400"}
             accent
           />
         </div>
