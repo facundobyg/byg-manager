@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getMovimientosPendientesConCobertura } from "@/lib/data/movimiento-caja";
 import { Decimal } from "@prisma/client/runtime/library";
 import { TipoCaja } from "@prisma/client";
 
@@ -78,22 +79,18 @@ export async function getPendingPrincipalSummary(): Promise<PendingPrincipalSumm
   const principal = await prisma.caja.findFirst({ where: { esPrincipal: true }, select: { id: true } });
   if (!principal) return { count: 0, totalUSD: 0, totalARS: 0 };
 
-  const rows = await prisma.movimientoCaja.groupBy({
-    by: ["moneda"],
-    where: { cajaId: principal.id, confirmado: false, anulado: false },
-    _sum: { monto: true },
-    _count: { id: true },
-  });
+  // MACRO 3: residual por pendiente (monto − pagos parciales válidos), no el monto completo.
+  const rows = (await getMovimientosPendientesConCobertura())
+    .filter((r) => r.cajaId === principal.id && !r.anulado && r.montoPendiente > 0);
 
   let count = 0;
   let totalUSD = 0;
   let totalARS = 0;
 
   for (const r of rows) {
-    count += r._count.id;
-    const monto = Number(r._sum.monto ?? 0);
-    if (r.moneda === "USD") totalUSD += monto;
-    else if (r.moneda === "ARS") totalARS += monto;
+    count += 1;
+    if (r.moneda === "USD") totalUSD += r.montoPendiente;
+    else if (r.moneda === "ARS") totalARS += r.montoPendiente;
   }
 
   return { count, totalUSD, totalARS };

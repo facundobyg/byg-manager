@@ -15,14 +15,14 @@
 
 import { Decimal } from "@prisma/client/runtime/library";
 import type { FinanceDataset } from "./dataset";
-import { clasificarMovCaja, type Ledger } from "./ledger";
+import { clasificarMovCaja, fechaReversaPorMovimiento, type Ledger } from "./ledger";
 import { calcularPatrimonioNeto } from "./patrimonio";
 import { D, MONEDAS, montosANumero, montosVacios, sumarMonto, type Moneda, type Montos } from "./types";
 
 export type BucketConciliacion =
   | "RESULTADO_REALIZADO" | "REVERSAS_Y_REVERTIDOS" | "DISTRIBUCION" | "APORTES_INMUEBLE" | "RETIROS_INMUEBLE"
   | "FLUJO_PATRIMONIAL" | "TRANSFERENCIA_INTERNA" | "LIQUIDACION_CAMBIO" | "PENDIENTE_REGISTRADO" | "PENDIENTE_CANCELADO"
-  | "PAGO_PENDIENTE";
+  | "PAGO_PENDIENTE" | "PENDIENTE_REABIERTO";
 
 export interface Conciliacion {
   inicio: string;
@@ -66,12 +66,9 @@ export function conciliarPeriodo(ds: FinanceDataset, ledger: Ledger, inicio: str
   };
   const subtipos: Record<string, Montos> = {};
 
+  const revertidoEn = fechaReversaPorMovimiento(ds.movsCaja);
   // Caja: cada movimiento confirmado del período, por su clasificación.
-  const reversos = new Set<string>();
-  for (const m of ds.movsCaja) {
-    const c = clasificarMovCaja(m);
-    if (c.categoria === "REVERSA" && c.reversaDe && m.confirmado) reversos.add(c.reversaDe);
-  }
+  const reversos = new Set(revertidoEn.keys());
   for (const m of ds.movsCaja) {
     const signo = m.tipo === "ENTRADA" || m.tipo === "TRANSFERENCIA_IN" ? 1 : -1;
     const monto = D(m.monto).mul(signo);
@@ -98,9 +95,14 @@ export function conciliarPeriodo(ds: FinanceDataset, ledger: Ledger, inicio: str
       add("PENDIENTE_REGISTRADO", m.moneda, monto, m.fecha);
     }
     // Pago parcial confirmado en el período: baja el residual del pendiente (contrapartida de la pata de caja).
-    if (m.pagoDeId && m.confirmado && !m.anulado && enPeriodo(m.fecha)) {
+    if (m.pagoDeId && m.confirmado && !m.anulado) {
       const orig = ds.movsCaja.find((x) => x.id === m.pagoDeId);
-      if (orig && !orig.confirmado && !orig.anulado) add("PENDIENTE_CANCELADO", m.moneda, monto.neg(), m.fecha);
+      if (orig && !orig.confirmado && !orig.anulado) {
+        if (enPeriodo(m.fecha)) add("PENDIENTE_CANCELADO", m.moneda, monto.neg(), m.fecha);
+        // MACRO 3: si el pago se revierte en el período, el pendiente se reabre por ese monto.
+        const rev = revertidoEn.get(m.id);
+        if (rev && enPeriodo(rev) && rev >= m.fecha) add("PENDIENTE_REABIERTO", m.moneda, monto, rev);
+      }
     }
   }
 

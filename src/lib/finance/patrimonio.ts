@@ -24,6 +24,7 @@
 
 import { Decimal } from "@prisma/client/runtime/library";
 import type { FinanceDataset } from "./dataset";
+import { fechaReversaPorMovimiento } from "./ledger";
 import { construirCalidad, type Calidad, type QualityReason } from "./quality";
 import { TcBitacora } from "./tc";
 import { D, MONEDAS, montosANumero, montosVacios, sumarMonto, sumarMontos, type Moneda, type Montos } from "./types";
@@ -127,9 +128,13 @@ export function calcularPatrimonioNeto(ds: FinanceDataset, corte: string = ds.ho
   });
 
   // ── Pendientes (saldo residual) ──
+  // MACRO 3: un pago parcial revertido (hasta el corte) deja de cubrir el pendiente.
+  const revertidoEn = fechaReversaPorMovimiento(ds.movsCaja);
   const pagadoPor = new Map<string, Decimal>();
   for (const mv of ds.movsCaja) {
     if (!mv.pagoDeId || !mv.confirmado || mv.anulado || mv.fecha > corte) continue;
+    const rev = revertidoEn.get(mv.id);
+    if (rev && rev <= corte) continue;
     pagadoPor.set(mv.pagoDeId, (pagadoPor.get(mv.pagoDeId) ?? new Decimal(0)).plus(D(mv.monto)));
   }
   const detPendientes: PatrimonioNeto["detalle"]["pendientes"] = [];

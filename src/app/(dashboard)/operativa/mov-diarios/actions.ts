@@ -9,6 +9,19 @@ import { requireActionPermission, requireCajaPermission } from "@/lib/auth/permi
 import { leerLiquidacionesPorCaja, type LiquidacionPorCaja } from "@/lib/parse-monto";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import {
+  descripcionEditada, esMonedaValida, esOpRevertida, esTipoManual, parseMontoPositivo, validarClasificacion,
+  validarTextoEditado, validarTextoUsuario, vinculoFinanciero,
+} from "@/lib/caja/integridad";
+import {
+  IntegridadError, cancelarCambioTx, editarCambioTx, liquidarCambioTx, lockMovimientosCaja, movimientosCCDeCambio, movimientosDeCambio,
+  pagosValidos, revertirCambioTx,
+} from "@/lib/caja/integridad.service";
+
+/** Mensaje seguro: los errores de integridad son para el usuario; el resto, genérico. */
+function mensajeError(e: unknown, generico: string): string {
+  return e instanceof IntegridadError ? e.message : generico;
+}
 
 async function getCajaSlug(cajaId: string): Promise<string | null> {
   const c = await prisma.caja.findUnique({ where: { id: cajaId }, select: { slug: true } });
@@ -39,10 +52,16 @@ export async function crearMovimientoDiario(
     return { error: "Faltan campos obligatorios" };
   }
 
-  const monto = parseFloat(rawMonto);
-  if (isNaN(monto) || monto <= 0) {
-    return { error: "Monto inválido" };
-  }
+  // MACRO 3: decimal estricto > 0 (parseFloat aceptaba "12abc", "1e3"…).
+  const montoDec = parseMontoPositivo(rawMonto);
+  if (!montoDec) return { error: "Monto inválido: usá solo números mayores a 0" };
+  if (!esMonedaValida(moneda)) return { error: "Moneda inválida" };
+  // MACRO 3 (L1): clasificación de lista cerrada y texto libre sin marcas internas,
+  // validado ANTES de escribir (si no, el usuario fabrica "[Cambio …]", "REVERSO | ref:…").
+  const clasifError = validarClasificacion(clasificacion, clasificacion === "TRANSFERENCIA" ? null : subtipoOperativo);
+  if (clasifError) return { error: clasifError };
+  const textoError = validarTextoUsuario(descripcion);
+  if (textoError) return { error: textoError };
 
   const d = new Date(fechaStr);
   if (isNaN(d.getTime())) return { error: "Fecha inválida" };
@@ -67,6 +86,9 @@ export async function crearMovimientoDiario(
       const scopeDenied = await requireCajaPermission([cajaId, cajaDestinoId]);
       if (scopeDenied) return scopeDenied;
 
+      // MACRO 3: las dos patas comparten transferenciaRef (vínculo estructurado):
+      // no se pueden editar, borrar ni revertir por separado.
+      const transferenciaRef = crypto.randomUUID();
       await prisma.$transaction(async (tx) => {
         await tx.movimientoCaja.create({
           data: {
@@ -75,9 +97,10 @@ export async function crearMovimientoDiario(
             fecha,
             tipo: "SALIDA",
             moneda,
-            monto: new Decimal(monto),
+            monto: montoDec,
             descripcion: `[TRANSFERENCIA:OUT] a ${cajaDest?.label} | ${descripcion || ""} | usr:${userName}`,
             confirmado: true,
+            transferenciaRef,
           },
         });
 
@@ -88,9 +111,10 @@ export async function crearMovimientoDiario(
             fecha,
             tipo: "ENTRADA",
             moneda,
-            monto: new Decimal(monto),
+            monto: montoDec,
             descripcion: `[TRANSFERENCIA:IN] desde ${cajaOrigen?.label} | ${descripcion || ""} | usr:${userName}`,
             confirmado: true,
+            transferenciaRef,
           },
         });
       });
@@ -100,6 +124,7 @@ export async function crearMovimientoDiario(
       if (cajaDest?.slug) revalidatePath(`/operativa/${cajaDest.slug}`);
     } else {
       if (!cajaId || !tipo || !subtipoOperativo) return { error: "Faltan campos para registrar movimiento" };
+      if (!esTipoManual(tipo)) return { error: "Tipo inválido" };
 
       // Scope de caja: Trenque exige caja:operar_trenque; cualquier otra, caja:operar_oficina.
       const cajaSlug = await getCajaSlug(cajaId);
@@ -116,7 +141,7 @@ export async function crearMovimientoDiario(
           fecha,
           tipo,
           moneda,
-          monto: new Decimal(monto),
+          monto: montoDec,
           descripcion: finalDesc,
           confirmado: true,
         },
@@ -178,14 +203,26 @@ export async function crearOperacionCambio(
     return { error: "Todos los campos obligatorios deben completarse" };
   }
 
+  if (tipoOp !== "COMPRA" && tipoOp !== "VENTA") return { error: "Tipo de operación inválido" };
+  if (!esMonedaValida(moneda) || moneda === "ARS") return { error: "Moneda inválida" };
   const tipo = `${tipoOp}_${moneda}` as TipoOperacionCambio;
-  const cantidad = parseFloat(rawCantidad);
-  const tc = parseFloat(rawTipoCambio);
-  if (isNaN(cantidad) || cantidad <= 0) return { error: "Cantidad inválida" };
-  if (isNaN(tc) || tc <= 0) return { error: "Tipo de cambio debe ser mayor a 0" };
-  if (tc > 10_000_000) return { error: "Tipo de cambio excede el máximo permitido" };
+  // MACRO 3: decimales estrictos > 0 (parseFloat aceptaba "12abc", "1e3"…).
+  const cantidadDec = parseMontoPositivo(rawCantidad);
+  const tcDec = parseMontoPositivo(rawTipoCambio);
+  if (!cantidadDec) return { error: "Cantidad inválida" };
+  if (!tcDec) return { error: "Tipo de cambio debe ser mayor a 0" };
+  if (tcDec.gt(10_000_000)) return { error: "Tipo de cambio excede el máximo permitido" };
+  const cantidad = cantidadDec.toNumber();
+  const tc = tcDec.toNumber();
+  if (estadoOp !== "NO_LIQUIDADA" && estadoOp !== "LIQUIDADA" && estadoOp !== "PARCIAL") return { error: "Estado inválido" };
+  // LIQUIDADA sin caja no puede marcarse liquidada sin efectivo; PARCIAL sin montos tampoco.
+  if (estadoOp === "LIQUIDADA" && !cajaLiqId) return { error: "Seleccioná la caja de liquidación" };
+  if (estadoOp === "PARCIAL" && parciales.length === 0) return { error: "Ingresá al menos un monto parcial" };
+  // L1: [REVERTIDA POR:]/[PARCIAL]/[CC] y demás marcas solo las pone el sistema.
+  const textoError = validarTextoUsuario(descripcion);
+  if (textoError) return { error: textoError };
 
-  const totalARS  = new Decimal(cantidad).mul(new Decimal(tc));
+  const totalARS  = cantidadDec.mul(tcDec);
   // NO_LIQUIDADA → pendiente=true; LIQUIDADA|PARCIAL → pendiente=false
   const pendiente = estadoOp === "NO_LIQUIDADA";
   const esLiquidada = estadoOp === "LIQUIDADA";
@@ -200,7 +237,7 @@ export async function crearOperacionCambio(
   const esVenta  = tipo.startsWith("VENTA");
 
   let finalDesc = descripcion?.trim() || `Operación de ${tipo.replace(/_/g, " ")}`;
-  if (esParcial) finalDesc = `[PARCIAL] ${finalDesc}`;
+  // [PARCIAL] lo administra la liquidación (liquidarCambioTx) según lo efectivamente liquidado.
   if (impactoCC) finalDesc = `[CC] ${finalDesc}`;
   finalDesc = `${finalDesc} | usr:${userName}`;
 
@@ -217,6 +254,9 @@ export async function crearOperacionCambio(
       select: { id: true },
       orderBy: { orden: "asc" },
     });
+    // MACRO 3: un monto en una caja no operativa se rechaza (antes se descartaba en silencio).
+    const activas = new Set(activeCajasForParcial.map((c) => c.id));
+    if (parciales.some((x) => !activas.has(x.cajaId))) return { error: "Caja de liquidación no operativa" };
   }
 
   try {
@@ -285,33 +325,14 @@ export async function crearOperacionCambio(
         });
       }
 
-      // 3. Caja: SOLO si LIQUIDADA o PARCIAL
+      // 3. Caja: SOLO si LIQUIDADA o PARCIAL. MACRO 3: patas con operacionCambioId y
+      //    validación de no-sobreliquidación dentro de la misma transacción.
       if (esLiquidada && cajaLiqData) {
-        const cid = cajaLiqData.id;
-        if (esCompra) {
-          await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cid, fecha, tipo: "ENTRADA", moneda, monto: new Decimal(cantidad), descripcion: `[Cambio ${op.id}] Compra divisa`, confirmado: true } });
-          await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cid, fecha, tipo: "SALIDA",  moneda: "ARS", monto: totalARS, descripcion: `[Cambio ${op.id}] Pago ARS x Compra`, confirmado: true } });
-        } else {
-          await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cid, fecha, tipo: "SALIDA",  moneda, monto: new Decimal(cantidad), descripcion: `[Cambio ${op.id}] Venta divisa`, confirmado: true } });
-          await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cid, fecha, tipo: "ENTRADA", moneda: "ARS", monto: totalARS, descripcion: `[Cambio ${op.id}] Cobro ARS x Venta`, confirmado: true } });
-        }
+        await liquidarCambioTx(tx, { opId: op.id, items: "TOTAL", cajaTotalId: cajaLiqData.id, fecha, etiqueta: "Cambio", userName });
       } else if (esParcial) {
-        const activas = new Set(activeCajasForParcial.map((c) => c.id));
-        for (const p of parciales) {
-          // Solo cajas activas operativas (mismo criterio que antes); el scope ya se exigió sobre todas.
-          if (!activas.has(p.cajaId)) continue;
-          const caja = { id: p.cajaId };
-          const cantDiv = p.div;
-          const arsParc = p.ars ?? cantDiv.mul(new Decimal(tc));
-
-          if (esCompra) {
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "ENTRADA", moneda, monto: cantDiv, descripcion: `[Cambio ${op.id}] Compra divisa parcial | usr:${userName}`, confirmado: true } });
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "SALIDA",  moneda: "ARS", monto: arsParc, descripcion: `[Cambio ${op.id}] Pago ARS parcial | usr:${userName}`, confirmado: true } });
-          } else {
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "SALIDA",  moneda, monto: cantDiv, descripcion: `[Cambio ${op.id}] Venta divisa parcial | usr:${userName}`, confirmado: true } });
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "ENTRADA", moneda: "ARS", monto: arsParc, descripcion: `[Cambio ${op.id}] Cobro ARS parcial | usr:${userName}`, confirmado: true } });
-          }
-        }
+        await liquidarCambioTx(tx, {
+          opId: op.id, items: parciales.map((x) => ({ cajaId: x.cajaId, div: x.div, ars: x.ars })), fecha, etiqueta: "Cambio", userName,
+        });
       }
     }, { timeout: 15000 });
 
@@ -327,9 +348,9 @@ export async function crearOperacionCambio(
     revalidatePath("/caja");
     revalidatePath("/clientes");
     return { ok: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error creating exchange operation:", error);
-    return { error: error.message || "Error al registrar la operación" };
+    return { error: mensajeError(error, "Error al registrar la operación") };
   }
 }
 
@@ -351,20 +372,22 @@ export async function eliminarMovimientoCaja(
   const scopeDenied = await requireCajaPermission([mov.cajaId]);
   if (scopeDenied) return scopeDenied;
 
-  const desc = mov.descripcion || "";
-  if (
-    desc.startsWith("[Cambio ") ||
-    desc.startsWith("[Cobro Cambio ") ||
-    desc.startsWith("[TRANSFERENCIA:")
-  ) {
-    return { error: "Movimiento vinculado a cambio/transferencia: no se puede eliminar directamente" };
-  }
-
   const cajaSlug = await getCajaSlug(mov.cajaId);
   try {
-    await prisma.movimientoCaja.delete({ where: { id } });
-  } catch (error: any) {
-    return { error: "Error al eliminar el movimiento" };
+    // MACRO 3: un movimiento CONFIRMADO es historia financiera → se revierte, no se borra.
+    // Solo un pendiente sin impacto (sin pagos ni vínculos) puede eliminarse.
+    await prisma.$transaction(async (tx) => {
+      await lockMovimientosCaja(tx, [id]);
+      const actual = await tx.movimientoCaja.findUnique({ where: { id } });
+      if (!actual) throw new IntegridadError("Movimiento no encontrado");
+      if (actual.confirmado) throw new IntegridadError("Movimiento confirmado: no se elimina, se revierte (Revertir)");
+      if (vinculoFinanciero(actual)) throw new IntegridadError("Movimiento vinculado a cambio/transferencia/pago: no se puede eliminar");
+      const hijos = await tx.movimientoCaja.count({ where: { pagoDeId: id } });
+      if (hijos > 0) throw new IntegridadError("El pendiente tiene pagos parciales: no se puede eliminar");
+      await tx.movimientoCaja.delete({ where: { id } });
+    });
+  } catch (error: unknown) {
+    return { error: mensajeError(error, "Error al eliminar el movimiento") };
   }
 
   const sessionElim = await auth();
@@ -407,9 +430,13 @@ export async function editarFechaMovimientoCaja(
   if (isNaN(d.getTime())) return { error: "Fecha inválida" };
   const fecha = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   try {
-    await prisma.movimientoCaja.update({
-      where: { id },
-      data: { fecha },
+    // MACRO 3: una pata de transferencia/cambio/reversa/pago no se edita por separado.
+    await prisma.$transaction(async (tx) => {
+      await lockMovimientosCaja(tx, [id]);
+      const actual = await tx.movimientoCaja.findUnique({ where: { id } });
+      if (!actual) throw new IntegridadError("Movimiento no encontrado");
+      if (vinculoFinanciero(actual)) throw new IntegridadError("Movimiento vinculado: no se puede editar una sola pata. Revertí y volvé a crear.");
+      await tx.movimientoCaja.update({ where: { id }, data: { fecha } });
     });
 
     const sessionFecha = await auth();
@@ -425,9 +452,9 @@ export async function editarFechaMovimientoCaja(
     revalidatePath("/caja");
     if (cajaSlug) revalidatePath(`/operativa/${cajaSlug}`);
     return { ok: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error updating movement date:", error);
-    return { error: "Error al actualizar la fecha" };
+    return { error: mensajeError(error, "Error al actualizar la fecha") };
   }
 }
 
@@ -458,23 +485,38 @@ export async function editarMovimientoCajaCompleto(
   if (scopeDenied) return scopeDenied;
   const editCajaSlug = await getCajaSlug(movToEdit.cajaId);
 
-  const monto = parseFloat(rawMonto);
-  if (isNaN(monto) || monto < 0) return { error: "Monto inválido" };
+  const montoDec = parseMontoPositivo(rawMonto);
+  if (!montoDec) return { error: "Monto inválido: usá solo números mayores a 0" };
+  if (!esTipoManual(tipo)) return { error: "Tipo inválido" };
+  if (!esMonedaValida(moneda)) return { error: "Moneda inválida" };
+  const monto = montoDec.toNumber();
 
   const d = new Date(fechaStr);
   if (isNaN(d.getTime())) return { error: "Fecha inválida" };
   const fecha = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 
   try {
-    await prisma.movimientoCaja.update({
-      where: { id },
-      data: {
-        fecha,
-        tipo,
-        moneda,
-        monto: new Decimal(monto),
-        descripcion: descripcion || null,
-      },
+    // MACRO 3: en un CONFIRMADO no cambian monto/moneda/tipo (se revierte y se recrea);
+    // un movimiento vinculado no se edita; la marca de clasificación se preserva.
+    await prisma.$transaction(async (tx) => {
+      await lockMovimientosCaja(tx, [id]);
+      const actual = await tx.movimientoCaja.findUnique({ where: { id } });
+      if (!actual) throw new IntegridadError("Movimiento no encontrado");
+      if (vinculoFinanciero(actual)) throw new IntegridadError("Movimiento vinculado: no se puede editar una sola pata. Revertí y volvé a crear.");
+      // L1: el texto editado no puede agregar marcas internas que no estaban.
+      const textoError = validarTextoEditado(actual.descripcion, descripcion);
+      if (textoError) throw new IntegridadError(textoError);
+      const cambiaEconomia = actual.tipo !== tipo || actual.moneda !== moneda || !new Decimal(actual.monto.toString()).eq(montoDec);
+      if (actual.confirmado && cambiaEconomia) {
+        throw new IntegridadError("Movimiento confirmado: monto, moneda y tipo no se editan. Revertí y volvé a crear.");
+      }
+      if (!actual.confirmado && cambiaEconomia && (await pagosValidos(tx, id)).length > 0) {
+        throw new IntegridadError("El pendiente tiene pagos parciales: monto, moneda y tipo no se editan");
+      }
+      await tx.movimientoCaja.update({
+        where: { id },
+        data: { fecha, tipo, moneda, monto: montoDec, descripcion: descripcionEditada(actual.descripcion, descripcion) },
+      });
     });
 
     const sessionEditMov = await auth();
@@ -490,9 +532,9 @@ export async function editarMovimientoCajaCompleto(
     revalidatePath("/caja");
     if (editCajaSlug) revalidatePath(`/operativa/${editCajaSlug}`);
     return { ok: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error updating movement:", error);
-    return { error: "Error al actualizar el movimiento" };
+    return { error: mensajeError(error, "Error al actualizar el movimiento") };
   }
 }
 
@@ -509,101 +551,55 @@ export async function editarOperacionCambio(
   const clienteNombre = formData.get("clienteNombre")?.toString()?.trim();
   const descripcion = formData.get("descripcion")?.toString()?.trim();
   const fechaStr = formData.get("fecha")?.toString();
-  const rawCantidad = formData.get("cantidad")?.toString()?.replace(",", ".");
-  const rawTC = formData.get("tipoCambio")?.toString()?.replace(",", ".");
+  const rawCantidad = formData.get("cantidad")?.toString()?.trim();
+  const rawTC = formData.get("tipoCambio")?.toString()?.trim();
   const tipoOpEdit = formData.get("tipoOp")?.toString();       // "COMPRA" | "VENTA"
   const monedaEdit = formData.get("moneda")?.toString() as Moneda | undefined;
   const estadoNuevo = formData.get("estadoNuevo")?.toString(); // "COBRADA" | "PENDIENTE"
 
   if (!id) return { error: "ID requerido" };
 
-  const op = await prisma.operacionCambio.findUnique({ where: { id } });
-  if (!op) return { error: "Operación no encontrada" };
-
-  const updateData: Record<string, unknown> = { updatedAt: new Date() };
-
-  if (clienteNombre) updateData.clienteNombre = clienteNombre;
-  if (descripcion !== undefined) updateData.descripcion = descripcion || null;
-
-  if (op.pendiente) {
-    if (fechaStr) {
-      const d = new Date(fechaStr);
-      if (isNaN(d.getTime())) return { error: "Fecha inválida" };
-      updateData.fecha = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-      updateData.mesContable = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    }
-
-    // Reconstruir tipo si cambió tipoOp o moneda
-    const baseMoneda = monedaEdit ?? op.moneda;
-    const baseTipoOp = tipoOpEdit ?? (op.tipo.startsWith("COMPRA") ? "COMPRA" : "VENTA");
-    if (tipoOpEdit || monedaEdit) {
-      updateData.tipo = `${baseTipoOp}_${baseMoneda}` as TipoOperacionCambio;
-      if (monedaEdit) updateData.moneda = monedaEdit;
-    }
-
-    const nuevaCantidad = rawCantidad ? parseFloat(rawCantidad) : null;
-    const nuevoTC = rawTC ? parseFloat(rawTC) : null;
-    if (nuevaCantidad !== null) {
-      if (isNaN(nuevaCantidad) || nuevaCantidad <= 0) return { error: "Cantidad inválida" };
-      updateData.cantidad = new Decimal(nuevaCantidad);
-      if ((baseMoneda as string) === "USD") updateData.cobroUSD = new Decimal(nuevaCantidad);
-    }
-    if (nuevoTC !== null) {
-      if (isNaN(nuevoTC) || nuevoTC <= 0) return { error: "Tipo de cambio inválido" };
-      updateData.tipoCambio = new Decimal(nuevoTC);
-    }
-    if (nuevaCantidad !== null || nuevoTC !== null) {
-      const finalCantidad = nuevaCantidad ?? Number(op.cantidad);
-      const finalTC = nuevoTC ?? Number(op.tipoCambio);
-      const nuevoTotal = new Decimal(finalCantidad).mul(new Decimal(finalTC));
-      updateData.totalARS = nuevoTotal;
-      updateData.cobroARS = nuevoTotal;
-    }
-
-    // PENDIENTE → COBRADA: liquidar y crear movimientos de caja
-    if (estadoNuevo === "COBRADA") {
-      const cajaOficina = await prisma.caja.findFirst({
-        where: { OR: [{ esPrincipal: true }, { slug: "oficina" }], activa: true },
-      });
-      if (!cajaOficina) return { error: "Caja Oficina no configurada" };
-      const cobroScopeDenied = await requireCajaPermission([cajaOficina.id]);
-      if (cobroScopeDenied) return cobroScopeDenied;
-
-      const fechaFinal = (updateData.fecha as Date | undefined) ?? op.fecha;
-      const finalTipoStr = (updateData.tipo as string | undefined) ?? op.tipo;
-      const finalCantidadNum = updateData.cantidad
-        ? Number(updateData.cantidad as Decimal)
-        : Number(op.cantidad);
-      const finalTotal = (updateData.totalARS as Decimal | undefined) ?? op.totalARS;
-      const finalMonedaStr = (updateData.moneda as Moneda | undefined) ?? op.moneda;
-      const esCompra = finalTipoStr.startsWith("COMPRA");
-
-      try {
-        await prisma.$transaction(async (tx) => {
-          await tx.operacionCambio.update({ where: { id }, data: { ...updateData, pendiente: false } });
-          if (esCompra) {
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cajaOficina.id, fecha: fechaFinal, tipo: "ENTRADA", moneda: finalMonedaStr, monto: new Decimal(finalCantidadNum), descripcion: `[Cobro Cambio ${id}] Compra divisa`, confirmado: true } });
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cajaOficina.id, fecha: fechaFinal, tipo: "SALIDA", moneda: "ARS", monto: finalTotal, descripcion: `[Cobro Cambio ${id}] Pago ARS x Compra`, confirmado: true } });
-          } else {
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cajaOficina.id, fecha: fechaFinal, tipo: "SALIDA", moneda: finalMonedaStr, monto: new Decimal(finalCantidadNum), descripcion: `[Cobro Cambio ${id}] Venta divisa`, confirmado: true } });
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: cajaOficina.id, fecha: fechaFinal, tipo: "ENTRADA", moneda: "ARS", monto: finalTotal, descripcion: `[Cobro Cambio ${id}] Cobro ARS x Venta`, confirmado: true } });
-          }
-        });
-        revalidatePath("/operativa/mov-diarios");
-        revalidatePath("/caja");
-        return { ok: true };
-      } catch (e: any) {
-        return { error: e.message || "Error al liquidar la operación" };
-      }
-    }
+  // Validación de formato (sin estado): antes de abrir la transacción.
+  if (monedaEdit && (!esMonedaValida(monedaEdit) || monedaEdit === "ARS")) return { error: "Moneda inválida" };
+  if (tipoOpEdit && tipoOpEdit !== "COMPRA" && tipoOpEdit !== "VENTA") return { error: "Tipo de operación inválido" };
+  const cantidadDec = rawCantidad ? parseMontoPositivo(rawCantidad) : null;
+  const tcDecEdit = rawTC ? parseMontoPositivo(rawTC) : null;
+  if (rawCantidad && !cantidadDec) return { error: "Cantidad inválida" };
+  if (rawTC && !tcDecEdit) return { error: "Tipo de cambio inválido" };
+  if (tcDecEdit && tcDecEdit.gt(10_000_000)) return { error: "Tipo de cambio excede el máximo permitido" };
+  let fechaNueva: Date | null = null;
+  if (fechaStr) {
+    const d = new Date(fechaStr);
+    if (isNaN(d.getTime())) return { error: "Fecha inválida" };
+    fechaNueva = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   }
 
+  // PENDIENTE → COBRADA liquida en Oficina: scope resuelto antes de la transacción.
+  let cajaCobroId: string | null = null;
+  if (estadoNuevo === "COBRADA") {
+    const cajaOficina = await prisma.caja.findFirst({
+      where: { OR: [{ esPrincipal: true }, { slug: "oficina" }], activa: true },
+    });
+    if (!cajaOficina) return { error: "Caja Oficina no configurada" };
+    const cobroScopeDenied = await requireCajaPermission([cajaOficina.id]);
+    if (cobroScopeDenied) return cobroScopeDenied;
+    cajaCobroId = cajaOficina.id;
+  }
+  const session = await auth();
+  const userName = (session?.user as { name?: string })?.name ?? "Sistema";
+
   try {
-    await prisma.operacionCambio.update({ where: { id }, data: updateData });
+    // L3: lock + relectura + recálculo de lo liquidado + validación + update en UNA tx.
+    await prisma.$transaction((tx) => editarCambioTx(tx, {
+      opId: id, clienteNombre, descripcion, fecha: fechaNueva,
+      tipoOp: tipoOpEdit as "COMPRA" | "VENTA" | undefined, moneda: monedaEdit, cantidad: cantidadDec, tipoCambio: tcDecEdit,
+      cobro: estadoNuevo === "COBRADA" && cajaCobroId ? { cajaId: cajaCobroId, userName } : null,
+    }));
     revalidatePath("/operativa/mov-diarios");
+    if (estadoNuevo === "COBRADA") revalidatePath("/caja");
     return { ok: true };
-  } catch (e: any) {
-    return { error: e.message || "Error al actualizar la operación" };
+  } catch (e: unknown) {
+    return { error: mensajeError(e, "Error al actualizar la operación") };
   }
 }
 
@@ -650,26 +646,17 @@ export async function cancelarOperacionCambioPendiente(
   const id = formData.get("id")?.toString();
   if (!id) return { error: "ID requerido" };
 
+  const hoy = new Date();
+  const fecha = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
   try {
-    // Checks de negocio + delete atómicos: evita doble cancelación bajo concurrencia.
-    await prisma.$transaction(async (tx) => {
-      const op = await tx.operacionCambio.findUnique({ where: { id } });
-      if (!op) throw new Error("Operación no encontrada");
-      if (!op.pendiente) throw new Error("Solo se pueden cancelar operaciones pendientes");
-
-      const cajaMovs = await tx.movimientoCaja.findFirst({
-        where: { descripcion: { contains: id } },
-        select: { id: true },
-      });
-      if (cajaMovs)
-        throw new Error("No se puede eliminar una operación con movimientos de caja. Revertir desde historial.");
-
-      await tx.operacionCambio.delete({ where: { id } });
-    });
+    // MACRO 3: lock de la operación; si impactó CC, se neutraliza en la MISMA tx
+    // (antes quedaba saldo CC huérfano). Segunda cancelación: "no encontrada".
+    await prisma.$transaction((tx) => cancelarCambioTx(tx, { opId: id, fecha }), { timeout: 15000 });
   } catch (e: unknown) {
-    return { error: (e instanceof Error ? e.message : null) || "Error al cancelar la operación" };
+    return { error: mensajeError(e, "Error al cancelar la operación") };
   }
   revalidatePath("/operativa/mov-diarios");
+  revalidatePath("/clientes");
   return { ok: true };
 }
 
@@ -685,9 +672,9 @@ export async function cobrarOperacionCambio(
   const ids = formData.getAll("operacionId").map((v) => v.toString().trim()).filter(Boolean);
   if (ids.length === 0) return { error: "Debe indicar al menos una operación" };
 
-  const ops = await prisma.operacionCambio.findMany({
+  const ops = (await prisma.operacionCambio.findMany({
     where: { id: { in: ids }, pendiente: true },
-  });
+  })).filter((op) => !esOpRevertida(op.descripcion));
   if (ops.length === 0) return { error: "No se encontraron operaciones pendientes" };
 
   const cajaOficina = await prisma.caja.findFirst({
@@ -698,57 +685,22 @@ export async function cobrarOperacionCambio(
   if (scopeDenied) return scopeDenied;
 
   const fecha = new Date();
+  const sessionCobrar = await auth();
+  const userCobrar = (sessionCobrar?.user as { name?: string })?.name ?? "Sistema";
 
   try {
+    // MACRO 3: por operación, lock + residual (neto de reversas) dentro de la tx.
     await prisma.$transaction(async (tx) => {
       for (const op of ops) {
-        await tx.operacionCambio.update({ where: { id: op.id }, data: { pendiente: false } });
-
-        const esCompra = op.tipo.startsWith("COMPRA");
-
-        if (esCompra) {
-          await tx.movimientoCaja.create({
-            data: {
-              id: crypto.randomUUID(),
-              cajaId: cajaOficina.id, fecha, tipo: "ENTRADA",
-              moneda: op.moneda, monto: op.cantidad,
-              descripcion: `[Cobro Cambio ${op.id}] Compra divisa`, confirmado: true,
-            },
-          });
-          await tx.movimientoCaja.create({
-            data: {
-              id: crypto.randomUUID(),
-              cajaId: cajaOficina.id, fecha, tipo: "SALIDA",
-              moneda: "ARS", monto: op.totalARS,
-              descripcion: `[Cobro Cambio ${op.id}] Pago ARS x Compra`, confirmado: true,
-            },
-          });
-        } else {
-          await tx.movimientoCaja.create({
-            data: {
-              id: crypto.randomUUID(),
-              cajaId: cajaOficina.id, fecha, tipo: "SALIDA",
-              moneda: op.moneda, monto: op.cantidad,
-              descripcion: `[Cobro Cambio ${op.id}] Venta divisa`, confirmado: true,
-            },
-          });
-          await tx.movimientoCaja.create({
-            data: {
-              id: crypto.randomUUID(),
-              cajaId: cajaOficina.id, fecha, tipo: "ENTRADA",
-              moneda: "ARS", monto: op.totalARS,
-              descripcion: `[Cobro Cambio ${op.id}] Cobro ARS x Venta`, confirmado: true,
-            },
-          });
-        }
+        await liquidarCambioTx(tx, { opId: op.id, items: "TOTAL", cajaTotalId: cajaOficina.id, fecha, etiqueta: "Cobro Cambio", userName: userCobrar });
       }
-    });
+    }, { timeout: 15000 });
 
     revalidatePath("/operativa/mov-diarios");
     revalidatePath("/caja");
     return { ok: true };
-  } catch (error: any) {
-    return { error: error.message || "Error al cobrar las operaciones" };
+  } catch (error: unknown) {
+    return { error: mensajeError(error, "Error al cobrar las operaciones") };
   }
 }
 
@@ -784,8 +736,11 @@ export async function liquidarPagoPendiente(
   if (scopeDenied) return scopeDenied;
 
   const ops = await prisma.operacionCambio.findMany({ where: { id: { in: ids } } });
-  const eligibleOps = ops.filter(op => op.pendiente || (op.descripcion ?? "").includes("[PARCIAL]"));
+  const eligibleOps = ops.filter(op => (op.pendiente || (op.descripcion ?? "").includes("[PARCIAL]")) && !esOpRevertida(op.descripcion));
   if (eligibleOps.length === 0) return { error: "No hay operaciones pendientes o parciales para liquidar" };
+  // Montos parciales por caja aplican a UNA operación (no se replican sobre varias).
+  if (modo === "parcial" && eligibleOps.length !== 1) return { error: "La liquidación parcial se hace de a una operación" };
+  const userLiq = ((await auth())?.user as { name?: string })?.name ?? "Sistema";
 
   const hoy = new Date();
   const fecha = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
@@ -799,33 +754,10 @@ export async function liquidarPagoPendiente(
       if (!caja) return { error: "Caja no encontrada" };
       if (caja.slug) slugsToRevalidate.add(caja.slug);
 
+      // MACRO 3: por operación, lock + liquidado neto (sin `contains`) + residual dentro de la tx.
       await prisma.$transaction(async (tx) => {
         for (const op of eligibleOps) {
-          const esCompra = op.tipo.startsWith("COMPRA");
-          const existingMovs = await tx.movimientoCaja.findMany({
-            where: { descripcion: { contains: op.id } },
-            select: { tipo: true, moneda: true, monto: true },
-          });
-          let alreadyPaidDiv = new Decimal(0);
-          for (const m of existingMovs) {
-            const isPayment = esCompra ? m.tipo === "ENTRADA" && m.moneda === op.moneda
-                                        : m.tipo === "SALIDA" && m.moneda === op.moneda;
-            if (isPayment) alreadyPaidDiv = alreadyPaidDiv.plus(new Decimal(m.monto.toString()));
-          }
-          const remainingDiv = new Decimal(op.cantidad.toString()).minus(alreadyPaidDiv);
-          if (remainingDiv.lte(0)) continue;
-
-          const remainingARS = remainingDiv.mul(new Decimal(op.tipoCambio.toString()));
-
-          if (esCompra) {
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId, fecha, tipo: "ENTRADA", moneda: op.moneda, monto: remainingDiv, descripcion: `[Cobro Cambio ${op.id}] Compra divisa`, confirmado: true } });
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId, fecha, tipo: "SALIDA",  moneda: "ARS",      monto: remainingARS, descripcion: `[Cobro Cambio ${op.id}] Pago ARS x Compra`, confirmado: true } });
-          } else {
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId, fecha, tipo: "SALIDA",  moneda: op.moneda, monto: remainingDiv, descripcion: `[Cobro Cambio ${op.id}] Venta divisa`, confirmado: true } });
-            await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId, fecha, tipo: "ENTRADA", moneda: "ARS",      monto: remainingARS, descripcion: `[Cobro Cambio ${op.id}] Cobro ARS x Venta`, confirmado: true } });
-          }
-          const cleanDesc = (op.descripcion ?? "").replace(/^\[PARCIAL\]\s*/, "").trim();
-          await tx.operacionCambio.update({ where: { id: op.id }, data: { pendiente: false, descripcion: cleanDesc || op.descripcion, updatedAt: new Date() } });
+          await liquidarCambioTx(tx, { opId: op.id, items: "TOTAL", cajaTotalId: cajaId, fecha, etiqueta: "Cobro Cambio", userName: userLiq });
         }
       }, { timeout: 15000 });
 
@@ -835,54 +767,19 @@ export async function liquidarPagoPendiente(
         select: { id: true, slug: true },
         orderBy: { orden: "asc" },
       });
+      const activas = new Map(cajasActivas.map((c) => [c.id, c.slug]));
+      // Un monto en una caja no operativa se rechaza (antes se descartaba en silencio).
+      if (parciales.length === 0 || parciales.some((x) => !activas.has(x.cajaId))) {
+        return { error: "Ingresá montos solo en cajas operativas" };
+      }
+      for (const x of parciales) { const slug = activas.get(x.cajaId); if (slug) slugsToRevalidate.add(slug); }
 
+      // Sobreliquidación: liquidarCambioTx la rechaza bajo lock (Σ parciales ≤ pendiente).
       await prisma.$transaction(async (tx) => {
-        for (const op of eligibleOps) {
-          const esCompra = op.tipo.startsWith("COMPRA");
-          let hasAnyInput = false;
-
-          for (const caja of cajasActivas) {
-            const p = parciales.find((x) => x.cajaId === caja.id);
-            if (!p) continue;
-            const cantDiv = p.div;
-            const cantArs = p.ars ?? cantDiv.mul(new Decimal(op.tipoCambio.toString()));
-
-            hasAnyInput = true;
-            if (caja.slug) slugsToRevalidate.add(caja.slug);
-
-            if (esCompra) {
-              await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "ENTRADA", moneda: op.moneda, monto: cantDiv, descripcion: `[Cobro Cambio ${op.id}] Compra divisa parcial`, confirmado: true } });
-              await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "SALIDA",  moneda: "ARS",      monto: cantArs, descripcion: `[Cobro Cambio ${op.id}] Pago ARS parcial`, confirmado: true } });
-            } else {
-              await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "SALIDA",  moneda: op.moneda, monto: cantDiv, descripcion: `[Cobro Cambio ${op.id}] Venta divisa parcial`, confirmado: true } });
-              await tx.movimientoCaja.create({ data: { id: crypto.randomUUID(), cajaId: caja.id, fecha, tipo: "ENTRADA", moneda: "ARS",      monto: cantArs, descripcion: `[Cobro Cambio ${op.id}] Cobro ARS parcial`, confirmado: true } });
-            }
-          }
-
-          if (!hasAnyInput) continue;
-
-          // Check total paid after new movements
-          const allMovs = await tx.movimientoCaja.findMany({
-            where: { descripcion: { contains: op.id } },
-            select: { tipo: true, moneda: true, monto: true },
-          });
-          let totalPaidDiv = new Decimal(0);
-          for (const m of allMovs) {
-            const isPayment = esCompra ? m.tipo === "ENTRADA" && m.moneda === op.moneda
-                                        : m.tipo === "SALIDA" && m.moneda === op.moneda;
-            if (isPayment) totalPaidDiv = totalPaidDiv.plus(new Decimal(m.monto.toString()));
-          }
-
-          const esTotalCubierta = totalPaidDiv.gte(new Decimal(op.cantidad.toString()));
-          const currentDesc = op.descripcion ?? "";
-          if (esTotalCubierta) {
-            const cleanDesc = currentDesc.replace(/^\[PARCIAL\]\s*/, "").trim();
-            await tx.operacionCambio.update({ where: { id: op.id }, data: { pendiente: false, descripcion: cleanDesc || currentDesc, updatedAt: new Date() } });
-          } else {
-            const newDesc = currentDesc.includes("[PARCIAL]") ? currentDesc : `[PARCIAL] ${currentDesc}`;
-            await tx.operacionCambio.update({ where: { id: op.id }, data: { pendiente: false, descripcion: newDesc, updatedAt: new Date() } });
-          }
-        }
+        await liquidarCambioTx(tx, {
+          opId: eligibleOps[0].id, items: parciales.map((x) => ({ cajaId: x.cajaId, div: x.div, ars: x.ars })),
+          fecha, etiqueta: "Cobro Cambio", userName: userLiq,
+        });
       }, { timeout: 15000 });
     }
 
@@ -900,9 +797,9 @@ export async function liquidarPagoPendiente(
     Array.from(slugsToRevalidate).forEach(slug => revalidatePath(`/operativa/${slug}`));
     return { ok: true };
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error liquidating pending payment:", error);
-    return { error: error.message || "Error al liquidar el pago" };
+    return { error: mensajeError(error, "Error al liquidar el pago") };
   }
 }
 
@@ -920,78 +817,23 @@ export async function revertirOperacionCambio(
 
   const op = await prisma.operacionCambio.findUnique({ where: { id } });
   if (!op) return { error: "Operación no encontrada" };
-  if (op.pendiente) return { error: "La operación ya es NO_LIQUIDADA, no necesita reversión" };
-  if ((op.descripcion ?? "").includes("[REVERTIDA POR:")) return { error: "Esta operación ya fue revertida" };
 
   // El operador registrado es siempre el usuario autenticado real.
   const sessionRev = await auth();
   const revertidoPor = (sessionRev?.user as { name?: string })?.name ?? "Sistema";
 
-  const [cajaMov, ccMov] = await Promise.all([
-    prisma.movimientoCaja.findMany({ where: { descripcion: { contains: id } } }),
-    prisma.movimientoCC.findMany({
-      where: { descripcion: { contains: `op:${id}` } },
-      include: { CuentaCorriente: { select: { id: true, saldo: true } } },
-    }),
-  ]);
-
   // Revertir toca las cajas donde se liquidó: mismo scope Trenque/Oficina.
-  const scopeDenied = await requireCajaPermission(cajaMov.map((m) => m.cajaId));
+  // MACRO 3: patas por vínculo estructurado / prefijo exacto (no `contains`).
+  const cajas = Array.from(new Set((await movimientosDeCambio(prisma, id)).map((m) => m.cajaId)));
+  const scopeDenied = await requireCajaPermission(cajas);
   if (scopeDenied) return scopeDenied;
 
   const hoy = new Date();
   const fechaRev = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
 
   try {
-    await prisma.$transaction(async (tx) => {
-      // Revertir movimientos de caja
-      for (const m of cajaMov) {
-        const tipoInv: "ENTRADA" | "SALIDA" = m.tipo === "ENTRADA" ? "SALIDA" : "ENTRADA";
-        await tx.movimientoCaja.create({
-          data: {
-            id: crypto.randomUUID(),
-            cajaId: m.cajaId,
-            fecha: fechaRev,
-            tipo: tipoInv,
-            moneda: m.moneda,
-            monto: m.monto,
-            descripcion: `[REVERSO Cambio ${id}] ${m.descripcion ?? ""}`.slice(0, 500),
-            confirmado: true,
-          },
-        });
-      }
-
-      // Revertir movimientos de CC
-      for (const m of ccMov) {
-        const tipoInv = m.tipo === "INGRESO" ? "EGRESO" : "INGRESO";
-        const delta = m.tipo === "INGRESO" ? m.monto.negated() : m.monto;
-        await tx.movimientoCC.create({
-          data: {
-            id: crypto.randomUUID(),
-            cuentaCorrienteId: m.cuentaCorrienteId,
-            fecha: fechaRev,
-            tipo: tipoInv as "INGRESO" | "EGRESO",
-            monto: m.monto,
-            descripcion: `[REVERSO] ${m.descripcion ?? "Reverso Op Cambio"}`.slice(0, 500),
-            operacionCambioId: id,
-          },
-        });
-        await tx.cuentaCorriente.update({
-          where: { id: m.cuentaCorrienteId },
-          data: { saldo: { increment: delta } },
-        });
-      }
-
-      // Marcar operación como revertida (pendiente=true para que sea editable)
-      await tx.operacionCambio.update({
-        where: { id },
-        data: {
-          pendiente: true,
-          descripcion: `[REVERTIDA POR: ${revertidoPor}] ${op.descripcion ?? ""}`.slice(0, 500),
-          updatedAt: new Date(),
-        },
-      });
-    }, { timeout: 15000 });
+    // Lock de la operación; inverso del NETO de caja y de CC; idempotente.
+    await prisma.$transaction((tx) => revertirCambioTx(tx, { opId: id, revertidoPor, fecha: fechaRev, cajasAutorizadas: cajas }), { timeout: 15000 });
 
     await writeAuditLog({
       userId:      sessionRev?.user?.id,
@@ -1005,7 +847,7 @@ export async function revertirOperacionCambio(
     revalidatePath("/caja");
     revalidatePath("/clientes");
     return { ok: true };
-  } catch (e: any) {
-    return { error: e.message || "Error al revertir la operación" };
+  } catch (e: unknown) {
+    return { error: mensajeError(e, "Error al revertir la operación") };
   }
 }

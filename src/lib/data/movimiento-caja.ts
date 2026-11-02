@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { Decimal } from "@prisma/client/runtime/library";
 import { Moneda, TipoMovCaja } from "@prisma/client";
+import { idsRevertidos } from "@/lib/caja/integridad.service";
 
 export type EstadoPendienteVisual = "PENDIENTE" | "PARCIAL" | "PAGADO" | "ANULADO";
 
@@ -32,15 +33,17 @@ export async function getMovimientosPendientesConCobertura(): Promise<Movimiento
   if (pendientes.length === 0) return [];
 
   const ids = pendientes.map((p) => p.id);
-  const pagos = await prisma.movimientoCaja.groupBy({
-    by: ["pagoDeId"],
+  // MACRO 3: solo pagos VÁLIDOS (confirmados, no anulados, no revertidos).
+  const pagos = await prisma.movimientoCaja.findMany({
     where: { pagoDeId: { in: ids }, confirmado: true, anulado: false },
-    _sum: { monto: true },
+    select: { id: true, pagoDeId: true, monto: true },
   });
+  const revertidos = await idsRevertidos(prisma, pagos.map((p) => p.id));
 
   const cubiertoMap = new Map<string, Decimal>();
   for (const p of pagos) {
-    if (p.pagoDeId) cubiertoMap.set(p.pagoDeId, new Decimal(p._sum.monto?.toString() ?? "0"));
+    if (!p.pagoDeId || revertidos.has(p.id)) continue;
+    cubiertoMap.set(p.pagoDeId, (cubiertoMap.get(p.pagoDeId) ?? new Decimal(0)).plus(new Decimal(p.monto.toString())));
   }
 
   return pendientes.map((m) => {

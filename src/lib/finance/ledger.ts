@@ -21,6 +21,7 @@ import type { FxOperacion } from "./fx-cost-basis";
 import { resolverOwnerCuentaOperativa, type OwnerEconomico } from "./owner";
 import type { QualityReason } from "./quality";
 import { D, type Moneda } from "./types";
+import { esReversaValida } from "../caja/integridad";
 
 export type Categoria =
   | "FX_COMPRA" | "FX_VENTA"
@@ -116,6 +117,33 @@ export function clasificarMovCaja(m: DsMovCaja): { categoria: Categoria; subtipo
   const mc = d.match(RE_MC);
   if (mc) return { categoria: "FLUJO_PATRIMONIAL", subtipo: mc[1], reversaDe: null };
   return { categoria: "FLUJO_PATRIMONIAL", subtipo: "SIN_CLASIFICAR", reversaDe: null };
+}
+
+/**
+ * MACRO 3 (L1) — Reversas de caja ESTRUCTURALMENTE válidas por id del original (la
+ * más temprana): "REVERSO | ref:<id>" confirmada, misma caja/moneda/monto, tipo
+ * inverso. La marca en la descripción sola no revierte nada.
+ */
+export function reversasValidasCaja(movs: readonly DsMovCaja[]): Map<string, DsMovCaja> {
+  const porId = new Map(movs.map((m) => [m.id, m] as const));
+  const out = new Map<string, DsMovCaja>();
+  for (const m of movs) {
+    const c = clasificarMovCaja(m);
+    if (c.categoria !== "REVERSA" || !c.reversaDe) continue;
+    const original = porId.get(c.reversaDe);
+    if (!original || !esReversaValida(original, m)) continue;
+    const prev = out.get(original.id);
+    if (!prev || m.fecha < prev.fecha) out.set(original.id, m);
+  }
+  return out;
+}
+
+/**
+ * MACRO 3 — Fecha de la reversa válida de cada movimiento revertido. Un pago
+ * parcial revertido deja de cubrir su pendiente DESDE esa fecha.
+ */
+export function fechaReversaPorMovimiento(movs: readonly DsMovCaja[]): Map<string, string> {
+  return new Map(Array.from(reversasValidasCaja(movs).entries()).map(([id, r]) => [id, r.fecha]));
 }
 
 /** Neto (con signo) de una operación de bolsa: + venta, − compra. null si el lado no es inequívoco. */
@@ -236,11 +264,7 @@ export function construirLedger(ds: FinanceDataset): Ledger {
   }
 
   // ── 2. Movimientos de caja ──
-  const revertidosCaja = new Map<string, string>();
-  for (const m of ds.movsCaja) {
-    const c = clasificarMovCaja(m);
-    if (c.categoria === "REVERSA" && c.reversaDe && m.confirmado) revertidosCaja.set(c.reversaDe, m.id);
-  }
+  const revertidosCaja = new Map(Array.from(reversasValidasCaja(ds.movsCaja).entries()).map(([id, r]) => [id, r.id]));
   for (const m of ds.movsCaja) {
     const c = clasificarMovCaja(m);
     let estado = estadoCaja(m);

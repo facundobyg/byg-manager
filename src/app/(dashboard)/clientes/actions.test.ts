@@ -68,6 +68,8 @@ vi.mock("@/lib/data/movimiento-cc", () => ({
   extraerOperationRef: (texto: string | null | undefined) =>
     texto?.match(/op:([a-zA-Z0-9-]+)/)?.[1] ?? null,
 }));
+// MACRO 3: actions.ts valida monto/descripción con las reglas puras de caja (alias → módulo real).
+vi.mock("@/lib/caja/integridad", async () => await import("../../../lib/caja/integridad"));
 
 import { revertirOperacion, revertirMovimientoCC, ejecutarOperacion } from "./actions";
 

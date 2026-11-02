@@ -20,7 +20,7 @@ export default async function PendientesPage() {
   hoy.setHours(0, 0, 0, 0);
   const en7 = new Date(hoy.getTime() + 7 * 86_400_000);
 
-  const [ccNegativas, pfVencidos, pfProximos, pendientesLiquidar, movimientosPagoParcial] = await Promise.all([
+  const [ccNegativas, pfVencidos, pfProximos, pendientesCrudos, movimientosPagoParcial] = await Promise.all([
     prisma.cuentaCorriente.findMany({
       where: { saldo: { lt: 0 } },
       orderBy: { saldo: "asc" },
@@ -43,12 +43,16 @@ export default async function PendientesPage() {
     getMovimientosPendientesConCobertura(),
   ]);
 
+  // MACRO 3: lo pendiente es el RESIDUAL (monto − pagos parciales válidos); un pendiente
+  // ya cubierto no se lista ni suma (antes se sumaba el monto completo).
+  const residual = new Map(movimientosPagoParcial.map((r) => [r.id, r.montoPendiente]));
+  const pendientesLiquidar = pendientesCrudos.filter((p) => (residual.get(p.id) ?? Number(p.monto)) > 0);
   const pendUSD = pendientesLiquidar.filter((p) => p.moneda === "USD");
   const pendARS = pendientesLiquidar.filter((p) => p.moneda === "ARS");
 
   function netPendientes(rows: typeof pendientesLiquidar) {
     return rows.reduce((acc, r) => {
-      const m = Number(r.monto);
+      const m = residual.get(r.id) ?? Number(r.monto);
       return acc + (r.tipo === "ENTRADA" || r.tipo === "TRANSFERENCIA_IN" ? m : -m);
     }, 0);
   }

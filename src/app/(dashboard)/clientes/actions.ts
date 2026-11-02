@@ -9,6 +9,7 @@ import { Moneda, Prisma, TipoMovCaja } from "@prisma/client";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { esMovimientoDeOperacionAgrupada, extraerOperationRef } from "@/lib/data/movimiento-cc";
+import { parseMontoPositivo, validarTextoUsuario } from "@/lib/caja/integridad";
 
 export async function crearMovimientoCC(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -34,13 +35,14 @@ export async function crearMovimientoCC(prevState: any, formData: FormData) {
     if (scopeDenied) return scopeDenied;
   }
 
+  // MACRO 3: monto decimal estricto > 0 (new Decimal("NaN") pasaba lte(0) y llegaba a la DB)
+  // y descripción sin marcas internas ("op:", "ref:", "movref:"… vinculan reversas de CC y caja).
+  const monto = parseMontoPositivo(montoRaw);
+  if (!monto) return { error: "Monto inválido: usá solo números mayores a 0" };
+  const textoError = validarTextoUsuario(descripcion);
+  if (textoError) return { error: textoError };
+
   try {
-    const monto = new Decimal(montoRaw);
-
-    if (monto.lte(0)) {
-      return { error: "El monto debe ser mayor a 0" };
-    }
-
     await prisma.$transaction(async (tx) => {
       const cuenta = await tx.cuentaCorriente.findUnique({ where: { id: cuentaId } });
       if (!cuenta) throw new Error("Cuenta no encontrada");

@@ -8,6 +8,17 @@ import { readOnlyPreview } from "@/lib/config";
 import { requireActionPermission, requireCajaPermission } from "@/lib/auth/permissions";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import type { TipoOperacionCambio } from "@prisma/client";
+import { esMonedaValida, esTipoManual, parseMontoPositivo, validarTextoUsuario } from "@/lib/caja/integridad";
+import {
+  IntegridadError, anularPendienteTx, cajasDeReversion, confirmarPendienteTx, cubrirParcialTx, liquidarCambioTx, lockCaja,
+  revertirMovimientoTx,
+} from "@/lib/caja/integridad.service";
+
+/** Mensaje seguro: los errores de integridad son para el usuario; el resto, genérico. */
+function mensajeError(e: unknown, generico: string): string {
+  return e instanceof IntegridadError ? e.message : generico;
+}
 
 export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
@@ -26,9 +37,17 @@ export async function crearMovimientoCaja(prevState: any, formData: FormData) {
   if (!cajaId || !tipo || !montoRaw || !moneda) {
     return { error: "Faltan datos obligatorios" };
   }
+  // MACRO 3: solo ENTRADA/SALIDA (una TRANSFERENCIA_* suelta dejaría una sola pata),
+  // moneda válida y monto decimal estricto > 0.
+  if (!esTipoManual(tipo)) return { error: "Tipo inválido" };
+  if (!esMonedaValida(moneda)) return { error: "Moneda inválida" };
+  const monto = parseMontoPositivo(montoRaw);
+  if (!monto) return { error: "Monto inválido: usá solo números mayores a 0 (ej. 1500 o 1500,50)" };
+  // L1: la descripción queda al inicio → no puede fabricar "REVERSO | ref:…", "[Cambio …]", etc.
+  const textoError = validarTextoUsuario(descripcion);
+  if (textoError) return { error: textoError };
 
   try {
-    const monto = new Decimal(montoRaw);
     const session = await auth();
     const userName = (session?.user as { name?: string })?.name ?? "Sistema";
     const descFinal = `${descripcion?.trim() || "MOV"} | op:${operationRef} | usr:${userName}`;
@@ -37,9 +56,9 @@ export async function crearMovimientoCaja(prevState: any, formData: FormData) {
       data: {
         id: crypto.randomUUID(),
         cajaId,
-        tipo: tipo as never,
+        tipo,
         monto,
-        moneda: moneda as never,
+        moneda,
         descripcion: descFinal,
         confirmado: true,
         fecha: new Date(),
@@ -53,7 +72,7 @@ export async function crearMovimientoCaja(prevState: any, formData: FormData) {
 
     return { success: true, message: "Movimiento creado exitosamente" };
   } catch (error) {
-    return { error: "Error al procesar el monto o guardar en base de datos" };
+    return { error: "Error al guardar el movimiento" };
   }
 }
 
@@ -74,13 +93,8 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
   const cubrirDenied = await requireCajaPermission([originalScope.cajaId, cajaId]);
   if (cubrirDenied) return cubrirDenied;
 
-  let montoCubierto: Decimal;
-  try {
-    montoCubierto = new Decimal(montoCubiertoRaw);
-  } catch {
-    return { error: "Monto inválido" };
-  }
-  if (montoCubierto.lte(0)) return { error: "El monto debe ser mayor a 0" };
+  const montoCubierto = parseMontoPositivo(montoCubiertoRaw);
+  if (!montoCubierto) return { error: "Monto inválido: usá solo números mayores a 0" };
 
   const session  = await auth();
   const userId   = session?.user?.id as string | undefined;
@@ -90,46 +104,13 @@ export async function cubrirParcialMovimientoCaja(prevState: unknown, formData: 
   let monedaPago = "";
 
   try {
-    // Checks de negocio + write dentro de la misma transacción para evitar
-    // sobrepago bajo concurrencia: el restante se calcula y valida adentro.
-    await prisma.$transaction(async (tx) => {
-      const original = await tx.movimientoCaja.findUnique({ where: { id: movimientoId } });
-      if (!original) throw new Error("Movimiento no encontrado");
-      // La caja autorizada arriba debe seguir siendo la del pendiente.
-      if (original.cajaId !== originalScope.cajaId) throw new Error("El movimiento cambió durante la operación");
-      if (original.confirmado) throw new Error("El movimiento ya está confirmado");
-      if (original.anulado) throw new Error("El movimiento está anulado, no se puede cubrir");
-
-      const pagosPrevios = await tx.movimientoCaja.aggregate({
-        where: { pagoDeId: movimientoId, confirmado: true, anulado: false },
-        _sum: { monto: true },
-      });
-      const cubiertoPrevio = new Decimal(pagosPrevios._sum.monto?.toString() ?? "0");
-      const restante = new Decimal(original.monto.toString()).minus(cubiertoPrevio);
-
-      if (restante.lte(0)) throw new Error("Este pendiente ya está totalmente cubierto");
-      if (montoCubierto.gt(restante))
-        throw new Error(`El monto supera el restante (${restante.toFixed(2)} ${original.moneda})`);
-
-      monedaPago = original.moneda;
-
-      await tx.movimientoCaja.create({
-        data: {
-          id: pagoId,
-          cajaId,
-          tipo: original.tipo,
-          monto: montoCubierto,
-          moneda: original.moneda,
-          descripcion: `Pago parcial de pendiente ${movimientoId} | usr:${userName}`,
-          confirmado: true,
-          pagoDeId: movimientoId,
-          fecha: new Date(),
-        },
-      });
-    });
+    // MACRO 3: lock del pendiente + residual con pagos VÁLIDOS (no revertidos) dentro de la tx.
+    const r = await prisma.$transaction((tx) => cubrirParcialTx(tx, {
+      movimientoId, cajaOriginalEsperada: originalScope.cajaId, cajaPagoId: cajaId, monto: montoCubierto, userName, pagoId,
+    }));
+    monedaPago = r.moneda;
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : "Error al registrar cobertura";
-    return { error: msg };
+    return { error: mensajeError(error, "Error al registrar cobertura") };
   }
 
   await writeAuditLog({
@@ -164,6 +145,8 @@ export async function anularMovimientoCajaPendiente(
   const motivo       = formData.get("motivo")?.toString().trim();
   if (!movimientoId) return { error: "ID requerido" };
   if (!motivo) return { error: "El motivo es obligatorio" };
+  const motivoError = validarTextoUsuario(motivo, "El motivo");
+  if (motivoError) return { error: motivoError };
 
   const movScope = await prisma.movimientoCaja.findUnique({ where: { id: movimientoId }, select: { cajaId: true } });
   if (!movScope) return { error: "Movimiento no encontrado" };
@@ -175,30 +158,10 @@ export async function anularMovimientoCajaPendiente(
   const userName = (session?.user as { name?: string })?.name ?? "Sistema";
 
   try {
-    await prisma.$transaction(async (tx) => {
-      const mov = await tx.movimientoCaja.findUnique({ where: { id: movimientoId } });
-      if (!mov) throw new Error("Movimiento no encontrado");
-      if (mov.confirmado) throw new Error("Solo se pueden anular movimientos pendientes (no confirmados)");
-      if (mov.anulado) throw new Error("El movimiento ya está anulado");
-      if (mov.pagoDeId) throw new Error("No se puede anular un pago parcial, solo el pendiente original");
-
-      const pagosPrevios = await tx.movimientoCaja.aggregate({
-        where: { pagoDeId: movimientoId, confirmado: true, anulado: false },
-        _sum: { monto: true },
-      });
-      const cubierto = new Decimal(pagosPrevios._sum.monto?.toString() ?? "0");
-      if (cubierto.gt(0)) throw new Error("No se puede anular un pendiente con pagos parciales registrados");
-
-      await tx.movimientoCaja.update({
-        where: { id: movimientoId },
-        data: {
-          anulado: true,
-          descripcion: `${mov.descripcion ?? ""} | ANULADO: ${motivo} | usr:${userName}`.trim(),
-        },
-      });
-    });
+    // MACRO 3: lock del pendiente; pagos válidos (no revertidos) verificados dentro de la tx.
+    await prisma.$transaction((tx) => anularPendienteTx(tx, { movimientoId, motivo, userName }));
   } catch (e: unknown) {
-    return { error: e instanceof Error ? e.message : "Error al anular el movimiento" };
+    return { error: mensajeError(e, "Error al anular el movimiento") };
   }
 
   await writeAuditLog({
@@ -223,8 +186,9 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
   const moneda = formData.get("moneda") as string;
   const descripcion = formData.get("descripcion") as string;
 
-  const montoRaw = formData.get("monto") as string;
-  const monto = new Decimal(montoRaw);
+  // MACRO 3: monto estricto > 0 (antes `new Decimal(raw)` aceptaba hex/exponentes y lanzaba con basura).
+  const monto = parseMontoPositivo(formData.get("monto") as string);
+  if (!monto) return { error: "Monto inválido: usá solo números mayores a 0" };
 
   // VALIDACIONES BASE
   if (!origenId || !destinoId || origenId === destinoId) {
@@ -238,17 +202,15 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
     return { error: "Moneda inválida" };
   }
 
-  if (monto.lte(0)) {
-    return { error: "El monto debe ser mayor a 0" };
-  }
-
   // GENERAR ID DE TRANSFERENCIA
   const transferenciaRef = crypto.randomUUID();
 
   // TRANSACCIÓN ATÓMICA
   try {
     await prisma.$transaction(async (tx) => {
-      // Saldo calculado dentro de la transacción para evitar TOCTOU.
+      // Saldo calculado dentro de la transacción y con la caja origen bloqueada:
+      // dos transferencias concurrentes no pueden dejarla en negativo.
+      await lockCaja(tx, origenId);
       const saldo = await calcularSaldoCajaConCliente(tx, origenId, moneda as "USD" | "ARS");
       if (saldo.lessThan(monto)) throw new Error("Saldo insuficiente en la caja origen");
 
@@ -288,6 +250,9 @@ export async function transferirEntreCajas(prevState: any, formData: FormData) {
   }
 }
 
+// L2 — Cambio entre cajas = una OperacionCambio REAL: el motor financiero la ve
+// (posición FX, costo promedio, resultado realizado) y sus dos patas quedan
+// vinculadas por operacionCambioId. Operación + patas en UNA transacción.
 // COMPRA: ARS sale de cajaArs, divisa entra en cajaDivisa
 // VENTA:  divisa sale de cajaDivisa, ARS entra en cajaArs
 export async function registrarOperacionCambioEnCajas(prevState: any, formData: FormData) {
@@ -301,7 +266,7 @@ export async function registrarOperacionCambioEnCajas(prevState: any, formData: 
   const montoDivisaRaw = (formData.get("montoDivisa") as string)?.trim();
   const montoArsRaw = (formData.get("montoArs") as string)?.trim();
   const tipoOperacion = (formData.get("tipoOperacion") as string)?.trim();
-  const descripcion = (formData.get("descripcion") as string)?.trim() || "OPERACION CAMBIO";
+  const descripcion = (formData.get("descripcion") as string)?.trim();
   const moneda = ((formData.get("moneda") as string)?.trim() || "USD") as "USD" | "ARS" | "EUR" | "BRL";
 
   if (!cajaDivisaId || !cajaArsId) return { error: "Cajas requeridas" };
@@ -309,16 +274,16 @@ export async function registrarOperacionCambioEnCajas(prevState: any, formData: 
   if (scopeDenied) return scopeDenied;
   if (!tipoOperacion || !["COMPRA", "VENTA"].includes(tipoOperacion)) return { error: "tipoOperacion debe ser COMPRA o VENTA" };
 
-  let montoDivisa: Decimal;
-  let montoArs: Decimal;
-  try {
-    montoDivisa = new Decimal(montoDivisaRaw);
-    montoArs = new Decimal(montoArsRaw);
-  } catch {
-    return { error: "Montos inválidos" };
-  }
+  if (!esMonedaValida(moneda) || moneda === "ARS") return { error: "Moneda inválida" };
+  const montoDivisa = parseMontoPositivo(montoDivisaRaw);
+  const montoArs = parseMontoPositivo(montoArsRaw);
+  if (!montoDivisa || !montoArs) return { error: "Montos inválidos: usá solo números mayores a 0" };
+  const textoError = validarTextoUsuario(descripcion);
+  if (textoError) return { error: textoError };
 
-  if (montoDivisa.lte(0) || montoArs.lte(0)) return { error: "Montos deben ser mayores a 0" };
+  // TC implícito = ARS / divisa (Decimal(12,4)); totalARS = monto ARS exacto de la pata.
+  const tipoCambio = montoArs.div(montoDivisa).toDecimalPlaces(4);
+  if (!tipoCambio.gt(0) || tipoCambio.gte(100_000_000)) return { error: "Tipo de cambio implícito fuera de rango" };
 
   try {
     const [cajaDivisa, cajaArs] = await Promise.all([
@@ -331,56 +296,54 @@ export async function registrarOperacionCambioEnCajas(prevState: any, formData: 
     return { error: "Error validando cajas" };
   }
 
-  const opRef = crypto.randomUUID();
-  const fecha = new Date();
-
-  // COMPRA: compramos divisa → sale ARS, entra divisa
-  // VENTA:  vendemos divisa → sale divisa, entra ARS
-  const [tipoDivisa, tipoArs] =
-    tipoOperacion === "COMPRA"
-      ? (["ENTRADA", "SALIDA"] as const)
-      : (["SALIDA", "ENTRADA"] as const);
+  const session = await auth();
+  const userName = (session?.user as { name?: string })?.name ?? "Sistema";
+  const ahora = new Date();
+  const fecha = new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate()));
+  const mesContable = `${fecha.getUTCFullYear()}-${String(fecha.getUTCMonth() + 1).padStart(2, "0")}`;
+  const tipo = `${tipoOperacion}_${moneda}` as TipoOperacionCambio;
 
   try {
     await prisma.$transaction(async (tx) => {
       // Saldo calculado dentro de la transacción para evitar TOCTOU.
       if (tipoOperacion === "COMPRA") {
+        await lockCaja(tx, cajaArsId);
         const saldoArs = await calcularSaldoCajaConCliente(tx, cajaArsId, "ARS");
-        if (saldoArs.lessThan(montoArs)) throw new Error("Saldo ARS insuficiente en caja seleccionada");
+        if (saldoArs.lessThan(montoArs)) throw new IntegridadError("Saldo ARS insuficiente en caja seleccionada");
       }
 
-      await tx.movimientoCaja.create({
+      const op = await tx.operacionCambio.create({
         data: {
           id: crypto.randomUUID(),
-          cajaId: cajaDivisaId,
-          tipo: tipoDivisa,
-          monto: montoDivisa,
-          moneda,
-          descripcion: `${descripcion} | ${tipoOperacion} | op:${opRef}`,
-          confirmado: true,
           fecha,
-          transferenciaRef: opRef,
+          tipo,
+          clienteNombre: "Cambio entre cajas",
+          moneda,
+          cantidad: montoDivisa,
+          tipoCambio,
+          totalARS: montoArs,
+          cobroUSD: moneda === "USD" ? montoDivisa : new Decimal(0),
+          cobroARS: montoArs,
+          descripcion: `${descripcion || "Operación de cambio entre cajas"} | usr:${userName}`,
+          pendiente: true, // liquidarCambioTx la marca liquidada al crear las patas
+          mesContable,
+          updatedAt: new Date(),
         },
       });
-      await tx.movimientoCaja.create({
-        data: {
-          id: crypto.randomUUID(),
-          cajaId: cajaArsId,
-          tipo: tipoArs,
-          monto: montoArs,
-          moneda: "ARS",
-          descripcion: `${descripcion} | ${tipoOperacion} | op:${opRef}`,
-          confirmado: true,
-          fecha,
-          transferenciaRef: opRef,
-        },
+
+      // Patas con operacionCambioId: divisa en cajaDivisa, ARS (monto exacto) en cajaArs.
+      await liquidarCambioTx(tx, {
+        opId: op.id,
+        items: [{ cajaId: cajaDivisaId, cajaArsId, div: montoDivisa, ars: montoArs }],
+        fecha, etiqueta: "Cambio", userName,
       });
     });
 
     revalidatePath("/caja");
+    revalidatePath("/operativa/mov-diarios");
     return { success: true };
   } catch (e: unknown) {
-    return { error: (e instanceof Error ? e.message : null) || "Error al registrar operación de cambio" };
+    return { error: mensajeError(e, "Error al registrar operación de cambio") };
   }
 }
 
@@ -396,53 +359,24 @@ export async function revertirMovimientoCaja(
   const movimientoId = formData.get("movimientoId")?.toString().trim();
   if (!movimientoId) return { error: "ID requerido" };
 
-  const original = await prisma.movimientoCaja.findUnique({ where: { id: movimientoId } });
-  if (!original) return { error: "Movimiento no encontrado" };
-  if (!original.confirmado) return { error: "No se puede revertir un movimiento no confirmado" };
-  if (original.descripcion?.startsWith("REVERSO |")) return { error: "Este movimiento ya es un reverso" };
-
-  const scopeDenied = await requireCajaPermission([original.cajaId]);
+  // MACRO 3: una transferencia se revierte COMPLETA → scope sobre todas sus cajas.
+  const cajas = await cajasDeReversion(prisma, movimientoId);
+  if (cajas.length === 0) return { error: "Movimiento no encontrado" };
+  const scopeDenied = await requireCajaPermission(cajas);
   if (scopeDenied) return scopeDenied;
 
-  const tipoMap: Record<string, string> = {
-    ENTRADA: "SALIDA",
-    SALIDA: "ENTRADA",
-    TRANSFERENCIA_IN: "TRANSFERENCIA_OUT",
-    TRANSFERENCIA_OUT: "TRANSFERENCIA_IN",
-  };
-  const tipoReverso = tipoMap[original.tipo];
-  if (!tipoReverso) return { error: "Tipo de movimiento no reversible" };
-
   try {
-    // yaRevertido check + create atómicos: evita doble reversa bajo concurrencia.
-    await prisma.$transaction(async (tx) => {
-      const yaRevertido = await tx.movimientoCaja.findFirst({
-        where: { descripcion: { startsWith: `REVERSO | ref:${movimientoId}` } },
-      });
-      if (yaRevertido) throw new Error("Este movimiento ya fue revertido");
-
-      await tx.movimientoCaja.create({
-        data: {
-          id: crypto.randomUUID(),
-          cajaId: original.cajaId,
-          tipo: tipoReverso as never,
-          monto: original.monto,
-          moneda: original.moneda,
-          descripcion: `REVERSO | ref:${movimientoId} | ${original.descripcion ?? ""}`,
-          confirmado: true,
-          fecha: new Date(),
-        },
-      });
-    });
+    // Lock del movimiento (y de su par), estado e idempotencia verificados dentro de la tx.
+    await prisma.$transaction((tx) => revertirMovimientoTx(tx, { movimientoId, cajasAutorizadas: cajas }));
   } catch (e: unknown) {
-    return { error: (e instanceof Error ? e.message : null) || "Error al revertir movimiento" };
+    return { error: mensajeError(e, "Error al revertir movimiento") };
   }
 
   revalidatePath("/caja");
-  const cajaSlug = (await prisma.caja.findUnique({ where: { id: original.cajaId }, select: { slug: true } }))?.slug;
-  if (cajaSlug) {
-    revalidatePath(`/caja/${cajaSlug}`);
-    revalidatePath(`/operativa/${cajaSlug}`);
+  const slugs = await prisma.caja.findMany({ where: { id: { in: cajas } }, select: { slug: true } });
+  for (const c of slugs) {
+    revalidatePath(`/caja/${c.slug}`);
+    revalidatePath(`/operativa/${c.slug}`);
   }
   return { ok: true };
 }
@@ -466,19 +400,14 @@ export async function confirmarMovimientoCajaPendiente(
   const confirmarOficinaDenied = await requireActionPermission("caja:operar_oficina", { orExplicitGrant: "caja:operar_trenque" });
   if (confirmarOficinaDenied) return confirmarOficinaDenied;
 
+  const session = await auth();
+  const userName = (session?.user as { name?: string })?.name ?? "Sistema";
   try {
-    await prisma.$transaction(async (tx) => {
-      const mov = await tx.movimientoCaja.findUnique({ where: { id: movimientoId } });
-      if (!mov) throw new Error("Movimiento no encontrado");
-      if (mov.confirmado) throw new Error("El movimiento ya está confirmado");
-
-      await tx.movimientoCaja.update({
-        where: { id: movimientoId },
-        data: { confirmado: true },
-      });
-    });
+    // MACRO 3: con pagos parciales solo se impacta el RESIDUAL (nunca monto + parciales);
+    // lock del pendiente → dos confirmaciones concurrentes: una sola aplica.
+    await prisma.$transaction((tx) => confirmarPendienteTx(tx, { movimientoId, cajaEsperada: movScope.cajaId, userName }));
   } catch (e: unknown) {
-    return { error: (e instanceof Error ? e.message : null) || "Error al confirmar movimiento" };
+    return { error: mensajeError(e, "Error al confirmar movimiento") };
   }
 
   revalidatePath("/caja");
@@ -498,7 +427,7 @@ export async function transferirCajaACartera(
   const carteraId    = formData.get("carteraId")?.toString().trim();
   const moneda       = formData.get("moneda")?.toString().trim() as "USD" | "ARS" | undefined;
   const destinoSaldo = formData.get("destinoSaldo")?.toString().trim() as "CABLE" | "MEP" | "PESOS" | undefined;
-  const montoRaw     = formData.get("monto")?.toString().trim().replace(",", ".");
+  const montoRaw     = formData.get("monto")?.toString().trim();
   const descripcion  = formData.get("descripcion")?.toString().trim() || null;
 
   if (!cajaId || !carteraId || !moneda || !destinoSaldo || !montoRaw) {
@@ -507,13 +436,11 @@ export async function transferirCajaACartera(
   const scopeDenied = await requireCajaPermission([cajaId]);
   if (scopeDenied) return scopeDenied;
 
-  let monto: Decimal;
-  try {
-    monto = new Decimal(montoRaw);
-  } catch {
-    return { error: "Monto inválido" };
-  }
-  if (monto.lte(0)) return { error: "El monto debe ser mayor a cero" };
+  // L4: decimal estricto > 0 (new Decimal("NaN") pasaba lte(0) y llegaba a la DB).
+  const monto = parseMontoPositivo(montoRaw);
+  if (!monto) return { error: "Monto inválido: usá solo números mayores a 0" };
+  const textoError = validarTextoUsuario(descripcion);
+  if (textoError) return { error: textoError };
 
   // Validate moneda ↔ destinoSaldo compatibility
   if (moneda === "USD" && destinoSaldo === "PESOS") {
@@ -594,7 +521,7 @@ export async function transferirCarteraACaja(
   const carteraId   = formData.get("carteraId")?.toString().trim();
   const cajaId      = formData.get("cajaId")?.toString().trim();
   const origenSaldo = formData.get("origenSaldo")?.toString().trim() as "CABLE" | "MEP" | "PESOS" | undefined;
-  const montoRaw    = formData.get("monto")?.toString().trim().replace(",", ".");
+  const montoRaw    = formData.get("monto")?.toString().trim();
   const descripcion = formData.get("descripcion")?.toString().trim() || null;
 
   if (!carteraId || !cajaId || !origenSaldo || !montoRaw) {
@@ -603,13 +530,11 @@ export async function transferirCarteraACaja(
   const scopeDenied = await requireCajaPermission([cajaId]);
   if (scopeDenied) return scopeDenied;
 
-  let monto: Decimal;
-  try {
-    monto = new Decimal(montoRaw);
-  } catch {
-    return { error: "Monto inválido" };
-  }
-  if (monto.lte(0)) return { error: "El monto debe ser mayor a cero" };
+  // L4: decimal estricto > 0 (new Decimal("NaN") pasaba lte(0) y llegaba a la DB).
+  const monto = parseMontoPositivo(montoRaw);
+  if (!monto) return { error: "Monto inválido: usá solo números mayores a 0" };
+  const textoError = validarTextoUsuario(descripcion);
+  if (textoError) return { error: textoError };
 
   const moneda: "USD" | "ARS" = origenSaldo === "PESOS" ? "ARS" : "USD";
 
