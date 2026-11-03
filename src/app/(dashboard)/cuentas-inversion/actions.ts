@@ -7,14 +7,17 @@ import { Decimal } from "@prisma/client/runtime/library";
 import { ProductorInversion } from "@prisma/client";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
+import { parseOpcionalConSigno, parseOpcionalNoNegativo } from "@/lib/bolsa/integridad";
 import { recalcBatchStatus } from "./importaciones/bind/process-upload";
 
 type ActionResult = { error?: string; success?: boolean };
 
 const PRODUCTORES: ProductorInversion[] = ["IPS", "BYG", "OTRO"];
 
-function parseDecimal(raw: FormDataEntryValue | null): Decimal {
-  try { return new Decimal(raw?.toString().trim() || "0"); } catch { return new Decimal("0"); }
+/** MACRO 5: saldo ≥ 0 con el parser canónico (vacío = 0; inválido → null). Antes new Decimal("NaN") llegaba a la DB. */
+function parseSaldo(raw: FormDataEntryValue | null): Decimal | null {
+  const v = parseOpcionalNoNegativo(raw);
+  return v === "invalido" ? null : (v ?? new Decimal(0));
 }
 
 function revalidate(cuentaId: string) {
@@ -114,18 +117,37 @@ export async function updateSaldos(
 
   if (!comitenteId || !cuentaId) return { error: "Datos requeridos incompletos" };
 
-  const saldoARS      = parseDecimal(formData.get("saldoARS"));
-  const saldoUSDCable = parseDecimal(formData.get("saldoUSDCable"));
-  const saldoUSDMep   = parseDecimal(formData.get("saldoUSDMep"));
+  const saldoARS      = parseSaldo(formData.get("saldoARS"));
+  const saldoUSDCable = parseSaldo(formData.get("saldoUSDCable"));
+  const saldoUSDMep   = parseSaldo(formData.get("saldoUSDMep"));
+  if (!saldoARS || !saldoUSDCable || !saldoUSDMep) return { error: "Saldos inválidos: usá solo números ≥ 0 (ej. 1500 o 1500,50)" };
+  const anteriores = {
+    saldoARS: parseOpcionalConSigno(formData.get("saldoARSAnterior")),
+    saldoUSDCable: parseOpcionalConSigno(formData.get("saldoUSDCableAnterior")),
+    saldoUSDMep: parseOpcionalConSigno(formData.get("saldoUSDMepAnterior")),
+  };
+  if (Object.values(anteriores).some((v) => v === null || v === "invalido")) return { error: "Recargá la página antes de ajustar los saldos" };
 
-  if (saldoARS.lt(0) || saldoUSDCable.lt(0) || saldoUSDMep.lt(0))
-    return { error: "Los saldos no pueden ser negativos" };
-
-  await prisma.saldoComitenteInversion.upsert({
-    where: { comitenteId },
-    update: { saldoARS, saldoUSDCable, saldoUSDMep },
-    create: { id: crypto.randomUUID(), comitenteId, saldoARS, saldoUSDCable, saldoUSDMep, updatedAt: new Date() },
-  });
+  // MACRO 5: AJUSTE manual del saldo comitente bajo lock del comitente, con
+  // compare-and-set: una concertación concurrente (increment) no queda pisada.
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "ComitenteInversion" WHERE id = ${comitenteId} FOR UPDATE`;
+      const actual = await tx.saldoComitenteInversion.findUnique({ where: { comitenteId } });
+      for (const k of ["saldoARS", "saldoUSDCable", "saldoUSDMep"] as const) {
+        const cur = new Decimal(actual?.[k]?.toString() ?? "0");
+        if (!cur.eq(anteriores[k] as Decimal)) throw new Error("SALDO_CAMBIO");
+      }
+      await tx.saldoComitenteInversion.upsert({
+        where: { comitenteId },
+        update: { saldoARS, saldoUSDCable, saldoUSDMep, updatedAt: new Date() },
+        create: { id: crypto.randomUUID(), comitenteId, saldoARS, saldoUSDCable, saldoUSDMep, updatedAt: new Date() },
+      });
+    });
+  } catch (e) {
+    if (e instanceof Error && e.message === "SALDO_CAMBIO") return { error: "Los saldos cambiaron desde que abriste el formulario. Recargá y volvé a ajustar." };
+    return { error: "Error al actualizar saldos" };
+  }
 
   const session = await auth();
   const userId   = session?.user?.id as string | undefined;

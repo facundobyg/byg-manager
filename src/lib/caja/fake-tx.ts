@@ -15,6 +15,11 @@ function cumple(row: Row, where: Where | undefined): boolean {
       if (!(cond as Where[]).some((w) => cumple(row, w))) return false;
       continue;
     }
+    // Clave compuesta de Prisma ("carteraId_activoId": { carteraId, activoId }).
+    if (!(k in row) && k.includes("_") && cond !== null && typeof cond === "object" && !(cond instanceof Date) && !(cond instanceof Decimal)) {
+      if (!cumple(row, cond as Where)) return false;
+      continue;
+    }
     const v = row[k];
     if (cond !== null && typeof cond === "object" && !(cond instanceof Decimal) && !(cond instanceof Date)) {
       const c = cond as { in?: unknown[]; startsWith?: string; endsWith?: string; contains?: string; gte?: Date; lt?: Date; not?: unknown };
@@ -78,6 +83,16 @@ export function tabla(rows: Row[], defaults: Row = {}) {
       const i = rows.findIndex((x) => cumple(x, where));
       if (i < 0) throw new Error("no existe");
       return rows.splice(i, 1)[0];
+    },
+    updateMany: async ({ where, data }: { where?: Where; data: Row }) => {
+      const sel = rows.filter((x) => cumple(x, where));
+      sel.forEach((r) => aplicar(r, data));
+      return { count: sel.length };
+    },
+    deleteMany: async ({ where }: { where?: Where } = {}) => {
+      let count = 0;
+      for (let i = rows.length - 1; i >= 0; i--) if (cumple(rows[i], where)) { rows.splice(i, 1); count++; }
+      return { count };
     },
   };
 }

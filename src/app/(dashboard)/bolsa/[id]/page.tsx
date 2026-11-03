@@ -6,6 +6,8 @@ import { getAlycConfig } from "@/lib/services/config.service";
 import { canDoAction } from "@/lib/auth/permissions";
 import { ConcertarForm } from "@/components/modules/bolsa/ConcertarForm";
 import { AnularForm } from "@/components/modules/bolsa/AnularForm";
+import { LiquidarForm } from "@/components/modules/bolsa/LiquidarForm";
+import { requiereSaldoUSD } from "@/lib/bolsa/integridad";
 
 type PageProps = { params: Promise<{ id: string }> };
 
@@ -89,10 +91,11 @@ function InfoCell({ label, value }: { label: string; value: React.ReactNode }) {
 
 export default async function BolsaDetailPage({ params }: PageProps) {
   const { id } = await params;
-  const [op, alycConfigList, canAnularOp] = await Promise.all([
+  const [op, alycConfigList, canAnularOp, canLiquidarOp] = await Promise.all([
     getOperacionBolsaById(id),
     getAlycConfig(),
     canDoAction("bolsa:anular"),
+    canDoAction("bolsa:concertar"),
   ]);
   if (!op) notFound();
   const alycList = alycConfigList.filter((a) => a.activa).map((a) => a.nombre);
@@ -122,6 +125,9 @@ export default async function BolsaDetailPage({ params }: PageProps) {
     senebiBruto:       op.senebiBruto       != null ? Number(op.senebiBruto)       : null,
     diasCaucion:       op.diasCaucion,
     tasaCaucion:       op.tasaCaucion       != null ? Number(op.tasaCaucion)       : null,
+    // M5-F01: bolsa de USD (legacy concertada sin elección = Cable histórico)
+    usaSaldoUSD:       requiereSaldoUSD(op),
+    saldoUSD:          op.saldoUSD ?? (op.estado === "CONCERTADA" ? "CABLE" as const : null),
   };
 
   const costoReal          = op.costoReal          != null ? Number(op.costoReal)          : null;
@@ -254,6 +260,9 @@ export default async function BolsaDetailPage({ params }: PageProps) {
               {precioPromedioReal != null && (
                 <InfoCell label="Precio Prom. Real" value={fmt(precioPromedioReal, 4)} />
               )}
+              {formDefaults.usaSaldoUSD && formDefaults.saldoUSD && (
+                <InfoCell label="Saldo USD" value={formDefaults.saldoUSD === "MEP" ? "MEP" : `Cable${op.saldoUSD ? "" : " (histórico)"}`} />
+              )}
             </div>
           </div>
           {op.nroBoleto && (
@@ -293,6 +302,13 @@ export default async function BolsaDetailPage({ params }: PageProps) {
         <div className="bg-rose-500/10 rounded-xl border border-rose-500/20 px-5 py-3">
           <p className="text-[10px] font-bold uppercase tracking-widest text-rose-400 mb-1">Motivo de anulación</p>
           <p className="text-[12px] text-rose-300">{op.motivoAnulacion}</p>
+        </div>
+      )}
+
+      {/* Liquidar (settlement de una operación concertada) */}
+      {op.estado === "CONCERTADA" && !op.anulada && canLiquidarOp && (
+        <div className="flex justify-end">
+          <LiquidarForm operacionId={op.id} fechaLiquidacion={op.fechaLiquidacion ? new Date(op.fechaLiquidacion).toISOString().slice(0, 10) : null} />
         </div>
       )}
 

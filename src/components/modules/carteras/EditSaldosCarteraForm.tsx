@@ -31,6 +31,14 @@ export function EditSaldosCarteraForm({
     <form action={action} className="p-5 flex flex-col gap-4">
       <input type="hidden" name="carteraId" value={carteraId} />
       <input type="hidden" name="slug" value={slug} />
+      {/* MACRO 5: valores mostrados; el servidor rechaza si cambiaron (p. ej. por una operación concertada). */}
+      <input type="hidden" name="saldoPesosAnterior" value={String(saldoPesos)} />
+      <input type="hidden" name="saldoUSDCableAnterior" value={String(saldoUSDCable)} />
+      <input type="hidden" name="saldoUSDMepAnterior" value={String(saldoUSDMep)} />
+
+      <p className="text-[11px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+        AJUSTE MANUAL de saldos (conciliación con el broker): no es un movimiento operativo. Las compras y ventas mueven el saldo desde Bolsa; las transferencias, desde Caja.
+      </p>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="flex flex-col gap-1.5">

@@ -817,7 +817,7 @@ export default async function CarteraSlugPage({ params, searchParams }: PageProp
                   : "bg-byg-surface-2 text-byg-muted hover:bg-byg-border"
               }`}
             >
-              {editingSaldos ? "Cancelar" : "Editar"}
+              {editingSaldos ? "Cancelar" : "Ajuste manual"}
             </Link>
           </div>
         </div>

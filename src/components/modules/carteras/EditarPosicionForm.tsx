@@ -29,8 +29,11 @@ export function EditarPosicionForm({
   }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <Modal title="Editar posición" accentColor="text-blue-700" onClose={onClose}>
+    <Modal title="Ajuste de posición" accentColor="text-amber-600" onClose={onClose}>
       <form action={action} className="px-5 py-4 flex flex-col gap-3">
+        <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          Este ajuste modifica la posición manualmente y NO mueve el saldo de la cartera. Para registrar una compra o venta real, usá Bolsa.
+        </p>
         <input type="hidden" name="posicionId"  value={posicionId} />
         <input type="hidden" name="carteraSlug" value={carteraSlug} />
 
@@ -40,14 +43,19 @@ export function EditarPosicionForm({
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Precio compra</label>
+          <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Precio de costo / apertura</label>
           <input name="precioCompra" type="number" step="any" min="0.000001" defaultValue={precioCompraActual} className={iCls} />
         </div>
 
         <div className="flex flex-col gap-1">
-          <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Fecha (opcional)</label>
+          <label className="text-[9px] font-black uppercase tracking-widest text-slate-400">Fecha del ajuste (opcional)</label>
           <input name="fecha" type="date" className={iCls} />
         </div>
+
+        <label className="flex items-start gap-2 text-[11px] text-slate-700">
+          <input type="checkbox" name="confirmarAjuste" value="on" required className="mt-0.5" />
+          <span>Confirmo que es un <strong>ajuste sin movimiento de cash</strong>, no una compra ni una venta.</span>
+        </label>
 
         {state && "error" in state && (
           <p className="text-[10px] font-bold text-rose-600 bg-rose-50 px-2 py-1 rounded">{state.error}</p>
@@ -58,7 +66,7 @@ export function EditarPosicionForm({
             Cancelar
           </button>
           <button type="submit" disabled={pending} className="flex-1 py-2 text-[10px] font-black uppercase rounded-lg bg-slate-900 text-white hover:bg-blue-600 disabled:opacity-50 transition-colors">
-            {pending ? "…" : "Guardar"}
+            {pending ? "…" : "Registrar ajuste"}
           </button>
         </div>
       </form>

@@ -24,6 +24,10 @@ export function EditSaldosForm(props: Props) {
       <form action={action} className="space-y-4">
         <input type="hidden" name="comitenteId" value={props.comitenteId} />
         <input type="hidden" name="cuentaInversionId" value={props.cuentaInversionId} />
+        {/* MACRO 5: valores mostrados; el servidor rechaza si cambiaron mientras tanto. */}
+        <input type="hidden" name="saldoARSAnterior" value={String(props.saldoARS)} />
+        <input type="hidden" name="saldoUSDCableAnterior" value={String(props.saldoUSDCable)} />
+        <input type="hidden" name="saldoUSDMepAnterior" value={String(props.saldoUSDMep)} />
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">

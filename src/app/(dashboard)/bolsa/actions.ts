@@ -7,7 +7,11 @@ import { readOnlyPreview } from "@/lib/config";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { setTcMepDia } from "@/lib/services/config.service";
-import type { TipoOpBolsa, MercadoBolsa, Moneda, CategoriaHoldingInversion, CategoriaActivo, PlazoLiquidacion } from "@prisma/client";
+import type { TipoOpBolsa, MercadoBolsa, Moneda, PlazoLiquidacion } from "@prisma/client";
+import type { Decimal } from "@prisma/client/runtime/library";
+import { parseMontoPositivo } from "@/lib/caja/integridad";
+import { parseEnteroOpcional, parseOpcionalConSigno, parseOpcionalNoNegativo, parseSaldoUSD } from "@/lib/bolsa/integridad";
+import { BolsaIntegridadError, anularOperacionTx, concertarOperacionTx, liquidarOperacionTx } from "@/lib/bolsa/integridad.service";
 
 export async function actualizarTcMepDia(
   _prev: { error?: string; ok?: boolean } | null,
@@ -15,10 +19,11 @@ export async function actualizarTcMepDia(
 ): Promise<{ error?: string; ok?: boolean }> {
   const denied = await requireActionPermission("bolsa:crear");
   if (denied) return denied;
-  const raw = formData.get("valor")?.toString().trim().replace(",", ".");
+  const raw = formData.get("valor")?.toString().trim();
   if (!raw) return { error: "Valor requerido" };
-  const valor = parseFloat(raw);
-  if (isNaN(valor) || valor <= 0) return { error: "Valor inválido" };
+  const valorDec = parseMontoPositivo(raw);
+  if (!valorDec) return { error: "Valor inválido" };
+  const valor = valorDec.toNumber();
   const session = await auth();
   await setTcMepDia(valor, session?.user?.id);
   await writeAuditLog({
@@ -29,34 +34,6 @@ export async function actualizarTcMepDia(
   });
   revalidatePath("/bolsa");
   return { ok: true };
-}
-
-const VENTA_TIPOS = new Set<string>(["VENTA_BONO", "VENTA_ACCION", "VENTA_CEDEAR", "CAUCION_COLOCADORA"]);
-const COMPRA_ACTIVO = new Set<string>(["COMPRA_BONO", "COMPRA_ACCION", "COMPRA_CEDEAR"]);
-const VENTA_ACTIVO  = new Set<string>(["VENTA_BONO",  "VENTA_ACCION",  "VENTA_CEDEAR"]);
-
-const TIPO_TO_HOLDING: Record<string, CategoriaHoldingInversion> = {
-  COMPRA_BONO:        "BONO",
-  VENTA_BONO:         "BONO",
-  COMPRA_ACCION:      "ACCION",
-  VENTA_ACCION:       "ACCION",
-  COMPRA_CEDEAR:      "CEDEAR",
-  VENTA_CEDEAR:       "CEDEAR",
-  CAUCION_COLOCADORA: "CAUCION",
-  CAUCION_TOMADORA:   "CAUCION",
-};
-
-function inferCategoriaActivo(tipo: string, moneda: string): CategoriaActivo {
-  if (tipo === "COMPRA_CEDEAR" || tipo === "VENTA_CEDEAR") return "CEDEAR";
-  if (tipo === "COMPRA_ACCION" || tipo === "VENTA_ACCION") return "ACCION_USD";
-  if (tipo === "COMPRA_BONO"   || tipo === "VENTA_BONO")   return moneda === "ARS" ? "BONO_ARS" : "BONO_USD";
-  return "BONO_USD";
-}
-
-function toN(v: FormDataEntryValue | null): number | null {
-  if (!v) return null;
-  const n = parseFloat(v as string);
-  return isNaN(n) ? null : n;
 }
 
 // ── CREAR ──────────────────────────────────────────────────────────────────
@@ -88,10 +65,11 @@ export async function crearOperacionBolsa(prevState: unknown, formData: FormData
   if (sujetoTipo === "cartera" && !carteraId)
     return { error: "Seleccionar cartera" };
 
-  const cantidad = parseFloat(cantidadRaw);
-  const precio   = parseFloat(precioRaw);
-  if (isNaN(cantidad) || cantidad <= 0) return { error: "Cantidad inválida" };
-  if (isNaN(precio)   || precio   <= 0) return { error: "Precio inválido" };
+  // MACRO 5: decimal estricto > 0 (parseFloat aceptaba "12abc", "1e3"…).
+  const cantidad = parseMontoPositivo(cantidadRaw);
+  const precio   = parseMontoPositivo(precioRaw);
+  if (!cantidad) return { error: "Cantidad inválida" };
+  if (!precio)   return { error: "Precio inválido" };
 
   try {
     const now = new Date();
@@ -122,7 +100,7 @@ export async function crearOperacionBolsa(prevState: unknown, formData: FormData
           userId,
           accion:      "CARGA",
           estadoNuevo: "PENDIENTE_CONCERTACION",
-          snapshot:    { ticker, cantidad, precio, moneda, mercado, tipoOperacion: tipoRaw },
+          snapshot:    { ticker, cantidad: cantidad.toString(), precio: precio.toString(), moneda, mercado, tipoOperacion: tipoRaw },
         },
       });
     });
@@ -132,7 +110,7 @@ export async function crearOperacionBolsa(prevState: unknown, formData: FormData
       accion:      "CREAR",
       entidad:     "OperacionBolsa",
       entidadId:   id,
-      description: `${(session?.user as { name?: string })?.name ?? "Sistema"} creó op bolsa ${tipoRaw} ${ticker} x${cantidad}`,
+      description: `${(session?.user as { name?: string })?.name ?? "Sistema"} creó op bolsa ${tipoRaw} ${ticker} x${cantidad.toString()}`,
     });
 
     revalidatePath("/bolsa");
@@ -157,291 +135,72 @@ export async function concertarOperacion(prevState: unknown, formData: FormData)
   const operacionId = formData.get("operacionId") as string;
   if (!operacionId) return { error: "ID operación requerido" };
 
-  const op = await prisma.operacionBolsa.findUnique({ where: { id: operacionId } });
-  if (!op) return { error: "Operación no encontrada" };
-  if (op.estado === "ANULADA")   return { error: "Operación anulada, no modificable" };
-  if (op.estado === "LIQUIDADA") return { error: "Operación liquidada, no modificable" };
-
-  const nroBoleto         = (formData.get("nroBoleto")   as string)?.trim() || null;
-  const alyc              = (formData.get("alyc")         as string)?.trim() || null;
   const fechaConcertRaw   = formData.get("fechaConcertacion")  as string | null;
   const fechaLiquidRaw    = formData.get("fechaLiquidacion")   as string | null;
   const plazoLiquidRaw    = (formData.get("plazoLiquidacion") as string) || "T1";
   const plazoLiquidacion  = (["CI", "T1", "T2"].includes(plazoLiquidRaw) ? plazoLiquidRaw : "T1") as PlazoLiquidacion;
-  const comisionPct          = toN(formData.get("comisionPct"));
-  const comisionFija         = toN(formData.get("comisionFija"));
-  const derechosMercado      = toN(formData.get("derechosMercado"));
-  const gastos               = toN(formData.get("gastos"));
-  const impuestos            = toN(formData.get("impuestos"));
-  const tcMepDia             = toN(formData.get("tcMepDia"));
-  const comisionUSD          = toN(formData.get("comisionUSD"));
-  const netoLiquidadoManual  = toN(formData.get("netoLiquidadoManual"));
   const esSenebi          = formData.get("esSenebi") === "true";
-  const senebiBruto       = esSenebi ? toN(formData.get("senebiBruto")) : null;
-  const diasCaucionRaw    = formData.get("diasCaucion") as string | null;
-  const diasCaucion       = diasCaucionRaw ? parseInt(diasCaucionRaw) : null;
-  const tasaCaucion       = toN(formData.get("tasaCaucion"));
 
-  // Calculations
-  const cantidad    = Number(op.cantidad);
-  const precio      = Number(op.precio);
-  const valorBruto  = cantidad * precio;
-  const costoReal   = (comisionFija ?? 0)
-    + valorBruto * ((comisionPct ?? 0) / 100)
-    + (derechosMercado ?? 0)
-    + (gastos ?? 0)
-    + (impuestos ?? 0);
-  const esVenta         = VENTA_TIPOS.has(op.tipoOperacion as string);
-  const netoCalculado   = esVenta ? valorBruto - costoReal : valorBruto + costoReal;
-  const netoLiquidado   = netoLiquidadoManual ?? netoCalculado;
-  const precioPromedioReal = !esVenta && cantidad > 0 ? netoLiquidado / cantidad : null;
-
-  const isNewConcertation = op.estado === "PENDIENTE_CONCERTACION";
+  // MACRO 5: parser canónico estricto (parseFloat aceptaba "12abc", "1e3"…; un valor
+  // inválido ya no se descarta en silencio: rechaza la concertación).
+  const campos = {
+    comisionPct: parseOpcionalNoNegativo(formData.get("comisionPct")),
+    comisionFija: parseOpcionalNoNegativo(formData.get("comisionFija")),
+    derechosMercado: parseOpcionalNoNegativo(formData.get("derechosMercado")),
+    gastos: parseOpcionalNoNegativo(formData.get("gastos")),
+    impuestos: parseOpcionalNoNegativo(formData.get("impuestos")),
+    tcMepDia: parseOpcionalNoNegativo(formData.get("tcMepDia")),
+    comisionUSD: parseOpcionalNoNegativo(formData.get("comisionUSD")),
+    netoManual: parseOpcionalNoNegativo(formData.get("netoLiquidadoManual")),
+    senebiBruto: esSenebi ? parseOpcionalNoNegativo(formData.get("senebiBruto")) : null,
+    tasaCaucion: parseOpcionalNoNegativo(formData.get("tasaCaucion")),
+  };
+  const diasCaucion = parseEnteroOpcional(formData.get("diasCaucion"));
+  // M5-F01: bolsa de USD de la cartera (CABLE | MEP), validada en el servidor.
+  const saldoUSD = parseSaldoUSD(formData.get("saldoUSD"));
+  if (saldoUSD === "invalido") return { error: "Bolsa de USD inválida: debe ser Cable o MEP" };
+  const invalido = Object.entries(campos).find(([, v]) => v === "invalido");
+  if (invalido || diasCaucion === "invalido") return { error: `Valor inválido en ${invalido?.[0] ?? "diasCaucion"}: usá solo números (ej. 1500 o 1500,50)` };
+  const v = campos as { [K in keyof typeof campos]: Decimal | null };
+  if (v.netoManual && v.netoManual.isZero()) return { error: "El neto liquidado manual debe ser mayor a 0" };
+  const fechaConcertacion = fechaConcertRaw ? new Date(fechaConcertRaw) : null;
+  const fechaLiquidacion  = fechaLiquidRaw ? new Date(fechaLiquidRaw) : null;
+  if ((fechaConcertacion && isNaN(fechaConcertacion.getTime())) || (fechaLiquidacion && isNaN(fechaLiquidacion.getTime()))) return { error: "Fecha inválida" };
 
   try {
-    const now = new Date();
-    await prisma.$transaction(async (tx) => {
-      await tx.operacionBolsa.update({
-        where: { id: operacionId },
-        data: {
-          estado:           "CONCERTADA",
-          operadorCierreId: userId,
-          nroBoleto,
-          alyc,
-          fechaConcertacion:  fechaConcertRaw  ? new Date(fechaConcertRaw)  : null,
-          fechaLiquidacion:   fechaLiquidRaw   ? new Date(fechaLiquidRaw)   : null,
-          plazoLiquidacion,
-          comisionPct,
-          comisionFija,
-          derechosMercado,
-          gastos,
-          impuestos,
-          tcMepDia,
-          comisionUSD,
-          esSenebi,
-          senebiBruto,
-          diasCaucion:        isNaN(diasCaucion as number) ? null : diasCaucion,
-          tasaCaucion,
-          costoReal,
-          netoLiquidado,
-          precioPromedioReal,
-          updatedAt:          now,
-        },
-      });
-      await tx.operacionBolsaLog.create({
-        data: {
-          id:            crypto.randomUUID(),
-          operacionId,
-          userId,
-          accion:        isNewConcertation ? "CONCERTACION" : "EDICION",
-          estadoAnterior: op.estado,
-          estadoNuevo:   "CONCERTADA",
-          snapshot:      { nroBoleto, alyc, costoReal, netoLiquidado, precioPromedioReal },
-        },
-      });
+    // Lock de la operación + efectos (posición + cash / holding + saldo) en UNA tx.
+    const r = await prisma.$transaction((tx) => concertarOperacionTx(tx, {
+      operacionId, userId,
+      datos: {
+        nroBoleto: (formData.get("nroBoleto") as string)?.trim() || null,
+        alyc: (formData.get("alyc") as string)?.trim() || null,
+        fechaConcertacion, fechaLiquidacion, plazoLiquidacion,
+        costos: { comisionPct: v.comisionPct, comisionFija: v.comisionFija, derechosMercado: v.derechosMercado, gastos: v.gastos, impuestos: v.impuestos, netoManual: v.netoManual },
+        comisionUSD: v.comisionUSD, tcMepDia: v.tcMepDia, esSenebi, senebiBruto: v.senebiBruto, diasCaucion, tasaCaucion: v.tasaCaucion,
+        saldoUSD,
+      },
+    }), { timeout: 15000 });
 
-      // ── Impacto en comitente (solo primera concertación, solo compra/venta activos) ──
-      if (isNewConcertation && op.comitenteId) {
-        const holdingCat = TIPO_TO_HOLDING[op.tipoOperacion as string];
-        const isCompra   = COMPRA_ACTIVO.has(op.tipoOperacion as string);
-        const isVenta    = VENTA_ACTIVO.has(op.tipoOperacion as string);
-
-        if ((isCompra || isVenta) && holdingCat) {
-          // 1. Actualizar saldo disponible
-          const saldoActual = await tx.saldoComitenteInversion.findUnique({
-            where: { comitenteId: op.comitenteId },
-          });
-          const delta = Math.abs(netoLiquidado);
-          const saldoData = op.moneda === "ARS"
-            ? { saldoARS: (Number(saldoActual?.saldoARS ?? 0) + (isVenta ? delta : -delta)) }
-            : { saldoUSDCable: (Number(saldoActual?.saldoUSDCable ?? 0) + (isVenta ? delta : -delta)) };
-
-          await tx.saldoComitenteInversion.upsert({
-            where:  { comitenteId: op.comitenteId },
-            update: { ...saldoData, updatedAt: new Date() },
-            create: {
-              id: crypto.randomUUID(),
-              comitenteId: op.comitenteId,
-              saldoARS: 0, saldoUSDCable: 0, saldoUSDMep: 0,
-              ...saldoData,
-              updatedAt: new Date(),
-            },
-          });
-
-          // 2. Actualizar holding
-          const existing = await tx.holdingComitenteInversion.findUnique({
-            where: { comitenteId_ticker: { comitenteId: op.comitenteId, ticker: op.ticker } },
-          });
-
-          if (isCompra) {
-            const precioReal = precioPromedioReal ?? precio;
-            if (existing) {
-              const existQty    = Number(existing.cantidad);
-              const newQty      = existQty + cantidad;
-              const newPrecioP  = (existQty * Number(existing.precioPromedio) + cantidad * precioReal) / newQty;
-              await tx.holdingComitenteInversion.update({
-                where: { id: existing.id },
-                data:  { cantidad: newQty, precioPromedio: newPrecioP, updatedAt: new Date() },
-              });
-            } else {
-              await tx.holdingComitenteInversion.create({
-                data: {
-                  id: crypto.randomUUID(),
-                  comitenteId: op.comitenteId,
-                  ticker:      op.ticker,
-                  categoria:   holdingCat,
-                  cantidad,
-                  precioPromedio: precioReal,
-                  updatedAt: new Date(),
-                },
-              });
-            }
-            await tx.operacionHoldingInversion.create({
-              data: {
-                id:          crypto.randomUUID(),
-                comitenteId: op.comitenteId,
-                holdingId:   existing?.id ?? null,
-                tipo:        "COMPRA",
-                ticker:      op.ticker,
-                categoria:   holdingCat,
-                cantidad,
-                precio,
-                precioPromedio: precioPromedioReal ?? precio,
-                notas:       `Bolsa #${operacionId.slice(0, 8)}`,
-              },
-            });
-          } else if (isVenta) {
-            // No short selling: bloquear si no hay holding o cantidad insuficiente
-            if (!existing || Number(existing.cantidad) < cantidad) {
-              throw new Error("No se puede vender: el cliente no tiene posición suficiente");
-            }
-            const existQty = Number(existing.cantidad);
-            const newQty   = Math.max(0, existQty - cantidad);
-            // Create operacion BEFORE deleting holding to avoid FK violation
-            await tx.operacionHoldingInversion.create({
-              data: {
-                id:          crypto.randomUUID(),
-                comitenteId: op.comitenteId,
-                holdingId:   newQty === 0 ? null : existing.id,
-                tipo:        "VENTA",
-                ticker:      op.ticker,
-                categoria:   holdingCat,
-                cantidad,
-                precio,
-                precioPromedio: Number(existing.precioPromedio),
-                notas:       `Bolsa #${operacionId.slice(0, 8)}`,
-              },
-            });
-            if (newQty === 0) {
-              await tx.holdingComitenteInversion.delete({ where: { id: existing.id } });
-            } else {
-              await tx.holdingComitenteInversion.update({
-                where: { id: existing.id },
-                data:  { cantidad: newQty, updatedAt: new Date() },
-              });
-            }
-          }
-        }
-      }
-
-      // ── Impacto en cartera propia (solo primera concertación, solo compra/venta activos) ──
-      if (isNewConcertation && op.carteraId) {
-        const isCompra = COMPRA_ACTIVO.has(op.tipoOperacion as string);
-        const isVenta  = VENTA_ACTIVO.has(op.tipoOperacion as string);
-
-        if (isCompra || isVenta) {
-          const categoria = inferCategoriaActivo(op.tipoOperacion as string, op.moneda as string);
-          const activo = await tx.activo.upsert({
-            where:  { ticker: op.ticker },
-            update: {},
-            create: {
-              id:           crypto.randomUUID(),
-              ticker:       op.ticker,
-              categoria,
-              monedaPrecio: op.moneda as Moneda,
-              updatedAt:    new Date(),
-            },
-          });
-
-          const posExisting = await tx.posicionCartera.findUnique({
-            where: { carteraId_activoId: { carteraId: op.carteraId, activoId: activo.id } },
-          });
-
-          if (isCompra) {
-            const precioReal = precioPromedioReal ?? precio;
-            if (posExisting) {
-              const existQty   = Number(posExisting.cantidad);
-              const newQty     = existQty + cantidad;
-              const newPrecioC = (existQty * Number(posExisting.precioCompra) + cantidad * precioReal) / newQty;
-              await tx.posicionCartera.update({
-                where: { id: posExisting.id },
-                data:  { cantidad: newQty, precioCompra: newPrecioC, updatedAt: new Date() },
-              });
-            } else {
-              await tx.posicionCartera.create({
-                data: {
-                  id:          crypto.randomUUID(),
-                  carteraId:   op.carteraId,
-                  activoId:    activo.id,
-                  cantidad,
-                  precioCompra: precioReal,
-                  fecha:       new Date(),
-                  updatedAt:   new Date(),
-                },
-              });
-            }
-          } else {
-            const existQty = Number(posExisting?.cantidad ?? 0);
-            if (!posExisting || existQty < cantidad) {
-              throw new Error(
-                `Stock insuficiente para ${op.ticker}. Disponible: ${existQty.toLocaleString("es-AR", { maximumFractionDigits: 6 })}, solicitado: ${cantidad.toLocaleString("es-AR", { maximumFractionDigits: 6 })}.`,
-              );
-            }
-            // Costo promedio de las unidades vendidas, para el resultado realizado
-            // de cartera propia (motor financiero, MACRO 2). No se persiste en otro lado.
-            await tx.operacionBolsaLog.create({
-              data: {
-                id:             crypto.randomUUID(),
-                operacionId,
-                userId,
-                accion:         "COSTO_CARTERA",
-                estadoAnterior: op.estado,
-                estadoNuevo:    "CONCERTADA",
-                snapshot:       { costoUnitario: Number(posExisting.precioCompra), cantidad },
-              },
-            });
-            const newQty   = Math.max(0, existQty - cantidad);
-            if (newQty === 0) {
-              await tx.posicionCartera.delete({ where: { id: posExisting.id } });
-            } else {
-              await tx.posicionCartera.update({
-                where: { id: posExisting.id },
-                data:  { cantidad: newQty, updatedAt: new Date() },
-              });
-            }
-          }
-        }
-      }
-    });
-
-    const session = await auth();
+    const op = await prisma.operacionBolsa.findUnique({ where: { id: operacionId }, select: { tipoOperacion: true, ticker: true, comitenteId: true, carteraId: true } });
     const userName = (session?.user as { name?: string } | undefined)?.name ?? "Usuario";
-    const sujetoLabel = op.comitenteId ? `comitente ${op.comitenteId.slice(0, 8)}` : (op.carteraId ? "cartera propia" : "—");
+    const sujetoLabel = op?.comitenteId ? `comitente ${op.comitenteId.slice(0, 8)}` : (op?.carteraId ? "cartera propia" : "—");
     await writeAuditLog({
       userId,
-      accion: isNewConcertation ? "CONCERTACION" : "EDICION_CONCERTACION",
+      accion: r.nueva ? "CONCERTACION" : "EDICION_CONCERTACION",
       entidad: "OperacionBolsa",
       entidadId: operacionId,
-      description: isNewConcertation
-        ? `${userName} concertó ${op.tipoOperacion} ${op.ticker} (${sujetoLabel})`
-        : `${userName} editó concertación ${op.tipoOperacion} ${op.ticker} (${sujetoLabel})`,
+      description: r.nueva
+        ? `${userName} concertó ${op?.tipoOperacion} ${op?.ticker} (${sujetoLabel})${r.efectos?.saldo ? ` | ${r.efectos.saldo.campo} ${r.efectos.saldo.delta}` : ""}`
+        : `${userName} editó concertación ${op?.tipoOperacion} ${op?.ticker} (${sujetoLabel})`,
     });
 
     revalidatePath("/bolsa");
     revalidatePath(`/bolsa/${operacionId}`);
+    revalidatePath("/carteras", "layout");
     revalidatePath("/cuentas-inversion", "layout");
     return { ok: true as const };
   } catch (e: unknown) {
+    if (e instanceof BolsaIntegridadError) return { error: e.message };
     console.error("[concertarOperacion]", e);
     return { error: "Error al concertar la operación. Verificar datos y volver a intentar." };
   }
@@ -472,12 +231,15 @@ export async function crearOpMesaDiaria(_prevState: unknown, formData: FormData)
   const fechaOpRaw    = formData.get("fechaOperativa") as string;
   const observaciones = ((formData.get("observaciones") as string) || "").trim() || null;
 
-  const resultadoBruto = toN(formData.get("resultadoBruto"));
-  const resultadoNeto  = toN(formData.get("resultadoNeto"));
-  const tcMepDia       = toN(formData.get("tcMepDia"));
-  const tasaCaucion    = toN(formData.get("tasaCaucion"));
-  const diasRaw        = formData.get("diasCaucion") as string | null;
-  const diasCaucion    = diasRaw ? parseInt(diasRaw) : null;
+  // MACRO 5: parser canónico estricto (resultados informados admiten signo).
+  const resultadoBruto = parseOpcionalConSigno(formData.get("resultadoBruto"));
+  const resultadoNeto  = parseOpcionalConSigno(formData.get("resultadoNeto"));
+  const tcMepDia       = parseOpcionalNoNegativo(formData.get("tcMepDia"));
+  const tasaCaucion    = parseOpcionalNoNegativo(formData.get("tasaCaucion"));
+  const diasCaucion    = parseEnteroOpcional(formData.get("diasCaucion"));
+  if ([resultadoBruto, resultadoNeto, tcMepDia, tasaCaucion, diasCaucion].includes("invalido")) {
+    return { error: "Valor numérico inválido: usá solo números (ej. 1500 o 1500,50)" };
+  }
 
   if (!tipoRaw || !cantidadRaw || !precioRaw || !moneda || !mercado)
     return { error: "Faltan campos obligatorios" };
@@ -489,10 +251,10 @@ export async function crearOpMesaDiaria(_prevState: unknown, formData: FormData)
   const ticker = tickerRaw || (CAUCION_TIPOS.has(tipoRaw) ? "CAUCION" : "");
   if (!ticker) return { error: "Ticker requerido para este tipo de operación" };
 
-  const cantidad = parseFloat(cantidadRaw);
-  const precio   = parseFloat(precioRaw);
-  if (isNaN(cantidad) || cantidad <= 0) return { error: "Cantidad inválida" };
-  if (isNaN(precio)   || precio   <= 0) return { error: "Precio inválido" };
+  const cantidad = parseMontoPositivo(cantidadRaw);
+  const precio   = parseMontoPositivo(precioRaw);
+  if (!cantidad) return { error: "Cantidad inválida" };
+  if (!precio)   return { error: "Precio inválido" };
 
   const fechaOperativa = fechaOpRaw ? new Date(fechaOpRaw + "T00:00:00.000Z") : null;
 
@@ -516,11 +278,11 @@ export async function crearOpMesaDiaria(_prevState: unknown, formData: FormData)
           operadorCargaId: userId,
           estado:          "PENDIENTE_CONCERTACION",
           fechaOperativa,
-          resultadoBruto,
-          resultadoNeto,
-          tcMepDia,
-          tasaCaucion,
-          diasCaucion:     diasCaucion !== null && !isNaN(diasCaucion) ? diasCaucion : null,
+          resultadoBruto:  resultadoBruto as Decimal | null,
+          resultadoNeto:   resultadoNeto as Decimal | null,
+          tcMepDia:        tcMepDia as Decimal | null,
+          tasaCaucion:     tasaCaucion as Decimal | null,
+          diasCaucion:     diasCaucion as number | null,
           updatedAt:       now,
         },
       });
@@ -531,7 +293,7 @@ export async function crearOpMesaDiaria(_prevState: unknown, formData: FormData)
           userId,
           accion:      "CARGA",
           estadoNuevo: "PENDIENTE_CONCERTACION",
-          snapshot:    { ticker, cantidad, precio, moneda, mercado, tipoOperacion: tipoRaw, resultadoBruto, resultadoNeto },
+          snapshot:    { ticker, cantidad: cantidad.toString(), precio: precio.toString(), moneda, mercado, tipoOperacion: tipoRaw, resultadoBruto: resultadoBruto?.toString() ?? null, resultadoNeto: resultadoNeto?.toString() ?? null },
         },
       });
     });
@@ -597,150 +359,68 @@ export async function anularOperacion(prevState: unknown, formData: FormData) {
   if (!operacionId)     return { error: "ID operación requerido" };
   if (!motivoAnulacion) return { error: "El motivo de anulación es obligatorio" };
 
-  const op = await prisma.operacionBolsa.findUnique({ where: { id: operacionId } });
-  if (!op)        return { error: "Operación no encontrada" };
-  if (op.anulada) return { error: "Operación ya anulada" };
-
-  const wasConcertada  = op.estado === "CONCERTADA";
-  const isCompraActivo = COMPRA_ACTIVO.has(op.tipoOperacion as string);
-  const isVentaActivo  = VENTA_ACTIVO.has(op.tipoOperacion as string);
-
   try {
-    const now = new Date();
-    const reversalDesc: string[] = [];
+    // MACRO 5: lock + relectura; neutraliza TODO el hecho concertado (tenencia + costo +
+    // cash / saldo comitente + movimiento de holding). Doble anulación → DENY.
+    const r = await prisma.$transaction((tx) => anularOperacionTx(tx, { operacionId, userId, motivo: motivoAnulacion }), { timeout: 15000 });
 
-    await prisma.$transaction(async (tx) => {
-      await tx.operacionBolsa.update({
-        where: { id: operacionId },
-        data: { estado: "ANULADA", anulada: true, motivoAnulacion, updatedAt: now },
-      });
-      await tx.operacionBolsaLog.create({
-        data: {
-          id:             crypto.randomUUID(),
-          operacionId,
-          userId,
-          accion:         "ANULACION",
-          estadoAnterior: op.estado,
-          estadoNuevo:    "ANULADA",
-          snapshot:       { motivoAnulacion, wasConcertada },
-        },
-      });
-
-      // ── Revertir PosicionCartera (cartera propia) ──────────────────────
-      if (wasConcertada && op.carteraId && (isCompraActivo || isVentaActivo)) {
-        const activo = await tx.activo.findUnique({ where: { ticker: op.ticker } });
-        if (activo) {
-          const posicion = await tx.posicionCartera.findUnique({
-            where: { carteraId_activoId: { carteraId: op.carteraId, activoId: activo.id } },
-          });
-          const cantidad = Number(op.cantidad);
-
-          if (isCompraActivo) {
-            // Reversar compra: reducir / eliminar posición
-            if (posicion) {
-              const nuevaCant = Math.max(0, Number(posicion.cantidad) - cantidad);
-              if (nuevaCant === 0) {
-                await tx.posicionCartera.delete({ where: { id: posicion.id } });
-                reversalDesc.push(`eliminó posición ${op.ticker} en cartera`);
-              } else {
-                await tx.posicionCartera.update({
-                  where: { id: posicion.id },
-                  data:  { cantidad: nuevaCant, updatedAt: new Date() },
-                });
-                reversalDesc.push(`redujo ${op.ticker} en cartera por ${cantidad}`);
-              }
-            }
-          } else {
-            // Reversar venta: reponer posición
-            if (posicion) {
-              await tx.posicionCartera.update({
-                where: { id: posicion.id },
-                data:  { cantidad: Number(posicion.cantidad) + cantidad, updatedAt: new Date() },
-              });
-            } else {
-              await tx.posicionCartera.create({
-                data: {
-                  id:           crypto.randomUUID(),
-                  carteraId:    op.carteraId,
-                  activoId:     activo.id,
-                  cantidad,
-                  precioCompra: Number(op.precio),
-                  fecha:        new Date(),
-                  updatedAt:    new Date(),
-                },
-              });
-            }
-            reversalDesc.push(`repuso ${op.ticker} en cartera por ${cantidad}`);
-          }
-        }
-      }
-
-      // ── Revertir HoldingComitenteInversion (cliente) ───────────────────
-      if (wasConcertada && op.comitenteId && (isCompraActivo || isVentaActivo)) {
-        const cantidad = Number(op.cantidad);
-        const existing = await tx.holdingComitenteInversion.findUnique({
-          where: { comitenteId_ticker: { comitenteId: op.comitenteId, ticker: op.ticker } },
-        });
-
-        if (isCompraActivo) {
-          // Reversar compra: reducir / eliminar holding
-          if (existing) {
-            const nuevaCant = Math.max(0, Number(existing.cantidad) - cantidad);
-            if (nuevaCant === 0) {
-              await tx.holdingComitenteInversion.delete({ where: { id: existing.id } });
-              reversalDesc.push(`eliminó holding ${op.ticker} del comitente`);
-            } else {
-              await tx.holdingComitenteInversion.update({
-                where: { id: existing.id },
-                data:  { cantidad: nuevaCant, updatedAt: new Date() },
-              });
-              reversalDesc.push(`redujo holding ${op.ticker} del comitente por ${cantidad}`);
-            }
-          }
-        } else {
-          // Reversar venta: reponer holding
-          const holdingCat = TIPO_TO_HOLDING[op.tipoOperacion as string];
-          if (existing) {
-            await tx.holdingComitenteInversion.update({
-              where: { id: existing.id },
-              data:  { cantidad: Number(existing.cantidad) + cantidad, updatedAt: new Date() },
-            });
-          } else if (holdingCat) {
-            await tx.holdingComitenteInversion.create({
-              data: {
-                id:             crypto.randomUUID(),
-                comitenteId:    op.comitenteId,
-                ticker:         op.ticker,
-                categoria:      holdingCat,
-                cantidad,
-                precioPromedio: Number(op.precio),
-                updatedAt:      new Date(),
-              },
-            });
-          }
-          reversalDesc.push(`repuso holding ${op.ticker} del comitente por ${cantidad}`);
-        }
-      }
-    });
-
-    const userName       = (session?.user as { name?: string })?.name ?? "Sistema";
-    const reversalSuffix = reversalDesc.length > 0 ? ` | ${reversalDesc.join(", ")}` : "";
+    const op = await prisma.operacionBolsa.findUnique({ where: { id: operacionId }, select: { tipoOperacion: true, ticker: true } });
+    const userName = (session?.user as { name?: string })?.name ?? "Sistema";
+    const reversalSuffix = r.revertido
+      ? ` | revirtió ${r.revertido.sujeto === "CARTERA" ? "cartera" : "comitente"}: tenencia y ${r.revertido.saldo?.campo ?? "saldo"} ${r.revertido.saldo ? `${r.revertido.saldo.delta} → 0` : ""}`
+      : "";
     await writeAuditLog({
       userId,
       accion:      "ANULAR",
       entidad:     "OperacionBolsa",
       entidadId:   operacionId,
-      description: `${userName} anuló ${op.tipoOperacion} ${op.ticker}: ${motivoAnulacion}${reversalSuffix}`,
+      description: `${userName} anuló ${op?.tipoOperacion} ${op?.ticker}: ${motivoAnulacion}${reversalSuffix}`,
     });
 
     revalidatePath("/bolsa");
     revalidatePath(`/bolsa/${operacionId}`);
-    if (wasConcertada && (op.carteraId || op.comitenteId)) {
+    if (r.revertido) {
       revalidatePath("/carteras", "layout");
       revalidatePath("/cuentas-inversion", "layout");
     }
     return { ok: true as const };
   } catch (e: unknown) {
-    return { error: (e as Error).message || "Error al anular operación" };
+    if (e instanceof BolsaIntegridadError) return { error: e.message };
+    console.error("[anularOperacion]", e);
+    return { error: "Error al anular operación" };
+  }
+}
+
+// ── LIQUIDAR ───────────────────────────────────────────────────────────────
+
+/** CONCERTADA → LIQUIDADA (settlement). Los efectos económicos ya se aplicaron al concertar. */
+export async function liquidarOperacion(prevState: unknown, formData: FormData) {
+  if (readOnlyPreview) return { error: "Modo lectura activo" };
+  const denied = await requireActionPermission("bolsa:concertar");
+  if (denied) return denied;
+
+  const session = await auth();
+  const userId  = session?.user?.id as string | undefined;
+  if (!userId) return { error: "Sin sesión activa" };
+
+  const operacionId = formData.get("operacionId") as string;
+  if (!operacionId) return { error: "ID operación requerido" };
+  const fechaRaw = (formData.get("fechaLiquidacion") as string | null)?.trim();
+  const fechaLiquidacion = fechaRaw ? new Date(`${fechaRaw}T00:00:00.000Z`) : null;
+  if (fechaLiquidacion && isNaN(fechaLiquidacion.getTime())) return { error: "Fecha inválida" };
+
+  try {
+    await prisma.$transaction((tx) => liquidarOperacionTx(tx, { operacionId, userId, fechaLiquidacion }));
+    await writeAuditLog({
+      userId, accion: "LIQUIDACION", entidad: "OperacionBolsa", entidadId: operacionId,
+      description: `${(session?.user as { name?: string })?.name ?? "Sistema"} marcó liquidada la operación ${operacionId}`,
+    });
+    revalidatePath("/bolsa");
+    revalidatePath(`/bolsa/${operacionId}`);
+    return { ok: true as const };
+  } catch (e: unknown) {
+    if (e instanceof BolsaIntegridadError) return { error: e.message };
+    console.error("[liquidarOperacion]", e);
+    return { error: "Error al liquidar la operación" };
   }
 }

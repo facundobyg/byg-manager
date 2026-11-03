@@ -56,14 +56,17 @@ export function AgregarActivoForm({ carteraId, carteraSlug, isCripto }: Props) {
         className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest transition-all shadow-sm shadow-blue-600/20 bg-byg-accent text-white hover:bg-blue-500"
       >
         <Plus size={13} />
-        Agregar activo
+        Ajuste / apertura
       </button>
 
       {open && (
-        <Modal title="Nueva posición" accentColor="text-byg-accent" maxWidth="max-w-lg" onClose={() => setOpen(false)}>
+        <Modal title="Ajuste / apertura de posición" accentColor="text-amber-500" maxWidth="max-w-lg" onClose={() => setOpen(false)}>
           <div className="px-1 pt-1 pb-1">
+            <p className="mx-5 my-2 px-3 py-2 text-[11px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+              Este ajuste modifica la posición manualmente y NO mueve el saldo de la cartera. Para registrar una compra o venta real, usá Bolsa.
+            </p>
             <p className="px-5 py-2 text-[10px] text-byg-muted font-medium border-b border-byg-border">
-              Si el ticker ya existe en esta cartera se acumula con precio promedio ponderado.
+              Si el ticker ya existe en esta cartera se acumula con costo promedio ponderado.
             </p>
           </div>
           <form action={action} className="px-5 py-4 flex flex-col gap-3">
@@ -106,14 +109,19 @@ export function AgregarActivoForm({ carteraId, carteraSlug, isCripto }: Props) {
                 <input name="cantidad" type="number" step="any" min="0.000001" required placeholder="0.00" className={inputCls} />
               </div>
               <div className="flex flex-col gap-1">
-                <label className={labelCls}>Precio compra *</label>
+                <label className={labelCls}>Precio de costo / apertura *</label>
                 <input name="precioCompra" type="number" step="any" min="0.000001" required placeholder="0.00" className={inputCls} />
               </div>
               <div className="flex flex-col gap-1">
-                <label className={labelCls}>Fecha compra</label>
+                <label className={labelCls}>Fecha del ajuste / apertura</label>
                 <input name="fecha" type="date" className={inputCls} />
               </div>
             </div>
+
+            <label className="flex items-start gap-2 text-[11px] text-byg-text">
+              <input type="checkbox" name="confirmarAjuste" value="on" required className="mt-0.5" />
+              <span>Confirmo que es un <strong>ajuste / apertura sin movimiento de cash</strong>, no una compra.</span>
+            </label>
 
             {state && "error" in state && (
               <p className="text-[11px] font-bold text-rose-400 bg-rose-500/10 px-3 py-2 rounded-lg border border-rose-500/20">
@@ -126,7 +134,7 @@ export function AgregarActivoForm({ carteraId, carteraSlug, isCripto }: Props) {
                 Cancelar
               </button>
               <button type="submit" disabled={pending} className="px-5 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest bg-byg-accent text-white hover:bg-blue-500 disabled:opacity-50 transition-colors shadow-sm shadow-blue-600/20">
-                {pending ? "Guardando…" : "Guardar posición"}
+                {pending ? "Guardando…" : "Registrar ajuste"}
               </button>
             </div>
           </form>

@@ -7,10 +7,12 @@ const mocks = vi.hoisted(() => ({
   auth: vi.fn(),
   writeAuditLog: vi.fn(),
   prisma: {
-    cartera: { update: vi.fn() },
+    cartera: { update: vi.fn(), findUnique: vi.fn() },
     activo: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
-    posicionCartera: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    posicionCartera: { findUnique: vi.fn(), findUniqueOrThrow: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
     $transaction: vi.fn(),
+    $queryRaw: vi.fn(),
+    auditLog: { create: vi.fn() },
   },
 }));
 
@@ -33,6 +35,10 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
+// MACRO 5: ajustes manuales con parser canónico (alias → módulos reales).
+vi.mock("@/lib/caja/integridad", async () => await import("../../../lib/caja/integridad"));
+vi.mock("@/lib/bolsa/integridad", async () => await import("../../../lib/bolsa/integridad"));
+vi.mock("@/lib/bolsa/ajustes.service", async () => await import("../../../lib/bolsa/ajustes.service"));
 
 import {
   updateSaldosCartera,
@@ -48,6 +54,9 @@ const SIN_SESION = { error: "Sin sesión activa" };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // MACRO 5: los ajustes corren en una tx con lock de la cartera (la tx delega en el mismo mock).
+  mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mocks.prisma));
+  mocks.prisma.$queryRaw.mockResolvedValue([]);
 });
 
 // ── updateSaldosCartera ──────────────────────────────────────────────────────
@@ -60,6 +69,10 @@ describe("updateSaldosCartera — gate de autorización (SEC-17/18/19)", () => {
     f.set("saldoPesos", "100");
     f.set("saldoUSDCable", "0");
     f.set("saldoUSDMep", "0");
+    // valores que mostró el formulario (compare-and-set)
+    f.set("saldoPesosAnterior", "50");
+    f.set("saldoUSDCableAnterior", "0");
+    f.set("saldoUSDMepAnterior", "0");
     return f;
   }
 
@@ -81,6 +94,7 @@ describe("updateSaldosCartera — gate de autorización (SEC-17/18/19)", () => {
   it("usuario autorizado → actualiza los saldos", async () => {
     mocks.requireActionPermission.mockResolvedValue(null);
     mocks.auth.mockResolvedValue({ user: { id: "user-1" } });
+    mocks.prisma.cartera.findUnique.mockResolvedValue({ saldoPesos: "50", saldoUSDCable: "0", saldoUSDMep: "0" });
     mocks.prisma.cartera.update.mockResolvedValue({});
     const result = await updateSaldosCartera({}, fd());
     expect(result).toEqual({ ok: true });
@@ -98,6 +112,7 @@ describe("agregarPosicion — gate de autorización (SEC-17/18/19)", () => {
     f.set("categoria", "ACCION");
     f.set("cantidad", "10");
     f.set("precioCompra", "100");
+    f.set("confirmarAjuste", "on"); // M5-F02: ajuste explícito
     return f;
   }
 
@@ -136,6 +151,7 @@ describe("editarPosicion — gate de autorización antes de escribir (SEC-17/18/
     const f = new FormData();
     f.set("posicionId", "pos-1");
     f.set("cantidad", "20");
+    f.set("confirmarAjuste", "on"); // M5-F02: ajuste explícito
     return f;
   }
 
@@ -145,6 +161,7 @@ describe("editarPosicion — gate de autorización antes de escribir (SEC-17/18/
     expect(result).toEqual({ error: "Sin sesión activa" });
     expect(mocks.prisma.posicionCartera.update).not.toHaveBeenCalled();
     expect(mocks.writeAuditLog).not.toHaveBeenCalled();
+    expect(mocks.prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it("usuario sin permiso 'bolsa:crear' → rechazo, ninguna escritura Prisma ni auditoría", async () => {
@@ -153,16 +170,20 @@ describe("editarPosicion — gate de autorización antes de escribir (SEC-17/18/
     expect(result).toEqual({ error: DENEGADO.error });
     expect(mocks.prisma.posicionCartera.update).not.toHaveBeenCalled();
     expect(mocks.writeAuditLog).not.toHaveBeenCalled();
+    expect(mocks.prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it("usuario autorizado → edita la posición y audita con el userId de la sesión gateada", async () => {
     mocks.requireActionPermission.mockResolvedValue(null);
     mocks.auth.mockResolvedValue({ user: { id: "user-1" } });
+    mocks.prisma.posicionCartera.findUnique.mockResolvedValue({ carteraId: "cart-1" });
+    mocks.prisma.posicionCartera.findUniqueOrThrow.mockResolvedValue({ cantidad: "10", precioCompra: "100", Activo: { ticker: "GGAL" } });
     mocks.prisma.posicionCartera.update.mockResolvedValue({ Activo: { ticker: "GGAL" } });
     const result = await editarPosicion(null, fd());
     expect(result).toEqual({ success: true });
     expect(mocks.prisma.posicionCartera.update).toHaveBeenCalledTimes(1);
-    expect(mocks.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1" }));
+    // M5-F02: el AuditLog AJUSTE_POSICION se escribe en la tx del ajuste, con el userId de la sesión gateada.
+    expect(mocks.prisma.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({ userId: "user-1", accion: "AJUSTE_POSICION" }) });
   });
 });
 
@@ -227,6 +248,8 @@ describe("eliminarPosicion — gate de autorización (SEC-17/18/19)", () => {
   it("usuario autorizado → elimina la posición", async () => {
     mocks.requireActionPermission.mockResolvedValue(null);
     mocks.auth.mockResolvedValue({ user: { id: "user-1" } });
+    mocks.prisma.posicionCartera.findUnique.mockResolvedValue({ carteraId: "cart-1" });
+    mocks.prisma.posicionCartera.findUniqueOrThrow.mockResolvedValue({ cantidad: "10", precioCompra: "100", Activo: { ticker: "GGAL" } });
     mocks.prisma.posicionCartera.delete.mockResolvedValue({});
     const result = await eliminarPosicion(null, fd());
     expect(result).toEqual({ success: true });

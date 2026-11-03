@@ -27,6 +27,9 @@ type Props = {
   senebiBruto?:       number | null;
   diasCaucion?:       number | null;
   tasaCaucion?:       number | null;
+  /** M5-F01: compra/venta USD de cartera propia → elegir la bolsa de USD. */
+  usaSaldoUSD?:       boolean;
+  saldoUSD?:          "CABLE" | "MEP" | null;
 };
 
 const INPUT_CLS = "w-full px-3 py-2 text-[12px] border border-byg-border rounded-lg bg-byg-bg focus:outline-none focus:ring-1 focus:ring-byg-accent/40 text-byg-text [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
@@ -42,6 +45,7 @@ export function ConcertarForm({
   nroBoleto, alyc, fechaConcertacion, fechaLiquidacion, plazoLiquidacion,
   comisionPct, comisionFija, derechosMercado, gastos, impuestos,
   tcMepDia, comisionUSD, esSenebi, senebiBruto, diasCaucion, tasaCaucion,
+  usaSaldoUSD, saldoUSD,
 }: Props) {
   const activeAlycs = alycList && alycList.length > 0 ? alycList : ["Banco Industrial"];
   const [state, action, pending] = useActionState(concertarOperacion, null);
@@ -112,6 +116,17 @@ export function ConcertarForm({
             <option value="T2">48 hs (T+2)</option>
           </select>
         </div>
+
+        {usaSaldoUSD && (
+          <div>
+            <label className={LABEL_CLS}>Saldo USD</label>
+            <select name="saldoUSD" defaultValue={saldoUSD ?? "CABLE"} className={INPUT_CLS}>
+              <option value="CABLE">Cable</option>
+              <option value="MEP">MEP</option>
+            </select>
+            <p className="text-[10px] text-byg-muted mt-1">Define qué saldo en USD de la cartera utilizará esta operación.</p>
+          </div>
+        )}
 
         {/* Comisión $ + Comisión USD */}
         <div className="grid grid-cols-2 gap-4">

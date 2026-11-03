@@ -1069,6 +1069,8 @@ model OperacionBolsa {
   fechaConcertacion  DateTime?            @db.Date
   fechaLiquidacion   DateTime?            @db.Date
   plazoLiquidacion   PlazoLiquidacion     @default(T1)
+  /// Macro 5: bolsa de USD de la cartera propia que usa una operación USD (CABLE | MEP). null = no aplica / legacy.
+  saldoUSD           TipoSaldoUSD?
   observaciones      String?
   nroBoleto          String?
   alyc               String?
@@ -1277,6 +1279,11 @@ enum PlazoLiquidacion {
   CI
   T1
   T2
+}
+
+enum TipoSaldoUSD {
+  CABLE
+  MEP
 }
 
 // ── Importación Masiva Bolsa (E4.3A) ─────────────────────────────────────────

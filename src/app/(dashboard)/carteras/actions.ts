@@ -7,6 +7,10 @@ import { CategoriaActivo, Moneda } from "@prisma/client";
 import { auth } from "@/auth";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import { parseMontoPositivo } from "@/lib/caja/integridad";
+import { parseOpcionalConSigno, parseOpcionalNoNegativo } from "@/lib/bolsa/integridad";
+
+import { AVISO_AJUSTE, AjusteCarteraError, ajusteAperturaPosicionTx, ajustePosicionTx } from "@/lib/bolsa/ajustes.service";
 
 /**
  * Gate compartido por las Server Actions de este archivo: exige sesión válida
@@ -32,23 +36,43 @@ export async function updateSaldosCartera(
   const slug      = formData.get("slug")?.toString().trim();
   if (!carteraId || !slug) return { error: "Datos requeridos" };
 
-  let saldoPesos: Decimal, saldoUSDCable: Decimal, saldoUSDMep: Decimal;
-  try {
-    saldoPesos    = new Decimal(formData.get("saldoPesos")?.toString().replace(",", ".") || "0");
-    saldoUSDCable = new Decimal(formData.get("saldoUSDCable")?.toString().replace(",", ".") || "0");
-    saldoUSDMep   = new Decimal(formData.get("saldoUSDMep")?.toString().replace(",", ".") || "0");
-  } catch {
-    return { error: "Valores inválidos" };
-  }
+  // MACRO 5: AJUSTE de cash (conciliación con el broker). Parser canónico estricto;
+  // vacío = 0. Compare-and-set contra los valores que mostró el formulario: si una
+  // operación concertada movió el saldo mientras tanto, el ajuste no la pisa.
+  const leer = (k: string) => { const v = parseOpcionalNoNegativo(formData.get(k)); return v === "invalido" ? null : (v ?? new Decimal(0)); };
+  const nuevos = { saldoPesos: leer("saldoPesos"), saldoUSDCable: leer("saldoUSDCable"), saldoUSDMep: leer("saldoUSDMep") };
+  if (!nuevos.saldoPesos || !nuevos.saldoUSDCable || !nuevos.saldoUSDMep) return { error: "Valores inválidos: usá solo números (ej. 1500 o 1500,50)" };
+  const anteriores = {
+    saldoPesos: parseOpcionalConSigno(formData.get("saldoPesosAnterior")),
+    saldoUSDCable: parseOpcionalConSigno(formData.get("saldoUSDCableAnterior")),
+    saldoUSDMep: parseOpcionalConSigno(formData.get("saldoUSDMepAnterior")),
+  };
+  if (Object.values(anteriores).some((v) => v === null || v === "invalido")) return { error: "Recargá la página antes de ajustar los saldos" };
 
   try {
-    await prisma.cartera.update({
-      where: { id: carteraId },
-      data: { saldoPesos, saldoUSDCable, saldoUSDMep, updatedAt: new Date() },
+    const antes = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Cartera" WHERE id = ${carteraId} FOR UPDATE`;
+      const c = await tx.cartera.findUnique({ where: { id: carteraId }, select: { saldoPesos: true, saldoUSDCable: true, saldoUSDMep: true } });
+      if (!c) throw new AjusteCarteraError("Cartera no encontrada");
+      for (const k of ["saldoPesos", "saldoUSDCable", "saldoUSDMep"] as const) {
+        if (!new Decimal(c[k].toString()).eq(anteriores[k] as Decimal)) {
+          throw new AjusteCarteraError("Los saldos cambiaron desde que abriste el formulario (p. ej. por una operación concertada). Recargá y volvé a ajustar.");
+        }
+      }
+      await tx.cartera.update({
+        where: { id: carteraId },
+        data: { saldoPesos: nuevos.saldoPesos!, saldoUSDCable: nuevos.saldoUSDCable!, saldoUSDMep: nuevos.saldoUSDMep!, updatedAt: new Date() },
+      });
+      return c;
+    });
+    await writeAuditLog({
+      userId: gated.userId, accion: "AJUSTE_SALDOS_CARTERA", entidad: "Cartera", entidadId: carteraId,
+      description: `Ajuste manual de saldos: ARS ${antes.saldoPesos}→${nuevos.saldoPesos} | Cable ${antes.saldoUSDCable}→${nuevos.saldoUSDCable} | MEP ${antes.saldoUSDMep}→${nuevos.saldoUSDMep}`,
     });
     revalidatePath(`/carteras/${slug}`);
     return { ok: true };
-  } catch {
+  } catch (e) {
+    if (e instanceof AjusteCarteraError) return { error: e.message };
     return { error: "Error al actualizar saldos" };
   }
 }
@@ -75,68 +99,39 @@ export async function agregarPosicion(
   const ticker       = formData.get("ticker")?.toString().trim().toUpperCase();
   const descripcion  = formData.get("descripcion")?.toString().trim() || null;
   const categoriaRaw = formData.get("categoria")?.toString().trim();
-  const cantidadRaw  = formData.get("cantidad")?.toString().replace(",", ".");
-  const precioRaw    = formData.get("precioCompra")?.toString().replace(",", ".");
   const fechaRaw     = formData.get("fecha")?.toString();
   const monedaRaw    = (formData.get("monedaPrecio")?.toString() || "USD") as Moneda;
   const carteraSlug  = formData.get("carteraSlug")?.toString();
 
-  if (!carteraId || !ticker || !categoriaRaw || !cantidadRaw || !precioRaw) {
+  if (!carteraId || !ticker || !categoriaRaw) {
     return { error: "Faltan campos obligatorios" };
   }
 
+  // M5-F02: es un AJUSTE / APERTURA (sin cash), no una compra: confirmación explícita
+  // (validada también en el servicio, que escribe el AuditLog en la misma tx).
+  const confirmarAjuste = formData.get("confirmarAjuste") === "on";
+  if (!confirmarAjuste) return { error: AVISO_AJUSTE };
+
   const categoria = categoriaRaw as CategoriaActivo;
-  let cantidad: Decimal;
-  let precio: Decimal;
-
-  try {
-    cantidad = new Decimal(cantidadRaw);
-    precio   = new Decimal(precioRaw);
-  } catch {
-    return { error: "Cantidad o precio inválidos" };
-  }
-
-  if (cantidad.lte(0)) return { error: "La cantidad debe ser mayor a cero" };
-  if (precio.lte(0))   return { error: "El precio debe ser mayor a cero" };
+  // MACRO 5: AJUSTE / APERTURA de posición (sin cash: no es una compra). Parser canónico.
+  const cantidad = parseMontoPositivo(formData.get("cantidad")?.toString());
+  const precio   = parseMontoPositivo(formData.get("precioCompra")?.toString());
+  if (!cantidad) return { error: "La cantidad debe ser un número mayor a cero" };
+  if (!precio)   return { error: "El precio debe ser un número mayor a cero" };
 
   const fecha = fechaRaw
     ? new Date(fechaRaw + "T00:00:00Z")
     : new Date(new Date().toISOString().split("T")[0] + "T00:00:00Z");
+  if (isNaN(fecha.getTime())) return { error: "Fecha inválida" };
 
   try {
-    // Find or create Activo — ticker is the unique key
-    let activo = await prisma.activo.findUnique({ where: { ticker } });
-    if (!activo) {
-      activo = await prisma.activo.create({
-        data: { id: crypto.randomUUID(), ticker, descripcion, categoria, monedaPrecio: monedaRaw, updatedAt: new Date() },
-      });
-    }
-
-    // Upsert position with weighted average price recalculation
-    const existing = await prisma.posicionCartera.findUnique({
-      where: { carteraId_activoId: { carteraId, activoId: activo.id } },
-    });
-
-    if (existing) {
-      const qtyExist  = new Decimal(existing.cantidad.toString());
-      const pcExist   = new Decimal(existing.precioCompra.toString());
-      const totalQty  = qtyExist.plus(cantidad);
-      const totalCost = qtyExist.mul(pcExist).plus(cantidad.mul(precio));
-      const nuevoPrecio = totalCost.div(totalQty);
-
-      await prisma.posicionCartera.update({
-        where: { id: existing.id },
-        data: { cantidad: totalQty, precioCompra: nuevoPrecio },
-      });
-    } else {
-      await prisma.posicionCartera.create({
-        data: { id: crypto.randomUUID(), carteraId, activoId: activo.id, cantidad, precioCompra: precio, fecha, updatedAt: new Date() },
-      });
-    }
-
+    await prisma.$transaction((tx) => ajusteAperturaPosicionTx(tx, {
+      userId: gated.userId, confirmarAjuste, carteraId, ticker, descripcion, categoria, monedaPrecio: monedaRaw, cantidad, precio, fecha,
+    }));
     revalidateCartera(carteraSlug);
     return { success: true };
   } catch (e) {
+    if (e instanceof AjusteCarteraError) return { error: e.message };
     console.error("agregarPosicion:", e);
     return { error: "Error al registrar la posición" };
   }
@@ -150,48 +145,47 @@ export async function editarPosicion(
 ): Promise<ActionResult> {
   const gated = await requireGate("bolsa:crear");
   if ("error" in gated) return { error: gated.error };
+  const { userId } = gated;
 
   const posicionId  = formData.get("posicionId")?.toString().trim();
-  const cantidadRaw = formData.get("cantidad")?.toString().replace(",", ".");
-  const precioRaw   = formData.get("precioCompra")?.toString().replace(",", ".");
+  const cantidadRaw = formData.get("cantidad")?.toString();
+  const precioRaw   = formData.get("precioCompra")?.toString();
   const fechaRaw    = formData.get("fecha")?.toString();
   const carteraSlug = formData.get("carteraSlug")?.toString();
 
   if (!posicionId) return { error: "ID de posición requerido" };
+  // M5-F02: es un AJUSTE (sin cash), no una compra / venta: confirmación explícita.
+  const confirmarAjuste = formData.get("confirmarAjuste") === "on";
+  if (!confirmarAjuste) return { error: AVISO_AJUSTE };
 
+  // MACRO 5: AJUSTE de posición (sin cash). Parser canónico estricto.
   const data: Record<string, Decimal | Date> = {};
-
-  if (cantidadRaw) {
-    const cantidad = new Decimal(cantidadRaw);
-    if (cantidad.lte(0)) return { error: "La cantidad debe ser mayor a cero" };
+  if (cantidadRaw?.trim()) {
+    const cantidad = parseMontoPositivo(cantidadRaw);
+    if (!cantidad) return { error: "La cantidad debe ser un número mayor a cero" };
     data.cantidad = cantidad;
   }
-
-  if (precioRaw) {
-    const precio = new Decimal(precioRaw);
-    if (precio.lte(0)) return { error: "El precio debe ser mayor a cero" };
+  if (precioRaw?.trim()) {
+    const precio = parseMontoPositivo(precioRaw);
+    if (!precio) return { error: "El precio debe ser un número mayor a cero" };
     data.precioCompra = precio;
   }
-
   if (fechaRaw) {
-    data.fecha = new Date(fechaRaw + "T00:00:00Z");
+    const fecha = new Date(fechaRaw + "T00:00:00Z");
+    if (isNaN(fecha.getTime())) return { error: "Fecha inválida" };
+    data.fecha = fecha;
   }
-
   if (Object.keys(data).length === 0) return { error: "Nada para actualizar" };
 
   try {
-    const userId  = gated.userId;
-    const updated = await prisma.posicionCartera.update({ where: { id: posicionId }, data, include: { Activo: { select: { ticker: true } } } });
-    await writeAuditLog({
-      userId,
-      accion:      "EDICION",
-      entidad:     "PosicionCartera",
-      entidadId:   posicionId,
-      description: `Edición posición ${updated.Activo.ticker}: ${Object.keys(data).join(", ")}`,
-    });
+    await prisma.$transaction((tx) => ajustePosicionTx(tx, {
+      userId, confirmarAjuste, posicionId,
+      cantidad: data.cantidad as Decimal | undefined, precioCompra: data.precioCompra as Decimal | undefined, fecha: data.fecha as Date | undefined,
+    }));
     revalidateCartera(carteraSlug);
     return { success: true };
   } catch (e) {
+    if (e instanceof AjusteCarteraError) return { error: e.message };
     console.error("editarPosicion:", e);
     return { error: "Error al editar la posición" };
   }
@@ -369,10 +363,23 @@ export async function eliminarPosicion(
   if (!posicionId) return { error: "ID de posición requerido" };
 
   try {
-    await prisma.posicionCartera.delete({ where: { id: posicionId } });
+    // MACRO 5: AJUSTE (baja de posición sin cash), con lock de la cartera y traza.
+    const antes = await prisma.$transaction(async (tx) => {
+      const pos0 = await tx.posicionCartera.findUnique({ where: { id: posicionId }, select: { carteraId: true } });
+      if (!pos0) throw new AjusteCarteraError("Posición no encontrada");
+      await tx.$queryRaw`SELECT id FROM "Cartera" WHERE id = ${pos0.carteraId} FOR UPDATE`;
+      const p = await tx.posicionCartera.findUniqueOrThrow({ where: { id: posicionId }, include: { Activo: { select: { ticker: true } } } });
+      await tx.posicionCartera.delete({ where: { id: posicionId } });
+      return p;
+    });
+    await writeAuditLog({
+      userId: gated.userId, accion: "AJUSTE_POSICION", entidad: "PosicionCartera", entidadId: posicionId,
+      description: `Baja de posición ${antes.Activo.ticker} (sin cash): ${antes.cantidad} @ ${antes.precioCompra} → 0`,
+    });
     revalidateCartera(carteraSlug);
     return { success: true };
   } catch (e) {
+    if (e instanceof AjusteCarteraError) return { error: e.message };
     console.error("eliminarPosicion:", e);
     return { error: "Error al eliminar la posición" };
   }

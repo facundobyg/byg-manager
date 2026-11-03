@@ -504,8 +504,8 @@ export async function transferirCajaACartera(
     if (cartera.slug) revalidatePath(`/carteras/${cartera.slug}`);
 
     return { success: true };
-  } catch {
-    return { error: "Error al ejecutar la transferencia" };
+  } catch (e) {
+    return { error: mensajeError(e, "Error al ejecutar la transferencia") };
   }
 }
 
@@ -569,9 +569,15 @@ export async function transferirCarteraACaja(
                               { saldoPesos:     { decrement: monto } };
 
   try {
-    await prisma.$transaction([
-      prisma.cartera.update({ where: { id: carteraId }, data: carteraData }),
-      prisma.movimientoCaja.create({
+    // MACRO 5: saldo de cartera revalidado bajo lock de la cartera (dos retiros
+    // concurrentes no pueden dejarla en negativo; serializa con concertaciones).
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Cartera" WHERE id = ${carteraId} FOR UPDATE`;
+      const c = await tx.cartera.findUniqueOrThrow({ where: { id: carteraId }, select: { saldoUSDCable: true, saldoUSDMep: true, saldoPesos: true } });
+      const disponible = new Decimal((origenSaldo === "CABLE" ? c.saldoUSDCable : origenSaldo === "MEP" ? c.saldoUSDMep : c.saldoPesos).toString());
+      if (monto.gt(disponible)) throw new IntegridadError(`Saldo insuficiente en cartera. Disponible: ${moneda} ${disponible.toFixed(2)}`);
+      await tx.cartera.update({ where: { id: carteraId }, data: carteraData });
+      await tx.movimientoCaja.create({
         data: {
           id: crypto.randomUUID(),
           cajaId,
@@ -582,15 +588,15 @@ export async function transferirCarteraACaja(
           confirmado: true,
           fecha: new Date(),
         },
-      }),
-    ]);
+      });
+    });
 
     revalidatePath("/caja");
     revalidatePath("/carteras", "layout");
     if (cartera.slug) revalidatePath(`/carteras/${cartera.slug}`);
 
     return { success: true };
-  } catch {
-    return { error: "Error al ejecutar la transferencia" };
+  } catch (e) {
+    return { error: mensajeError(e, "Error al ejecutar la transferencia") };
   }
 }
