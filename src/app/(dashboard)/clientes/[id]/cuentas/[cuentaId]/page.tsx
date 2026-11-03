@@ -4,7 +4,7 @@ import { NuevoMovimientoCCForm } from "@/components/modules/clientes/NuevoMovimi
 import { InteresCCForm } from "@/components/modules/clientes/InteresCCForm";
 import { InteresesTable } from "@/components/modules/clientes/InteresesTable";
 import { ReconcileSaldoCCButton } from "@/components/modules/clientes/ReconcileSaldoCCButton";
-import { calcularInteresCCRealista } from "@/lib/services/intereses.service";
+import { previewInteresPendienteCC, tasaCCDecimal } from "@/lib/cc/integridad";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ChevronLeft, Landmark, Lock } from "lucide-react";
@@ -38,37 +38,41 @@ export default async function CuentaCorrienteDetailPage({ params }: PageProps) {
   if (!cuenta || cuenta.clienteId !== id) notFound();
 
   const hoy = new Date();
-  const inicioMes = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), 1));
 
   // tasaCC stored as decimal (0.045); legacy data may have percent (4.5)
-  const tasaCCNum = toNum(cuenta.Cliente.tasaCC);
-  const tasaCC = tasaCCNum > 1 ? cuenta.Cliente.tasaCC.div(100) : cuenta.Cliente.tasaCC;
+  const tasaCC = tasaCCDecimal(cuenta.Cliente.tasaCC);
   const tasaCCPct = Number(tasaCC.toString()) * 100;
 
-  const interesesPreview = calcularInteresCCRealista({
-    movimientos: cuenta.MovimientoCC.map((m) => ({
-      fecha: m.fecha,
-      tipo: m.tipo,
-      monto: m.monto,
+  // MACRO 4: interés PENDIENTE con la fórmula del servidor, sobre TODOS los movimientos
+  // de la cuenta (la tabla de movimientos puede mostrar menos). Cada tramo se muestra;
+  // "Aplicar" está solo en el total, que el servidor recalcula bajo lock.
+  const pendiente = previewInteresPendienteCC(cuenta.MovimientoCC, tasaCC, hoy);
+  const tasaTxt = tasaCCPct.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%";
+  const items = pendiente.dias === 0 ? [] : [
+    ...pendiente.periodos.map((p) => ({
+      cliente: `${cuenta.Cliente.nombre} · tramo`,
+      tipo: "CC" as const,
+      base: p.saldo.toFixed(2),
+      tasa: tasaTxt,
+      dias: p.dias,
+      calculado: p.interes.toFixed(2),
+      aplicado: p.interes.toFixed(2),
+      nuevoSaldo: "—",
+      puedeAplicar: false,
     })),
-    tasa: tasaCC,
-    fechaInicio: inicioMes,
-    fechaFin: hoy,
-    saldoInicial: cuenta.saldo,
-  });
-
-  const items = interesesPreview.periodos.map((p) => ({
-    cliente: cuenta.Cliente.nombre,
-    tipo: "CC" as const,
-    base: p.saldo.toFixed(2),
-    tasa: tasaCCPct.toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%",
-    dias: p.dias,
-    calculado: p.interes.toFixed(2),
-    aplicado: p.interes.toFixed(2),
-    nuevoSaldo: p.saldo.add(p.interes).toFixed(2),
-    cuentaId: cuenta.id,
-    puedeAplicar: true,
-  }));
+    {
+      cliente: `${cuenta.Cliente.nombre} · total pendiente`,
+      tipo: "CC" as const,
+      base: pendiente.saldoInicial.toFixed(2),
+      tasa: tasaTxt,
+      dias: pendiente.dias,
+      calculado: pendiente.interesTotal.toFixed(2),
+      aplicado: pendiente.interesTotal.toFixed(2),
+      nuevoSaldo: cuenta.saldo.add(pendiente.interesTotal.toDecimalPlaces(2)).toFixed(2),
+      cuentaId: cuenta.id,
+      puedeAplicar: pendiente.interesTotal.toDecimalPlaces(2).gt(0),
+    },
+  ];
 
   // Summary calculations (movimientos limited to 50 by query)
   const movimientos = cuenta.MovimientoCC;

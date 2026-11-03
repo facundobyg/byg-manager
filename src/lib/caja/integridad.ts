@@ -109,7 +109,7 @@ export function validarClasificacion(clasificacion: unknown, subtipo: unknown): 
 
 // ── Vínculos financieros (campos estructurados + marcas que escribe el sistema) ──
 
-export type Vinculo = "TRANSFERENCIA" | "CAMBIO" | "REVERSO" | "PAGO_PARCIAL";
+export type Vinculo = "TRANSFERENCIA" | "CAMBIO" | "CC" | "REVERSO" | "PAGO_PARCIAL";
 
 export interface MovVinculable {
   tipo: string;
@@ -163,6 +163,8 @@ export function vinculoFinanciero(m: MovVinculable): Vinculo | null {
   const d = m.descripcion ?? "";
   if (esReverso(d)) return "REVERSO";
   if (m.operacionCambioId || PREFIJOS_CAMBIO.some((p) => d.startsWith(p))) return "CAMBIO";
+  // Pata de caja de un movimiento CC (Macro 4): se revierte junto con la CC, nunca sola.
+  if (d.startsWith("[MOV_CC]")) return "CC";
   if (m.transferenciaRef || m.tipo === "TRANSFERENCIA_IN" || m.tipo === "TRANSFERENCIA_OUT" || d.startsWith("[TRANSFERENCIA:")) {
     return "TRANSFERENCIA";
   }

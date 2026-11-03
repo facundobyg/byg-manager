@@ -1,7 +1,8 @@
 import { InteresesTable } from "@/components/modules/clientes/InteresesTable";
 import { getClientes } from "@/lib/data/cliente";
 import { soloPFActivos } from "@/lib/data/plazo-fijo";
-import { calcularInteresCCRealista, calcularInteresPF } from "@/lib/services/intereses.service";
+import { calcularInteresPF } from "@/lib/services/intereses.service";
+import { previewInteresPendienteCC, tasaCCDecimal } from "@/lib/cc/integridad";
 import { calcularDiasEntreFechas } from "@/lib/services/intereses.service";
 import { aplicarTodosInteresesCC } from "@/app/(dashboard)/clientes/actions";
 import { readOnlyPreview } from "@/lib/config";
@@ -14,50 +15,38 @@ export default async function InteresesPage() {
   const clientes = await getClientes();
 
   const hoy = new Date();
-  const inicioMes = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), 1));
 
   const ccItems = clientes.flatMap((cliente) => {
     // tasaCC is stored as decimal (0.045 for 4.5%). Legacy data may have it as percent (4.5).
-    const tasaCC = Number(cliente.tasaCC.toString()) > 1
-      ? cliente.tasaCC.div(100)
-      : cliente.tasaCC;
+    const tasaCC = tasaCCDecimal(cliente.tasaCC);
     const tasaCCPct = Number(tasaCC.toString()) * 100;
 
     return (cliente.CuentaCorriente ?? []).flatMap((cuenta) => {
       const movimientos = cuenta.MovimientoCC ?? [];
       if (movimientos.length === 0) return [];
 
-      const { periodos } = calcularInteresCCRealista({
-        movimientos: movimientos.map((m) => ({
-          fecha: m.fecha,
-          tipo: m.tipo,
-          monto: m.monto,
-        })),
-        tasa: tasaCC,
-        fechaInicio: inicioMes,
-        fechaFin: hoy,
-        saldoInicial: cuenta.saldo,
-      });
-
-      if (periodos.length === 0) return [];
-
-      const periodo = periodos[periodos.length - 1];
+      // MACRO 4: vista previa del interés PENDIENTE con la misma fórmula que aplica el
+      // servidor (saldo canónico al inicio del período, todos los movimientos, desde
+      // lo ya liquidado). El monto mostrado no viaja: el servidor lo recalcula al aplicar.
+      const p = previewInteresPendienteCC(movimientos, tasaCC, hoy);
+      if (p.dias === 0) return [];
+      const ultimo = p.periodos[p.periodos.length - 1];
 
       return [
         {
           cliente: cliente.nombre,
           tipo: "CC" as const,
-          base: periodo.saldo.toFixed(2),
+          base: (ultimo?.saldo ?? p.saldoInicial).toFixed(2),
           tasa: tasaCCPct.toLocaleString("es-AR", {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
           }) + "%",
-          dias: periodo.dias,
-          calculado: periodo.interes.toFixed(2),
-          aplicado: periodo.interes.toFixed(2),
-          nuevoSaldo: periodo.saldo.add(periodo.interes).toFixed(2),
+          dias: p.dias,
+          calculado: p.interesTotal.toFixed(2),
+          aplicado: p.interesTotal.toFixed(2),
+          nuevoSaldo: cuenta.saldo.add(p.interesTotal.toDecimalPlaces(2)).toFixed(2),
           cuentaId: cuenta.id,
-          puedeAplicar: true,
+          puedeAplicar: p.interesTotal.toDecimalPlaces(2).gt(0),
         },
       ];
     });
@@ -96,11 +85,7 @@ export default async function InteresesPage() {
   const totalAplicado = items.reduce((s, r) => s + parseFloat(r.aplicado), 0);
 
   const batchPayload = JSON.stringify(
-    ccAplicables.map((r) => ({
-      cuentaId: r.cuentaId,
-      montoAplicado: r.aplicado,
-      descripcion: "Interés CC",
-    }))
+    ccAplicables.map((r) => ({ cuentaId: r.cuentaId }))
   );
 
   return (

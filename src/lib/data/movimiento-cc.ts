@@ -108,7 +108,7 @@ export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
   for (const [ref, group] of Array.from(byRef.entries())) {
     const primary = group.find((m) => m.tipo === "INGRESO") ?? group[0];
     const tipoOperacion = primary.descripcion?.split(" ")[0]?.toUpperCase() ?? "MOV";
-    if (tipoOperacion === "LP") lpRefs.push(ref);
+    if (tipoOperacion === "LP" || tipoOperacion === "PF") lpRefs.push(ref); // operaciones que crean un PF
   }
 
   // ref -> { id, estado } del PlazoFijo real. Se guarda el estado persistido
@@ -137,7 +137,7 @@ export async function getRecentOperacionMovimientos(): Promise<LedgerRow[]> {
     const tipoOperacion = primary.descripcion?.split(" ")[0]?.toUpperCase() ?? "MOV";
     const pfInfo = pfByRef.get(ref) ?? null;
     const plazoFijoId = pfInfo?.id ?? null;
-    const esLP = tipoOperacion === "LP";
+    const esLP = tipoOperacion === "LP" || tipoOperacion === "PF";
 
     ledger.push({
       operationRef: ref,

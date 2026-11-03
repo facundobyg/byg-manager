@@ -210,6 +210,7 @@ export async function revertirMovimientoTx(tx: Tx, p: { movimientoId: string; ca
 
   const vinculo = vinculoFinanciero(mov);
   if (vinculo === "CAMBIO") throw new IntegridadError("Movimiento de una operación de cambio: revertir desde la operación");
+  if (vinculo === "CC") throw new IntegridadError("Movimiento de cuenta corriente: revertir desde Operaciones (Cuenta Corriente)");
   if (vinculo === "TRANSFERENCIA" && !mov.transferenciaRef) {
     throw new IntegridadError("Transferencia sin referencia estructurada: no se puede revertir una sola pata");
   }

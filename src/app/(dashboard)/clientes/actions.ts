@@ -8,10 +8,15 @@ import { requireActionPermission, requireCajaPermission } from "@/lib/auth/permi
 import { Moneda, Prisma, TipoMovCaja } from "@prisma/client";
 import { auth } from "@/auth";
 import { writeAuditLog } from "@/lib/services/audit.service";
-import { esMovimientoDeOperacionAgrupada, extraerOperationRef } from "@/lib/data/movimiento-cc";
-import { parseMontoPositivo, validarTextoUsuario } from "@/lib/caja/integridad";
+import { esMonedaValida, parseMontoPositivo, validarTextoUsuario } from "@/lib/caja/integridad";
+import { parseMontoEstricto } from "@/lib/parse-monto";
+import { validarEdicionPF } from "@/lib/cc/integridad";
+import {
+  CCIntegridadError, aplicarInteresPendienteCCTx, crearMovimientoCCTx, crearPfDesdeCCTx, patasCajaDeOperacionCC, eliminarClienteSeguroTx, lockCuentas, lockPlazoFijo, registrarMovimientoCC,
+  revertirMovimientoCCTx, revertirOperacionCCTx,
+} from "@/lib/cc/integridad.service";
 
-export async function crearMovimientoCC(prevState: any, formData: FormData) {
+export async function crearMovimientoCC(prevState: any, formData: FormData): Promise<{ error?: string; success?: boolean; message?: string }> {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
   const createMovCCDenied = await requireActionPermission("cc:crear_movimiento");
   if (createMovCCDenied) return createMovCCDenied;
@@ -26,6 +31,7 @@ export async function crearMovimientoCC(prevState: any, formData: FormData) {
   if (!cuentaId || !clienteId || !tipo || !montoRaw) {
     return { error: "Faltan datos obligatorios" };
   }
+  if (tipo !== "INGRESO" && tipo !== "EGRESO") return { error: "Tipo inválido" };
   if (impactaCaja && !cajaImpactoId) {
     return { error: "Seleccionar caja para el impacto" };
   }
@@ -43,49 +49,13 @@ export async function crearMovimientoCC(prevState: any, formData: FormData) {
   if (textoError) return { error: textoError };
 
   try {
-    await prisma.$transaction(async (tx) => {
-      const cuenta = await tx.cuentaCorriente.findUnique({ where: { id: cuentaId } });
-      if (!cuenta) throw new Error("Cuenta no encontrada");
-
-      const nuevoSaldo = tipo === "INGRESO" ? cuenta.saldo.add(monto) : cuenta.saldo.sub(monto);
-
-      const hoy = new Date();
-      const fechaDate = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
-
-      await tx.movimientoCC.create({
-        data: {
-          id: crypto.randomUUID(),
-          cuentaCorrienteId: cuentaId,
-          tipo,
-          monto,
-          descripcion: descripcion?.trim() || "MOV",
-          fecha: fechaDate,
-        },
-      });
-
-      await tx.cuentaCorriente.update({
-        where: { id: cuentaId },
-        data: { saldo: nuevoSaldo },
-      });
-
-      if (impactaCaja && cajaImpactoId) {
-        // INGRESO CC (client receives credit) → caja recibe dinero (ENTRADA)
-        // EGRESO CC (client loses credit) → caja entrega dinero (SALIDA)
-        const tipoMovCaja: TipoMovCaja = tipo === "INGRESO" ? "ENTRADA" : "SALIDA";
-        await tx.movimientoCaja.create({
-          data: {
-            id: crypto.randomUUID(),
-            cajaId: cajaImpactoId,
-            fecha: fechaDate,
-            tipo: tipoMovCaja,
-            moneda: cuenta.moneda as Moneda,
-            monto,
-            descripcion: `[MOV_CC] ${descripcion?.trim() || "Movimiento CC"} | cc:${cuentaId}`,
-            confirmado: true,
-          },
-        });
-      }
-    }, { timeout: 15000 });
+    const hoy = new Date();
+    const fecha = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
+    // MACRO 4: movimiento + increment atómico; con impacto en caja, CC y caja son UN
+    // hecho que comparte op:<ref> (reversa conjunta desde Operaciones).
+    await prisma.$transaction((tx) => crearMovimientoCCTx(tx, {
+      cuentaId, tipo, monto, fecha, descripcion: descripcion?.trim() || null, cajaImpactoId: impactaCaja ? cajaImpactoId : null,
+    }), { timeout: 15000 });
 
     revalidatePath(`/clientes/${clienteId}`);
     revalidatePath(`/clientes/${clienteId}/cuentas/${cuentaId}`);
@@ -98,7 +68,7 @@ export async function crearMovimientoCC(prevState: any, formData: FormData) {
     return { success: true, message: "Movimiento registrado con éxito" };
   } catch (error: any) {
     console.error("Error en crearMovimientoCC:", error);
-    return { error: error.message || "Error al procesar el movimiento" };
+    return { error: error instanceof CCIntegridadError ? error.message : "Error al procesar el movimiento" };
   }
 }
 
@@ -117,17 +87,18 @@ export async function liquidarInteresCCAction(prevState: unknown, formData: Form
     return { error: "Faltan datos obligatorios" };
   }
 
-  let tasa: Decimal;
-  let interesAplicado: Decimal;
   let fechaInicio: Date;
   let fechaFin: Date;
 
-  try {
-    tasa = new Decimal(tasaRaw);
-    interesAplicado = new Decimal(interesAplicadoRaw);
-  } catch {
+  // MACRO 4: parser estricto (new Decimal(raw) aceptaba NaN/Infinity/hex/exponentes).
+  // interesAplicado = 0 significa "aplicar el calculado".
+  const tasaP = parseMontoEstricto(tasaRaw);
+  const interesP = parseMontoEstricto(interesAplicadoRaw);
+  if (!tasaP.ok || !tasaP.value || !interesP.ok || !interesP.value) {
     return { error: "Tasa o interés aplicado no son valores numéricos válidos" };
   }
+  const tasa = tasaP.value;
+  const interesAplicado = interesP.value;
 
   try {
     fechaInicio = new Date(fechaInicioRaw);
@@ -181,55 +152,19 @@ export async function aplicarInteresCC(formData: FormData) {
   if (readOnlyPreview) return { error: "Modo lectura activo" };
   const aplicarDenied = await requireActionPermission("cc:intereses", { allowTemporary: true });
   if (aplicarDenied) return aplicarDenied;
-  const cuentaId = formData.get("cuentaId") as string;
-  const montoAplicado = new Decimal(formData.get("montoAplicado") as string);
-  const descripcion = formData.get("descripcion") as string;
+  // MACRO 4: el cliente solo identifica la cuenta. Período pendiente, tasa y monto se
+  // recalculan en el servidor bajo lock (un "montoAplicado" enviado se ignora).
+  const cuentaId = (formData.get("cuentaId") as string)?.trim();
+  if (!cuentaId) return { error: "Cuenta requerida" };
 
-  const hoy = new Date();
-  const inicioDia = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
-  const finDia = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1));
-
-  const result = await prisma.$transaction(async (tx) => {
-    const ultimoInteres = await tx.movimientoCC.findFirst({
-      where: {
-        cuentaCorrienteId: cuentaId,
-        tipo: "INTERES",
-        fecha: { gte: inicioDia, lt: finDia },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (ultimoInteres && new Decimal(ultimoInteres.monto.toString()).equals(montoAplicado)) {
-      return { error: "Interés ya aplicado hoy" };
-    }
-
-    const cuenta = await tx.cuentaCorriente.findUniqueOrThrow({ where: { id: cuentaId } });
-
-    const operationRef = crypto.randomUUID();
-    await tx.movimientoCC.create({
-      data: {
-        id: crypto.randomUUID(),
-        cuentaCorrienteId: cuentaId,
-        fecha: hoy,
-        tipo: "INTERES",
-        monto: montoAplicado,
-        descripcion: `INTERES CC | op:${operationRef}`,
-      },
-    });
-
-    await tx.cuentaCorriente.update({
-      where: { id: cuentaId },
-      data: { saldo: cuenta.saldo.add(montoAplicado) },
-    });
-
-    return { success: true };
-  });
-
-  if (result && "success" in result) {
-    revalidatePath("/intereses");
+  try {
+    await prisma.$transaction((tx) => aplicarInteresPendienteCCTx(tx, { cuentaId, ahora: new Date() }), { timeout: 15000 });
+  } catch (e: unknown) {
+    return { error: e instanceof CCIntegridadError ? e.message : "Error al aplicar interés" };
   }
 
-  return result;
+  revalidatePath("/intereses");
+  return { success: true };
 }
 
 export async function aplicarTodosInteresesCC(formData: FormData) {
@@ -238,64 +173,38 @@ export async function aplicarTodosInteresesCC(formData: FormData) {
   if (todosInteresesDenied) return todosInteresesDenied;
   const raw = formData.get("payload") as string;
 
-  let items: { cuentaId: string; montoAplicado: string; descripcion: string }[];
+  // MACRO 4: el payload solo identifica cuentas; cualquier monto que traiga se ignora.
+  let cuentaIds: string[];
   try {
-    items = JSON.parse(raw);
+    const items = JSON.parse(raw) as { cuentaId?: unknown }[];
+    if (!Array.isArray(items)) throw new Error();
+    cuentaIds = Array.from(new Set(items.map((i) => i?.cuentaId))) as string[];
+    if (cuentaIds.some((c) => typeof c !== "string" || !c)) throw new Error();
   } catch {
     return { error: "Payload inválido" };
   }
 
-  const hoy = new Date();
-  const inicioDia = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
-  const finDia = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1));
-
   try {
     let applied = 0;
+    const ahora = new Date();
 
     await prisma.$transaction(async (tx) => {
-      for (const item of items) {
-        const monto = new Decimal(item.montoAplicado);
-
-        const ultimoInteres = await tx.movimientoCC.findFirst({
-          where: {
-            cuentaCorrienteId: item.cuentaId,
-            tipo: "INTERES",
-            fecha: { gte: inicioDia, lt: finDia },
-          },
-          orderBy: { createdAt: "desc" },
-        });
-
-        if (ultimoInteres && new Decimal(ultimoInteres.monto.toString()).equals(monto)) {
-          continue;
+      for (const cuentaId of cuentaIds) {
+        try {
+          await aplicarInteresPendienteCCTx(tx, { cuentaId, ahora });
+          applied++;
+        } catch (e) {
+          // Sin días pendientes / sin interés (saldo ≤ 0) / ya liquidado: se omite esa
+          // cuenta. Son validaciones previas a cualquier escritura; un error de DB aborta el lote.
+          if (!(e instanceof CCIntegridadError)) throw e;
         }
-
-        const cuenta = await tx.cuentaCorriente.findUniqueOrThrow({ where: { id: item.cuentaId } });
-        const operationRef = crypto.randomUUID();
-
-        await tx.movimientoCC.create({
-          data: {
-            id: crypto.randomUUID(),
-            cuentaCorrienteId: item.cuentaId,
-            fecha: hoy,
-            tipo: "INTERES",
-            monto,
-            descripcion: `INTERES CC | op:${operationRef}`,
-          },
-        });
-
-        await tx.cuentaCorriente.update({
-          where: { id: item.cuentaId },
-          data: { saldo: cuenta.saldo.add(monto) },
-        });
-
-        applied++;
       }
-    });
+    }, { timeout: 30000 });
 
     revalidatePath("/intereses");
     return { success: true, total: applied };
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : "Error al aplicar intereses";
+    const msg = error instanceof CCIntegridadError ? error.message : "Error al aplicar intereses";
     return { error: msg };
   }
 }
@@ -316,15 +225,11 @@ export async function ejecutarOperacion(formData: FormData) {
   const plazoDiasRaw = (formData.get("plazoDias") as string)?.trim();
 
   if (!clienteId || !tipo || !montoRaw) return { error: "Faltan datos obligatorios" };
+  if (tipo !== "RULO" && tipo !== "DIVISA" && tipo !== "LP") return { error: "Tipo de operación inválido" };
 
-  let monto: Decimal;
-  try {
-    monto = new Decimal(montoRaw);
-  } catch {
-    return { error: "Monto inválido" };
-  }
-
-  if (monto.lte(0)) return { error: "El monto debe ser mayor a 0" };
+  // MACRO 4: parser estricto (new Decimal(raw) aceptaba NaN/Infinity/hex/exponentes).
+  const monto = parseMontoPositivo(montoRaw);
+  if (!monto) return { error: "Monto inválido: usá solo números mayores a 0" };
 
   const hoy = new Date();
   const operationRef = crypto.randomUUID();
@@ -332,31 +237,22 @@ export async function ejecutarOperacion(formData: FormData) {
   try {
     const txResult = await prisma.$transaction(async (tx) => {
       if (tipo === "LP") {
-        if (!monedaOrigen || monedaOrigen !== "USD") throw new Error("LP requiere moneda USD");
+        if (!monedaOrigen || monedaOrigen !== "USD") throw new CCIntegridadError("LP requiere moneda USD");
 
-        const plazoDias = parseInt(plazoDiasRaw ?? "0", 10);
-        if (isNaN(plazoDias) || plazoDias <= 0) throw new Error("Plazo en días inválido");
+        const plazoDias = /^\d+$/.test(plazoDiasRaw ?? "") ? parseInt(plazoDiasRaw!, 10) : NaN;
+        if (isNaN(plazoDias) || plazoDias <= 0) throw new CCIntegridadError("Plazo en días inválido");
 
-        let tasaLP: Decimal;
-        try {
-          tasaLP = new Decimal(tasaRaw || "0");
-          if (tasaLP.lte(0)) throw new Error();
-        } catch {
-          throw new Error("Tasa inválida para LP");
-        }
+        const tasaLP = parseMontoPositivo(tasaRaw);
+        if (!tasaLP) throw new CCIntegridadError("Tasa inválida para LP");
 
         const cuentaOrigen = await tx.cuentaCorriente.findFirst({
           where: { clienteId, moneda: "USD" },
         });
-        if (!cuentaOrigen) throw new Error("Cuenta USD no encontrada");
+        if (!cuentaOrigen) throw new CCIntegridadError("Cuenta USD no encontrada");
 
-        await tx.movimientoCC.create({
-          data: { id: crypto.randomUUID(), cuentaCorrienteId: cuentaOrigen.id, fecha: hoy, tipo: "EGRESO", monto, descripcion: `LP egreso | op:${operationRef}` },
-        });
-        await tx.cuentaCorriente.update({
-          where: { id: cuentaOrigen.id },
-          data: { saldo: cuentaOrigen.saldo.sub(monto) },
-        });
+        // Movimiento + increment atómico (antes: saldo absoluto leído fuera de lock).
+        await lockCuentas(tx, [cuentaOrigen.id]);
+        await registrarMovimientoCC(tx, { cuentaId: cuentaOrigen.id, tipo: "EGRESO", monto, fecha: hoy, descripcion: `LP egreso | op:${operationRef}` });
 
         const fechaVencimiento = new Date(hoy);
         fechaVencimiento.setUTCDate(fechaVencimiento.getUTCDate() + plazoDias);
@@ -386,38 +282,37 @@ export async function ejecutarOperacion(formData: FormData) {
         };
       }
 
+      if (!esMonedaValida(monedaOrigen) || !esMonedaValida(monedaDestino)) throw new CCIntegridadError("Moneda inválida");
       const descOp = `${tipo} ${monedaOrigen}->${monedaDestino} | op:${operationRef}`;
 
       // RULO / DIVISA: EGRESO origen + INGRESO destino
-      const factor = tipo === "DIVISA"
-        ? new Decimal(tcRaw || "1")
-        : new Decimal(1).add(new Decimal(tasaRaw || "0").div(100));
+      let factor: Decimal;
+      if (tipo === "DIVISA") {
+        const tc = tcRaw ? parseMontoPositivo(tcRaw) : new Decimal(1);
+        if (!tc) throw new CCIntegridadError("Tipo de cambio inválido");
+        factor = tc;
+      } else {
+        const tasa = tasaRaw ? parseMontoEstricto(tasaRaw) : { ok: true as const, value: new Decimal(0) };
+        if (!tasa.ok || !tasa.value) throw new CCIntegridadError("Tasa inválida");
+        factor = new Decimal(1).add(tasa.value.div(100));
+      }
 
-      const montoDestino = monto.mul(factor);
+      const montoDestino = monto.mul(factor).toDecimalPlaces(2);
+      if (!montoDestino.gt(0)) throw new CCIntegridadError("Monto destino inválido");
 
       const [cuentaOrigen, cuentaDestino] = await Promise.all([
-        tx.cuentaCorriente.findFirst({ where: { clienteId, moneda: monedaOrigen as never } }),
-        tx.cuentaCorriente.findFirst({ where: { clienteId, moneda: monedaDestino as never } }),
+        tx.cuentaCorriente.findFirst({ where: { clienteId, moneda: monedaOrigen } }),
+        tx.cuentaCorriente.findFirst({ where: { clienteId, moneda: monedaDestino } }),
       ]);
 
-      if (!cuentaOrigen) throw new Error(`Cuenta ${monedaOrigen} no encontrada`);
-      if (!cuentaDestino) throw new Error(`Cuenta ${monedaDestino} no encontrada`);
+      if (!cuentaOrigen) throw new CCIntegridadError(`Cuenta ${monedaOrigen} no encontrada`);
+      if (!cuentaDestino) throw new CCIntegridadError(`Cuenta ${monedaDestino} no encontrada`);
 
-      await tx.movimientoCC.create({
-        data: { id: crypto.randomUUID(), cuentaCorrienteId: cuentaOrigen.id, fecha: hoy, tipo: "EGRESO", monto, descripcion: descOp },
-      });
-      await tx.cuentaCorriente.update({
-        where: { id: cuentaOrigen.id },
-        data: { saldo: cuentaOrigen.saldo.sub(monto) },
-      });
-
-      await tx.movimientoCC.create({
-        data: { id: crypto.randomUUID(), cuentaCorrienteId: cuentaDestino.id, fecha: hoy, tipo: "INGRESO", monto: montoDestino, descripcion: descOp },
-      });
-      await tx.cuentaCorriente.update({
-        where: { id: cuentaDestino.id },
-        data: { saldo: cuentaDestino.saldo.add(montoDestino) },
-      });
+      // Misma moneda → misma fila: con increments el efecto neto es exacto
+      // (antes el segundo "saldo = X" absoluto pisaba al primero).
+      await lockCuentas(tx, [cuentaOrigen.id, cuentaDestino.id]);
+      await registrarMovimientoCC(tx, { cuentaId: cuentaOrigen.id, tipo: "EGRESO", monto, fecha: hoy, descripcion: descOp });
+      await registrarMovimientoCC(tx, { cuentaId: cuentaDestino.id, tipo: "INGRESO", monto: montoDestino, fecha: hoy, descripcion: descOp });
 
       return null;
     });
@@ -428,7 +323,7 @@ export async function ejecutarOperacion(formData: FormData) {
     revalidatePath("/reportes");
     return { success: true, ...(txResult ?? {}) };
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : "Error al ejecutar operación";
+    const msg = error instanceof CCIntegridadError ? error.message : "Error al ejecutar operación";
     return { error: msg };
   }
 }
@@ -558,7 +453,7 @@ export async function eliminarCliente(
     if (legacy > 0)  parts.push(`Legacy ${legacy} (importado)`);
     const msg = legacy > 0
       ? `No se puede forzar: tiene ${legacy} op. importadas por nombre. Archivalo.`
-      : `Tiene datos asociados: ${parts.join(", ")}. Usá "Eliminar con datos" para borrar todo.`;
+      : `Tiene datos asociados: ${parts.join(", ")}. Si no tiene historia financiera usá "Eliminar con datos"; si la tiene, dalo de baja.`;
     return { error: msg, canForce: legacy === 0 };
   }
 
@@ -580,30 +475,15 @@ export async function eliminarClienteConDatos(
   const id = formData.get("id")?.toString();
   if (!id) return { error: "ID requerido" };
 
-  const cliente = await prisma.cliente.findUnique({ where: { id }, select: { nombre: true } });
-  if (!cliente) return { error: "Cliente no encontrado" };
-
-  // Hard block: legacy ops by name
-  const normalizado = cliente.nombre.trim().toLowerCase().replace(/\s+/g, " ");
-  const legacyCandidates = await prisma.operacionCambio.findMany({
-    where: { clienteId: null, clienteNombre: { not: null } },
-    select: { clienteNombre: true },
-  });
-  const legacy = legacyCandidates.filter(
-    (op) => (op.clienteNombre ?? "").trim().toLowerCase().replace(/\s+/g, " ") === normalizado,
-  ).length;
-  if (legacy > 0) {
-    return { error: `Bloqueado: existen ${legacy} operaciones importadas por nombre. Archivá el cliente.` };
+  // MACRO 4: safe-deny. Antes borraba en cascada CC → MovimientoCC y PF → movimientos
+  // (y anonimizaba sus operaciones de cambio): la historia financiera quedaba solo en
+  // el AuditLog. Ahora un cliente con cualquier historia NO se elimina; solo uno
+  // realmente vacío (CC en 0 sin movimientos), con sus CC bloqueadas en la tx.
+  try {
+    await prisma.$transaction((tx) => eliminarClienteSeguroTx(tx, id));
+  } catch (e: unknown) {
+    return { error: e instanceof CCIntegridadError ? e.message : "Error al eliminar cliente" };
   }
-
-  // Nullify clienteId on linked OperacionCambio (preserve them as anonymous)
-  await prisma.operacionCambio.updateMany({
-    where: { clienteId: id },
-    data: { clienteId: null },
-  });
-
-  // Delete client — cascades CC→MovimientoCC, PF→PlazoFijoMovimiento, CustodiaCliente
-  await prisma.cliente.delete({ where: { id } });
 
   revalidatePath("/clientes");
   revalidatePath("/clientes/cc");
@@ -619,141 +499,25 @@ export async function revertirOperacion(formData: FormData) {
   const operationRef = (formData.get("operationRef") as string)?.trim();
   if (!operationRef) return { error: "operationRef requerido" };
 
+  // H: si la operación tiene pata de caja ([MOV_CC]), revertirla exige el scope de esa caja.
+  const cajas = Array.from(new Set((await patasCajaDeOperacionCC(prisma, operationRef)).map((m) => m.cajaId)));
+  if (cajas.length > 0) {
+    const scopeDenied = await requireCajaPermission(cajas);
+    if (scopeDenied) return scopeDenied;
+  }
+
   try {
-    await prisma.$transaction(async (tx) => {
-      // 1-2. localizar los movimientos ORIGINALES de esta operación (op:{operationRef}).
-      const originales = await tx.movimientoCC.findMany({
-        where: { descripcion: { contains: `op:${operationRef}` } },
-      });
-
-      if (originales.length === 0) {
-        throw new Error("No se encontraron movimientos para esta operación");
-      }
-
-      // 6. rechazar si lo encontrado es en realidad un grupo REVERSO
-      //    (p. ej. alguien pasó un reversalRef como si fuera un operationRef).
-      if (originales.some((m) => m.descripcion?.startsWith("REVERSO"))) {
-        throw new Error("No se puede revertir una reversión");
-      }
-
-      // 3. lock row-level sobre los originales: serializa cualquier otra
-      //    reversión concurrente del MISMO operationRef. SQL parametrizado
-      //    (Prisma.join sobre ids ya resueltos por Prisma, nunca input crudo
-      //    del usuario) porque Prisma no expone FOR UPDATE en su API fluida.
-      const ids = originales.map((m) => m.id);
-      await tx.$queryRaw`SELECT id FROM "MovimientoCC" WHERE id IN (${Prisma.join(ids)}) FOR UPDATE`;
-
-      // 4. recién con el lock adquirido, re-chequear si ya existe una reversión.
-      //    Si otra transacción ganó la carrera y ya commiteó su reversión
-      //    mientras esperábamos el lock, este SELECT (bajo Read Committed) la
-      //    ve porque corre en un statement nuevo, posterior al desbloqueo.
-      const yaRevertida = await tx.movimientoCC.findFirst({
-        where: { descripcion: { contains: `ref:${operationRef}` } },
-      });
-      if (yaRevertida) {
-        throw new Error("Esta operación ya fue revertida");
-      }
-
-      // OPS-02: si la operación es LP, resolver + lockear + validar el
-      // PlazoFijo asociado ANTES de escribir nada. Mismo criterio de
-      // tipoOperacion que usa el ledger (movimiento-cc.ts): primera palabra
-      // de la descripcion del original.
-      const tipoOperacionDetectado = originales[0].descripcion?.split(" ")[0]?.toUpperCase() ?? "MOV";
-      const esLP = tipoOperacionDetectado === "LP";
-      let plazoFijoObjetivoId: string | null = null;
-
-      if (esLP) {
-        // contains() solo para acotar candidatos — la identidad real se
-        // prueba comparando el operationRef extraído con === (nunca substring).
-        const pfCandidatos = await tx.plazoFijo.findMany({
-          where: { notas: { contains: `op:${operationRef}` } },
-        });
-        const pfExactos = pfCandidatos.filter((pf) => extraerOperationRef(pf.notas) === operationRef);
-
-        if (pfExactos.length === 0) {
-          throw new Error("No se encontró el Plazo Fijo asociado a esta operación LP");
-        }
-        if (pfExactos.length > 1) {
-          throw new Error("Se encontraron múltiples Plazos Fijos asociados a la misma operación LP");
-        }
-
-        const pfCandidato = pfExactos[0];
-
-        // Lock row-level sobre el PF: serializa cualquier otra reversión (u
-        // otra escritura) concurrente sobre el MISMO PlazoFijo. Mismo patrón
-        // que el lock de MovimientoCC de arriba — SQL parametrizado.
-        await tx.$queryRaw`SELECT id FROM "PlazoFijo" WHERE id = ${pfCandidato.id} FOR UPDATE`;
-
-        // Releer identidad y estado ya con el lock adquirido — no confiar en
-        // la lectura previa al lock (podría haber cambiado entre el filtro
-        // exacto de arriba y la adquisición del lock).
-        const pfLocked = await tx.plazoFijo.findUniqueOrThrow({ where: { id: pfCandidato.id } });
-        if (extraerOperationRef(pfLocked.notas) !== operationRef) {
-          throw new Error("El Plazo Fijo asociado ya no corresponde a esta operación LP");
-        }
-        if (pfLocked.estado !== "ACTIVO") {
-          throw new Error(`El Plazo Fijo asociado está ${pfLocked.estado}, no se puede revertir la operación`);
-        }
-
-        plazoFijoObjetivoId = pfLocked.id;
-      }
-
-      // 7-10. crear todos los movimientos inversos + actualizar saldos, atómico.
-      const reversalRef = crypto.randomUUID();
-      const hoy = new Date();
-
-      for (const mov of originales) {
-        // INTERES suma al saldo igual que INGRESO (ver aplicarInteresCC), así
-        // que su inverso también debe restar — mismo criterio que ya usa
-        // revertirMovimientoCC más abajo.
-        const inversoTipo = mov.tipo === "INGRESO" || mov.tipo === "INTERES" ? "EGRESO" : "INGRESO";
-        const desc = `REVERSO ${mov.tipo} | op:${reversalRef} | ref:${operationRef}`;
-
-        await tx.movimientoCC.create({
-          data: {
-            id: crypto.randomUUID(),
-            cuentaCorrienteId: mov.cuentaCorrienteId,
-            fecha: hoy,
-            tipo: inversoTipo,
-            monto: mov.monto,
-            descripcion: desc,
-          },
-        });
-
-        const cuenta = await tx.cuentaCorriente.findUniqueOrThrow({
-          where: { id: mov.cuentaCorrienteId },
-        });
-
-        const nuevoSaldo =
-          inversoTipo === "INGRESO"
-            ? cuenta.saldo.add(mov.monto)
-            : cuenta.saldo.sub(mov.monto);
-
-        await tx.cuentaCorriente.update({
-          where: { id: mov.cuentaCorrienteId },
-          data: { saldo: nuevoSaldo },
-        });
-      }
-
-      // OPS-02: cancelar el PlazoFijo recién ahora, en la misma transacción.
-      // Si esto falla, Prisma revierte también los movimientos y saldos ya
-      // escritos arriba — nunca queda "CC restituida + PF sin cancelar".
-      // Se preservan capital/tasaAnual/fechas/moneda/clienteId/notas: solo
-      // cambian estado y saldoActual, que es lo que representa la reversión.
-      if (esLP && plazoFijoObjetivoId) {
-        await tx.plazoFijo.update({
-          where: { id: plazoFijoObjetivoId },
-          data: { estado: "CANCELADO", saldoActual: new Decimal(0) },
-        });
-      }
-    });
+    // MACRO 4: originales por op:<ref> EXACTO (antes `contains` aceptaba un prefijo y
+    // arrastraba otras operaciones), lock FOR UPDATE + idempotencia bajo lock, saldos
+    // por increment atómico y PF (LP / PF desde CC) cancelado en la misma tx.
+    await prisma.$transaction((tx) => revertirOperacionCCTx(tx, { operationRef, fecha: new Date(), cajasAutorizadas: cajas }));
 
     revalidatePath("/operaciones");
     revalidatePath("/plazos-fijos");
     revalidatePath("/intereses");
     return { success: true };
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : "Error al revertir operación";
+    const msg = error instanceof CCIntegridadError ? error.message : "Error al revertir operación";
     return { error: msg };
   }
 }
@@ -875,22 +639,21 @@ export async function crearPlazoFijoSimple(
 
   const clienteId            = formData.get("clienteId")?.toString();
   const moneda               = formData.get("moneda")?.toString();
-  const rawCapital           = formData.get("capital")?.toString().replace(",", ".");
-  const rawTasa              = formData.get("tasaAnual")?.toString().replace(",", ".");
   const fechaInicioStr       = formData.get("fechaInicio")?.toString();
   const fechaVencStr         = formData.get("fechaVencimiento")?.toString();
-  const cuentaCorrienteId    = formData.get("cuentaCorrienteId")?.toString() || null;
 
   if (!clienteId) return { error: "clienteId requerido" };
   if (moneda !== "USD" && moneda !== "ARS" && moneda !== "EUR" && moneda !== "BRL") {
     return { error: "Moneda inválida" };
   }
 
-  const capital = parseFloat(rawCapital ?? "");
-  const tasa    = parseFloat(rawTasa ?? "");
-  if (isNaN(capital) || capital <= 0) return { error: "Capital inválido" };
-  if (isNaN(tasa) || tasa < 0)        return { error: "Tasa inválida" };
-  if (tasa > 200)                     return { error: "Tasa anual excede el máximo permitido (200%)" };
+  // MACRO 4: decimales estrictos (parseFloat aceptaba "12abc", "1e3"…).
+  const capital = parseMontoPositivo(formData.get("capital")?.toString());
+  const tasaP   = parseMontoEstricto(formData.get("tasaAnual")?.toString());
+  if (!capital) return { error: "Capital inválido" };
+  if (!tasaP.ok || !tasaP.value) return { error: "Tasa inválida" };
+  const tasa = tasaP.value;
+  if (tasa.gt(200)) return { error: "Tasa anual excede el máximo permitido (200%)" };
 
   const dIni  = fechaInicioStr ? new Date(fechaInicioStr) : null;
   const dVenc = fechaVencStr   ? new Date(fechaVencStr)   : null;
@@ -902,43 +665,22 @@ export async function crearPlazoFijoSimple(
   const fechaVencimiento = new Date(Date.UTC(dVenc.getUTCFullYear(), dVenc.getUTCMonth(), dVenc.getUTCDate()));
 
   try {
-    await prisma.$transaction(async (tx) => {
-      await tx.plazoFijo.create({
-        data: {
-          id:               crypto.randomUUID(),
-          clienteId,
-          moneda,
-          capital,
-          saldoActual:      capital,
-          tasaAnual:        tasa,
-          fechaInicio,
-          fechaVencimiento,
-          estado:           "ACTIVO",
-          updatedAt:        new Date(),
-        },
-      });
-
-      // PF siempre nace desde CC: descontar capital de la CC del cliente
-      // Si no existe CC para esa moneda, se crea con saldo negativo (indica falta de ingreso previo)
-      await tx.cuentaCorriente.upsert({
-        where: { clienteId_moneda: { clienteId, moneda: moneda as any } },
-        create: { id: crypto.randomUUID(), clienteId, moneda: moneda as any, saldo: new Decimal(-capital), updatedAt: new Date() },
-        update: { saldo: { decrement: new Decimal(capital) }, updatedAt: new Date() },
-      });
-    });
+    // MACRO 4: PF + EGRESO en la CC del cliente en UNA tx (antes: decrement del saldo
+    // sin MovimientoCC → la reconciliación volvía a sumar el capital = doble pasivo).
+    await prisma.$transaction((tx) => crearPfDesdeCCTx(tx, { clienteId, moneda, capital, tasaAnual: tasa, fechaInicio, fechaVencimiento }));
 
     const sessionPF = await auth();
     await writeAuditLog({
       userId:      sessionPF?.user?.id,
       accion:      "CREAR",
       entidad:     "PlazoFijo",
-      description: `PF creado: cliente ${clienteId} ${moneda} ${capital} tasa:${tasa}% venc:${fechaVencStr}`,
+      description: `PF creado: cliente ${clienteId} ${moneda} ${capital.toString()} tasa:${tasa.toString()}% venc:${fechaVencStr}`,
     });
 
     revalidatePath(`/clientes/${clienteId}`);
     return { ok: true };
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Error al registrar plazo fijo";
+    const msg = e instanceof CCIntegridadError ? e.message : "Error al registrar plazo fijo";
     return { error: msg };
   }
 }
@@ -962,30 +704,23 @@ export async function reconciliarSaldoCC(
   const cuenta = await prisma.cuentaCorriente.findUnique({ where: { id: cuentaId }, select: { saldo: true } });
   if (!cuenta) return { error: "Cuenta no encontrada" };
 
-  const diferencia = saldoCalculado.minus(cuenta.saldo);
+  const diferencia = new Decimal(cuenta.saldo.toString()).minus(saldoCalculado);
 
-  if (diferencia.abs().lte(new Decimal("0.001"))) {
-    return { ok: true, diferencia: "0.00" };
+  // MACRO 4: diagnóstico SOLAMENTE. Pisar el saldo con la reconstrucción "arreglaba"
+  // saldos correctos a los que les faltaba un movimiento del sistema (p. ej. PF
+  // creado desde CC sin MovimientoCC → doble pasivo). Una diferencia es legacy
+  // inconsistente: se informa, no se ajusta ni se inventan movimientos.
+  if (!diferencia.abs().lte(new Decimal("0.001"))) {
+    const sessionRec = await auth();
+    await writeAuditLog({
+      userId:      sessionRec?.user?.id,
+      accion:      "RECONCILIAR_CC",
+      entidad:     "CuentaCorriente",
+      entidadId:   cuentaId,
+      description: `Reconciliación CC ${cuentaId}: saldo ${cuenta.saldo} ≠ movimientos ${saldoCalculado} (dif: ${diferencia}) — sin ajuste`,
+    });
   }
-
-  await prisma.cuentaCorriente.update({
-    where: { id: cuentaId },
-    data: { saldo: saldoCalculado, updatedAt: new Date() },
-  });
-
-  const sessionRec = await auth();
-  await writeAuditLog({
-    userId:      sessionRec?.user?.id,
-    accion:      "EDITAR",
-    entidad:     "CuentaCorriente",
-    entidadId:   cuentaId,
-    description: `Reconciliación saldo CC ${cuentaId}: ${cuenta.saldo} → ${saldoCalculado} (dif: ${diferencia})`,
-  });
-
-  revalidatePath(`/clientes/${clienteId}`);
-  revalidatePath(`/clientes/${clienteId}/cuentas/${cuentaId}`);
-  revalidatePath(`/clientes/cc/${cuentaId}`);
-  return { ok: true, diferencia: diferencia.toFixed(2) };
+  return { ok: true, diferencia: diferencia.abs().lte(new Decimal("0.001")) ? "0.00" : diferencia.toFixed(2) };
 }
 
 export async function actualizarTasaCC(
@@ -1030,43 +765,47 @@ export async function editarPlazoFijo(
   if (!pfId || !clienteId) return { error: "ID requerido" };
 
   const capitalRaw          = formData.get("capital")?.toString();
-  const tasaRaw             = formData.get("tasaAnual")?.toString();
-  const fechaInicioRaw      = formData.get("fechaInicio")?.toString();
-  const fechaVencimientoRaw = formData.get("fechaVencimiento")?.toString();
   const saldoActualRaw      = formData.get("saldoActual")?.toString();
   const estadoRaw           = formData.get("estado")?.toString();
+  const fechaInicioRaw      = formData.get("fechaInicio")?.toString();
+  const fechaVencimientoRaw = formData.get("fechaVencimiento")?.toString();
 
-  const capital    = parseFloat(capitalRaw ?? "");
-  const tasa       = parseFloat(tasaRaw ?? "");
-  const saldo      = parseFloat(saldoActualRaw ?? "");
-
-  if (isNaN(capital) || capital <= 0) return { error: "Capital inválido" };
-  if (isNaN(tasa) || tasa < 0)        return { error: "Tasa inválida" };
-  if (tasa > 200)                     return { error: "Tasa anual excede el máximo permitido (200%)" };
-  if (isNaN(saldo))                   return { error: "Saldo actual inválido" };
-
-  const ESTADOS = ["ACTIVO", "VENCIDO", "CANCELADO", "RENOVADO"] as const;
-  if (!estadoRaw || !ESTADOS.includes(estadoRaw as typeof ESTADOS[number])) {
-    return { error: "Estado inválido" };
-  }
+  // MACRO 4: decimales estrictos; solo tasa y fechas son editables.
+  const tasaP = parseMontoEstricto(formData.get("tasaAnual")?.toString());
+  if (!tasaP.ok || !tasaP.value) return { error: "Tasa inválida" };
+  const tasa = tasaP.value;
+  if (tasa.gt(200)) return { error: "Tasa anual excede el máximo permitido (200%)" };
+  const capital = capitalRaw !== undefined ? parseMontoEstricto(capitalRaw) : null;
+  const saldo   = saldoActualRaw !== undefined ? parseMontoEstricto(saldoActualRaw) : null;
+  if (capital && (!capital.ok || !capital.value)) return { error: "Capital inválido" };
+  if (saldo && (!saldo.ok || !saldo.value)) return { error: "Saldo actual inválido" };
 
   const fechaInicio = fechaInicioRaw ? new Date(fechaInicioRaw + "T00:00:00Z") : null;
   const fechaVenc   = fechaVencimientoRaw ? new Date(fechaVencimientoRaw + "T00:00:00Z") : null;
   if (!fechaInicio || isNaN(fechaInicio.getTime())) return { error: "Fecha inicio inválida" };
   if (!fechaVenc   || isNaN(fechaVenc.getTime()))   return { error: "Fecha vencimiento inválida" };
+  if (fechaVenc <= fechaInicio) return { error: "Vencimiento debe ser posterior al inicio" };
 
-  await prisma.plazoFijo.update({
-    where: { id: pfId },
-    data: {
-      capital:          new Decimal(capital),
-      tasaAnual:        new Decimal(tasa),
-      saldoActual:      new Decimal(saldo),
-      estado:           estadoRaw as typeof ESTADOS[number],
-      fechaInicio,
-      fechaVencimiento: fechaVenc,
-      updatedAt:        new Date(),
-    },
-  });
+  try {
+    // MACRO 4: capital / saldoActual / estado tienen efecto económico sin contraparte
+    // (un saldoActual editado era interés sin fecha ni movimiento): DENY bajo lock.
+    await prisma.$transaction(async (tx) => {
+      await lockPlazoFijo(tx, pfId);
+      const pf = await tx.plazoFijo.findUnique({ where: { id: pfId } });
+      if (!pf || pf.clienteId !== clienteId) throw new CCIntegridadError("Plazo fijo no encontrado");
+      const err = validarEdicionPF(
+        { capital: pf.capital.toString(), saldoActual: pf.saldoActual.toString(), estado: pf.estado, moneda: pf.moneda, clienteId: pf.clienteId },
+        { capital: capital?.value ?? undefined, saldoActual: saldo?.value ?? undefined, estado: estadoRaw },
+      );
+      if (err) throw new CCIntegridadError(err);
+      await tx.plazoFijo.update({
+        where: { id: pfId },
+        data: { tasaAnual: tasa, fechaInicio, fechaVencimiento: fechaVenc, updatedAt: new Date() },
+      });
+    });
+  } catch (e: unknown) {
+    return { error: e instanceof CCIntegridadError ? e.message : "Error al editar el plazo fijo" };
+  }
 
   const sessionEditPF = await auth();
   await writeAuditLog({
@@ -1074,7 +813,7 @@ export async function editarPlazoFijo(
     accion:      "EDITAR",
     entidad:     "PlazoFijo",
     entidadId:   pfId,
-    description: `PF editado: ${pfId} estado:${estadoRaw} capital:${capital} tasa:${tasa}%`,
+    description: `PF editado: ${pfId} tasa:${tasa.toString()}% inicio:${fechaInicioRaw} venc:${fechaVencimientoRaw}`,
   });
 
   revalidatePath(`/clientes/pf/${pfId}`);
@@ -1096,79 +835,12 @@ export async function revertirMovimientoCC(
 
   const session = await auth();
   const userName = (session?.user as { name?: string })?.name ?? "Sistema";
+  const hoy = new Date();
+  const fecha = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
 
   try {
-    const result = await prisma.$transaction(async (tx) => {
-      const mov = await tx.movimientoCC.findUnique({
-        where: { id },
-        include: { CuentaCorriente: { select: { id: true, saldo: true, clienteId: true, moneda: true } } },
-      });
-      if (!mov) throw new Error("Movimiento no encontrado");
-
-      const desc = mov.descripcion ?? "";
-
-      // Cruce de caminos: una pata de una operación agrupada (RULO/DIVISA/LP/
-      // INTERES, tiene op:{operationRef}) no se revierte individualmente acá,
-      // solo completa vía revertirOperacion — evita reversión parcial.
-      if (esMovimientoDeOperacionAgrupada(desc)) {
-        throw new Error("Este movimiento pertenece a una operación agrupada. Revertila desde Operaciones.");
-      }
-      // Una reversión (grupal o individual) no puede volver a revertirse.
-      if (desc.startsWith("REVERSO") || desc.startsWith("[REVERSO")) {
-        throw new Error("Este movimiento ya es una reversión");
-      }
-
-      // Lock row-level sobre el movimiento original: serializa cualquier otra
-      // reversión concurrente del MISMO id. SQL parametrizado (id vinculado,
-      // nunca concatenado) porque Prisma no expone FOR UPDATE en su API fluida.
-      await tx.$queryRaw`SELECT id FROM "MovimientoCC" WHERE id = ${id} FOR UPDATE`;
-
-      // Re-chequeo post-lock: ¿alguien más ya generó la reversión de este
-      // movimiento mientras esperábamos el lock? Bajo Read Committed, este
-      // SELECT corre en un statement nuevo tras el desbloqueo y sí la ve.
-      const yaRevertido = await tx.movimientoCC.findFirst({
-        where: { descripcion: { contains: `movref:${id}` } },
-      });
-      if (yaRevertido) throw new Error("Este movimiento ya fue revertido");
-
-      const inversoTipo: "INGRESO" | "EGRESO" = mov.tipo === "INGRESO" || mov.tipo === "INTERES" ? "EGRESO" : "INGRESO";
-      const hoy = new Date();
-      const fecha = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate()));
-
-      // Referencia estructurada nueva y no ambigua (movref:), distinta de op:/ref:
-      // que son semántica de operación agrupada. Se reserva espacio para que
-      // nunca quede truncada por el límite de 500 caracteres.
-      const prefix = `[REVERSO por ${userName}] `;
-      const suffix = ` | movref:${id}`;
-      const maxDescLen = Math.max(0, 500 - prefix.length - suffix.length);
-      const descTruncada = desc.length > maxDescLen ? desc.slice(0, maxDescLen) : desc;
-
-      await tx.movimientoCC.create({
-        data: {
-          id: crypto.randomUUID(),
-          cuentaCorrienteId: mov.cuentaCorrienteId,
-          fecha,
-          tipo: inversoTipo,
-          monto: mov.monto,
-          descripcion: `${prefix}${descTruncada}${suffix}`,
-          operacionCambioId: mov.operacionCambioId,
-        },
-      });
-
-      const delta = inversoTipo === "INGRESO" ? mov.monto : mov.monto.negated();
-      await tx.cuentaCorriente.update({
-        where: { id: mov.cuentaCorrienteId },
-        data: { saldo: { increment: delta }, updatedAt: new Date() },
-      });
-
-      return {
-        clienteId: mov.CuentaCorriente.clienteId,
-        cuentaId:  mov.CuentaCorriente.id,
-        moneda:    mov.CuentaCorriente.moneda,
-        tipo:      mov.tipo,
-        monto:     mov.monto,
-      };
-    });
+    // Lock del movimiento ANTES de leerlo; idempotencia (movref:) bajo lock; saldo por increment.
+    const result = await prisma.$transaction((tx) => revertirMovimientoCCTx(tx, { id, userName, fecha }));
 
     await writeAuditLog({
       userId:      session?.user?.id,
@@ -1183,6 +855,6 @@ export async function revertirMovimientoCC(
     revalidatePath("/clientes/cc");
     return { ok: true };
   } catch (e: unknown) {
-    return { error: e instanceof Error ? e.message : "Error al revertir movimiento" };
+    return { error: e instanceof CCIntegridadError ? e.message : "Error al revertir movimiento" };
   }
 }

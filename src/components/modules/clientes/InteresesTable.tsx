@@ -50,10 +50,9 @@ function AplicarForm({ cuentaId, aplicado }: { cuentaId: string; aplicado: strin
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <form action={action}>
+      {/* MACRO 4: solo viaja la cuenta; el monto (vista previa) lo recalcula el servidor bajo lock. */}
+      <form action={action} title={`Vista previa: ${aplicado}. El servidor recalcula el monto al aplicar.`}>
         <input type="hidden" name="cuentaId" value={cuentaId} />
-        <input type="hidden" name="montoAplicado" value={aplicado} />
-        <input type="hidden" name="descripcion" value="Interés CC" />
         <SubmitButton />
       </form>
       {state?.error && <span className="text-red-500 text-xs">{state.error}</span>}

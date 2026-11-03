@@ -32,7 +32,7 @@ export function ReconcileSaldoCCButton({
       )}
       {state?.ok && state.diferencia !== undefined && (
         <span className="text-[10px] font-medium text-emerald-600">
-          {state.diferencia === "0.00" ? "Saldo correcto" : `Ajustado: ${state.diferencia}`}
+          {state.diferencia === "0.00" ? "Saldo correcto" : `Diferencia legacy: ${state.diferencia} (no se ajusta)`}
         </span>
       )}
     </form>

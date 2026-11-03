@@ -96,61 +96,39 @@ export function calcularInteresCCRealista({
     .filter((m) => m.fecha >= inicio && m.fecha < fin)
     .sort((a, b) => a.fecha.getTime() - b.fecha.getTime());
 
-  // Build timeline: unique date breakpoints within the period
-  const breakpoints: Date[] = [inicio];
-  for (const mov of movsFiltrados) {
-    const last = breakpoints[breakpoints.length - 1];
-    if (mov.fecha.getTime() !== last.getTime()) {
-      breakpoints.push(mov.fecha);
-    }
-  }
-  breakpoints.push(fin);
-
-  // Pre-compute running balance at each breakpoint start
-  // saldoInicial is the balance as of fechaInicio (before any movimiento that day)
-  let saldoCorrente = saldoInicial;
-  const saldoPorBreakpoint: Decimal[] = [saldoCorrente];
-
-  let movIdx = 0;
-  for (let i = 1; i < breakpoints.length - 1; i++) {
-    const punto = breakpoints[i];
-    // Apply all movimientos that fall on the previous breakpoint date
-    const anterior = breakpoints[i - 1];
-    while (
-      movIdx < movsFiltrados.length &&
-      movsFiltrados[movIdx].fecha.getTime() === anterior.getTime()
-    ) {
-      const mov = movsFiltrados[movIdx];
-      if (mov.tipo === TipoMovCC.INGRESO || mov.tipo === TipoMovCC.AJUSTE) {
-        saldoCorrente = saldoCorrente.add(mov.monto);
-      } else if (mov.tipo === TipoMovCC.EGRESO) {
-        saldoCorrente = saldoCorrente.sub(mov.monto);
-      }
-      // INTERES movements are excluded from balance reconstruction
-      movIdx++;
-    }
-    saldoPorBreakpoint.push(saldoCorrente);
-  }
-
-  // Calculate interest per period
+  // MACRO 4: tramos explícitos. saldoInicial = saldo al comienzo de fechaInicio
+  // (antes de los movimientos de ese día). Un movimiento con fecha D impacta DESDE
+  // D: se devenga [desde, D) con el saldo vigente y recién después se aplican todos
+  // los movimientos de D (una sola vez). Antes cada tramo usaba el saldo del corte
+  // ANTERIOR (off-by-one): un movimiento impactaba un corte tarde y el del último
+  // corte no impactaba nunca.
   const periodos: PeriodoInteres[] = [];
   let interesTotal = new Decimal(0);
+  let saldo = saldoInicial;
+  let desde = inicio;
 
-  for (let i = 0; i < breakpoints.length - 1; i++) {
-    const fechaDesde = breakpoints[i];
-    const fechaHasta = breakpoints[i + 1];
-    const dias = calcularDiasEntreFechas(fechaDesde, fechaHasta);
-    const saldo = saldoPorBreakpoint[i];
-
+  const devengar = (hasta: Date) => {
+    const dias = calcularDiasEntreFechas(desde, hasta);
     // Only accrue interest on positive balances (creditor account convention)
-    // Change condition to saldo.isNegative() for debtor-side accrual
     const interes = saldo.greaterThan(0)
       ? saldo.mul(tasa).mul(new Decimal(dias)).div(new Decimal(365))
       : new Decimal(0);
-
     interesTotal = interesTotal.add(interes);
-    periodos.push({ fechaDesde, fechaHasta, dias, saldo, interes });
+    periodos.push({ fechaDesde: desde, fechaHasta: hasta, dias, saldo, interes });
+    desde = hasta;
+  };
+
+  for (const mov of movsFiltrados) {
+    if (mov.fecha.getTime() > desde.getTime()) devengar(mov.fecha);
+    if (mov.tipo === TipoMovCC.INGRESO || mov.tipo === TipoMovCC.AJUSTE) {
+      saldo = saldo.add(mov.monto);
+    } else if (mov.tipo === TipoMovCC.EGRESO) {
+      saldo = saldo.sub(mov.monto);
+    }
+    // INTERES movements are excluded from balance reconstruction
   }
+  // Último tramo hasta fechaFin (exclusiva); siempre se informa, aun con 0 días.
+  devengar(fin);
 
   return { interesTotal, periodos };
 }

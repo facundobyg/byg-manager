@@ -17,10 +17,18 @@ function cumple(row: Row, where: Where | undefined): boolean {
     }
     const v = row[k];
     if (cond !== null && typeof cond === "object" && !(cond instanceof Decimal) && !(cond instanceof Date)) {
-      const c = cond as { in?: unknown[]; startsWith?: string; endsWith?: string };
+      const c = cond as { in?: unknown[]; startsWith?: string; endsWith?: string; contains?: string; gte?: Date; lt?: Date; not?: unknown };
       if (c.in && !c.in.includes(v)) return false;
       if (c.startsWith !== undefined && !(typeof v === "string" && v.startsWith(c.startsWith))) return false;
       if (c.endsWith !== undefined && !(typeof v === "string" && v.endsWith(c.endsWith))) return false;
+      if (c.contains !== undefined && !(typeof v === "string" && v.includes(c.contains))) return false;
+      if (c.gte !== undefined && !(v instanceof Date && v.getTime() >= c.gte.getTime())) return false;
+      if (c.lt !== undefined && !(v instanceof Date && v.getTime() < c.lt.getTime())) return false;
+      if ("not" in c && v === c.not) return false;
+      continue;
+    }
+    if (cond instanceof Date) {
+      if (!(v instanceof Date && v.getTime() === cond.getTime())) return false;
       continue;
     }
     if (v !== cond) return false;
@@ -44,6 +52,18 @@ export function tabla(rows: Row[], defaults: Row = {}) {
   return {
     rows,
     findUnique: async ({ where }: { where: Where }) => rows.find((r) => cumple(r, where)) ?? null,
+    findUniqueOrThrow: async ({ where }: { where: Where }) => {
+      const r = rows.find((x) => cumple(x, where));
+      if (!r) throw new Error("no existe");
+      return r;
+    },
+    upsert: async ({ where, create, update }: { where: Where; create: Row; update: Row }) => {
+      const clave = Object.values(where)[0];
+      const w = clave && typeof clave === "object" && !(clave instanceof Date) ? (clave as Where) : where;
+      const r = rows.find((x) => cumple(x, w));
+      if (r) { aplicar(r, update); return r; }
+      const n = { ...defaults, ...create }; rows.push(n); return n;
+    },
     findFirst: async ({ where }: { where?: Where } = {}) => rows.find((r) => cumple(r, where)) ?? null,
     findMany: async ({ where }: { where?: Where } = {}) => rows.filter((r) => cumple(r, where)),
     count: async ({ where }: { where?: Where } = {}) => rows.filter((r) => cumple(r, where)).length,

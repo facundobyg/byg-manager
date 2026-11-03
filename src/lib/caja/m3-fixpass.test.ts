@@ -27,6 +27,8 @@ vi.mock("@/lib/auth/permissions", () => ({ requireActionPermission: vi.fn(async 
 vi.mock("@/lib/parse-monto", async () => await import("../parse-monto"));
 vi.mock("@/lib/caja/integridad", async () => await import("./integridad"));
 vi.mock("@/lib/caja/integridad.service", async () => await import("./integridad.service"));
+vi.mock("@/lib/cc/integridad", async () => await import("../cc/integridad"));
+vi.mock("@/lib/cc/integridad.service", async () => await import("../cc/integridad.service"));
 vi.mock("@/lib/data/movimiento-cc", () => ({ esMovimientoDeOperacionAgrupada: () => false, extraerOperationRef: () => null }));
 
 import * as caja from "../../app/(dashboard)/caja/actions";
