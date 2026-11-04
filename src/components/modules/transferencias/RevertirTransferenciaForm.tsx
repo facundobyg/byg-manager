@@ -2,11 +2,15 @@
 
 import { useActionState } from "react";
 import { revertirTransferencia } from "@/app/(dashboard)/transferencias/actions";
+import { custodiaMutacionesBloqueadas, MENSAJE_CUSTODIA_BLOQUEADA } from "@/lib/custodia/beta";
 
 const initialState = null as { error?: string; success?: boolean } | null;
 
 export function RevertirTransferenciaForm({ logId }: { logId: string }) {
   const [state, action, pending] = useActionState(revertirTransferencia, initialState);
+
+  // MACRO 6: custodia en solo lectura durante la Beta (el servidor también rechaza).
+  if (custodiaMutacionesBloqueadas()) return <span title={MENSAJE_CUSTODIA_BLOQUEADA} className="text-[10px] font-semibold text-slate-400 whitespace-nowrap">Deshabilitado (Beta)</span>;
 
   if (state?.success) {
     return <span className="text-[10px] font-semibold text-slate-400">Revertida</span>;

@@ -82,7 +82,9 @@ function LiquidarPagoModal({ operaciones, cajas, clienteNombre }: {
   const [modo, setModo] = useState<"total" | "parcial">("total");
   const [state, action, pending] = useActionState(liquidarPagoPendiente, null);
 
-  const cambioOps = operaciones.filter(op => op.clasificacionOperativa === "CAMBIO");
+  // MACRO 6: las operaciones con impacto en CC se liquidan por Cuenta Corriente (el servidor también rechaza).
+  const cambioOps = operaciones.filter(op => op.clasificacionOperativa === "CAMBIO" && !op.impactoCC);
+  const cambioOpsCC = operaciones.filter(op => op.clasificacionOperativa === "CAMBIO" && op.impactoCC);
   const operativeCajas = cajas.filter(c =>
     (c as any).tipo === "CENTRAL_CONTABLE" || (c as any).tipo === "SUCURSAL_OPERATIVA" ||
     !(c as any).tipo
@@ -93,6 +95,7 @@ function LiquidarPagoModal({ operaciones, cajas, clienteNombre }: {
   }, [state?.ok]);
 
   if (cambioOps.length === 0) {
+    if (cambioOpsCC.length > 0) return <span className="text-[10px] text-byg-muted font-bold uppercase">Liquidación por Cuenta Corriente</span>;
     return <span className="text-[10px] text-byg-muted font-bold uppercase">Sin cambios</span>;
   }
 
@@ -435,7 +438,7 @@ function EditCambioButton({ row }: { row: MovDiarioRow }) {
                 <label className="text-[10px] font-black text-byg-muted uppercase ml-1">Estado</label>
                 <select name="estadoNuevo" defaultValue="PENDIENTE" className="border border-byg-border rounded-xl px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500/20 outline-none bg-byg-bg text-byg-text font-bold">
                   <option value="PENDIENTE">Pendiente</option>
-                  <option value="COBRADA">Liquidar (Cobrada)</option>
+                  {!row.impactoCC && <option value="COBRADA">Liquidar (Cobrada)</option>}
                 </select>
               </div>
               <div className="flex flex-col gap-1">

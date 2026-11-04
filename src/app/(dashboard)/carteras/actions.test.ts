@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("@/lib/custodia/beta", async () => await import("../../../lib/custodia/beta"));
 vi.mock("@/lib/auth/permissions", () => ({
   requireActionPermission: mocks.requireActionPermission,
 }));
@@ -221,13 +222,19 @@ describe("cambiarCategoriaActivo — gate de autorización (SEC-17/18/19)", () =
   });
 });
 
-// ── eliminarPosicion ──────────────────────────────────────────────────────────
+// ── eliminarPosicion (MACRO 6: AJUSTE confirmado, audit en la misma tx) ─────
 
-describe("eliminarPosicion — gate de autorización (SEC-17/18/19)", () => {
-  function fd() {
+describe("eliminarPosicion — gate + ajuste confirmado (MACRO 6)", () => {
+  function fd(confirmar = true) {
     const f = new FormData();
     f.set("posicionId", "pos-1");
+    if (confirmar) f.set("confirmarAjuste", "on");
     return f;
+  }
+  function posicionExistente() {
+    mocks.prisma.posicionCartera.findUnique
+      .mockResolvedValueOnce({ carteraId: "cart-1" })
+      .mockResolvedValueOnce({ cantidad: "10", precioCompra: "100", Activo: { ticker: "GGAL" } });
   }
 
   it("sin sesión → rechazo, ninguna escritura Prisma", async () => {
@@ -245,21 +252,50 @@ describe("eliminarPosicion — gate de autorización (SEC-17/18/19)", () => {
     expect(mocks.prisma.posicionCartera.delete).not.toHaveBeenCalled();
   });
 
-  it("usuario autorizado → elimina la posición", async () => {
+  it("autorizado SIN confirmarAjuste → DENY, nada escrito ni auditado", async () => {
     mocks.requireActionPermission.mockResolvedValue(null);
     mocks.auth.mockResolvedValue({ user: { id: "user-1" } });
-    mocks.prisma.posicionCartera.findUnique.mockResolvedValue({ carteraId: "cart-1" });
-    mocks.prisma.posicionCartera.findUniqueOrThrow.mockResolvedValue({ cantidad: "10", precioCompra: "100", Activo: { ticker: "GGAL" } });
+    const result = await eliminarPosicion(null, fd(false));
+    expect(result).toEqual({ error: expect.stringMatching(/ajuste \/ apertura sin movimiento de cash/) });
+    expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
+    expect(mocks.prisma.posicionCartera.delete).not.toHaveBeenCalled();
+    expect(mocks.prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("autorizado + confirmado → baja con lock, AuditLog AJUSTE_POSICION en la tx (antes → 0), cash intacto", async () => {
+    mocks.requireActionPermission.mockResolvedValue(null);
+    mocks.auth.mockResolvedValue({ user: { id: "user-1" } });
+    posicionExistente();
     mocks.prisma.posicionCartera.delete.mockResolvedValue({});
     const result = await eliminarPosicion(null, fd());
     expect(result).toEqual({ success: true });
+    expect(mocks.prisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(mocks.prisma.posicionCartera.delete).toHaveBeenCalledTimes(1);
+    expect(mocks.prisma.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      userId: "user-1", accion: "AJUSTE_POSICION",
+      datosPrevios: expect.objectContaining({ ticker: "GGAL", cantidad: "10", costo: "100" }),
+      datosNuevos: expect.objectContaining({ cantidad: "0", description: expect.stringMatching(/sin cash/) }),
+    }) });
+    expect(mocks.prisma.cartera.update).not.toHaveBeenCalled();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("si el AuditLog falla → error y la tx no se confirma (rollback)", async () => {
+    mocks.requireActionPermission.mockResolvedValue(null);
+    mocks.auth.mockResolvedValue({ user: { id: "user-1" } });
+    posicionExistente();
+    mocks.prisma.posicionCartera.delete.mockResolvedValue({});
+    mocks.prisma.auditLog.create.mockRejectedValueOnce(new Error("audit down"));
+    const result = await eliminarPosicion(null, fd());
+    expect(result).toEqual({ error: "Error al eliminar la posición" });
   });
 });
 
-// ── asignarACustodia (ya protegida — regresión) ──────────────────────────────
+// ── asignarACustodia (MACRO 6: custodia fuera de la Beta) ────────────────────
 
-describe("asignarACustodia — regresión del gate ya existente", () => {
+describe("asignarACustodia — custodia bloqueada durante la Beta (MACRO 6)", () => {
+  const BLOQUEADA = { error: "Las transferencias de activos a Custodia están temporalmente deshabilitadas durante la Beta." };
   function fd() {
     const f = new FormData();
     f.set("posicionId", "pos-1");
@@ -268,44 +304,19 @@ describe("asignarACustodia — regresión del gate ya existente", () => {
     return f;
   }
 
-  it("sin sesión → rechazo, ninguna escritura Prisma", async () => {
-    mocks.requireActionPermission.mockResolvedValue(SIN_SESION);
-    const result = await asignarACustodia(null, fd());
-    expect(result).toEqual({ error: "Sin sesión activa" });
-    expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
-  });
-
-  it("usuario sin permiso 'bolsa:transferir_custodia' → rechazo", async () => {
-    mocks.requireActionPermission.mockResolvedValue(DENEGADO);
-    const result = await asignarACustodia(null, fd());
-    expect(result).toEqual({ error: DENEGADO.error });
-    expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
-  });
-
-  it("ADMIN/usuario autorizado → ejecuta la asignación a custodia", async () => {
+  it("ADMIN / usuario autorizado → DENY explícito, ninguna lectura ni escritura", async () => {
     mocks.requireActionPermission.mockResolvedValue(null);
     mocks.auth.mockResolvedValue({ user: { id: "user-1", name: "Admin" } });
-    mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        posicionCartera: {
-          findUnique: vi.fn().mockResolvedValue({
-            id: "pos-1",
-            cantidad: "10",
-            activoId: "act-1",
-            carteraId: "cart-1",
-            precioCompra: "100",
-            Activo: { ticker: "GGAL" },
-          }),
-          update: vi.fn(),
-          delete: vi.fn(),
-        },
-        custodiaCliente: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn(), update: vi.fn() },
-        transferenciaActivo: { create: vi.fn() },
-      }),
-    );
-
     const result = await asignarACustodia(null, fd());
-    expect(result).toEqual({ success: true });
-    expect(mocks.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1" }));
+    expect(result).toEqual(BLOQUEADA);
+    expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("sin permiso → igual DENY por bloqueo", async () => {
+    mocks.requireActionPermission.mockResolvedValue(DENEGADO);
+    const result = await asignarACustodia(null, fd());
+    expect(result).toEqual(BLOQUEADA);
+    expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
   });
 });

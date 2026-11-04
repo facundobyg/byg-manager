@@ -7,10 +7,11 @@ import { CategoriaActivo, Moneda } from "@prisma/client";
 import { auth } from "@/auth";
 import { requireActionPermission } from "@/lib/auth/permissions";
 import { writeAuditLog } from "@/lib/services/audit.service";
+import { denegarMutacionCustodia } from "@/lib/custodia/beta";
 import { parseMontoPositivo } from "@/lib/caja/integridad";
 import { parseOpcionalConSigno, parseOpcionalNoNegativo } from "@/lib/bolsa/integridad";
 
-import { AVISO_AJUSTE, AjusteCarteraError, ajusteAperturaPosicionTx, ajustePosicionTx } from "@/lib/bolsa/ajustes.service";
+import { AVISO_AJUSTE, AjusteCarteraError, ajusteAperturaPosicionTx, ajusteBajaPosicionTx, ajustePosicionTx } from "@/lib/bolsa/ajustes.service";
 
 /**
  * Gate compartido por las Server Actions de este archivo: exige sesión válida
@@ -228,6 +229,9 @@ export async function asignarACustodia(
   _prev: ActionResult | null,
   formData: FormData,
 ): Promise<ActionResult> {
+  // MACRO 6: custodia fuera de la Beta — mutación rechazada en el servidor.
+  const bloqueada = denegarMutacionCustodia();
+  if (bloqueada) return { error: bloqueada.error };
   const denied = await requireActionPermission("bolsa:transferir_custodia");
   if (denied) return { error: denied.error };
 
@@ -362,20 +366,13 @@ export async function eliminarPosicion(
 
   if (!posicionId) return { error: "ID de posición requerido" };
 
+  // MACRO 6: es un AJUSTE (baja sin cash), NO una venta: confirmación explícita
+  // (validada también en el servicio, que escribe el AuditLog en la misma tx).
+  const confirmarAjuste = formData.get("confirmarAjuste") === "on";
+  if (!confirmarAjuste) return { error: AVISO_AJUSTE };
+
   try {
-    // MACRO 5: AJUSTE (baja de posición sin cash), con lock de la cartera y traza.
-    const antes = await prisma.$transaction(async (tx) => {
-      const pos0 = await tx.posicionCartera.findUnique({ where: { id: posicionId }, select: { carteraId: true } });
-      if (!pos0) throw new AjusteCarteraError("Posición no encontrada");
-      await tx.$queryRaw`SELECT id FROM "Cartera" WHERE id = ${pos0.carteraId} FOR UPDATE`;
-      const p = await tx.posicionCartera.findUniqueOrThrow({ where: { id: posicionId }, include: { Activo: { select: { ticker: true } } } });
-      await tx.posicionCartera.delete({ where: { id: posicionId } });
-      return p;
-    });
-    await writeAuditLog({
-      userId: gated.userId, accion: "AJUSTE_POSICION", entidad: "PosicionCartera", entidadId: posicionId,
-      description: `Baja de posición ${antes.Activo.ticker} (sin cash): ${antes.cantidad} @ ${antes.precioCompra} → 0`,
-    });
+    await prisma.$transaction((tx) => ajusteBajaPosicionTx(tx, { userId: gated.userId, confirmarAjuste, posicionId }));
     revalidateCartera(carteraSlug);
     return { success: true };
   } catch (e) {

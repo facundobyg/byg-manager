@@ -15,7 +15,7 @@ import {
 } from "@/lib/caja/integridad";
 import {
   IntegridadError, cancelarCambioTx, editarCambioTx, liquidarCambioTx, lockMovimientosCaja, movimientosCCDeCambio, movimientosDeCambio,
-  pagosValidos, revertirCambioTx,
+  pagosValidos, revertirCambioTx, MENSAJE_CAMBIO_CON_CC,
 } from "@/lib/caja/integridad.service";
 
 /** Mensaje seguro: los errores de integridad son para el usuario; el resto, genérico. */
@@ -218,6 +218,8 @@ export async function crearOperacionCambio(
   // LIQUIDADA sin caja no puede marcarse liquidada sin efectivo; PARCIAL sin montos tampoco.
   if (estadoOp === "LIQUIDADA" && !cajaLiqId) return { error: "Seleccioná la caja de liquidación" };
   if (estadoOp === "PARCIAL" && parciales.length === 0) return { error: "Ingresá al menos un monto parcial" };
+  // MACRO 6: impacto en CC y liquidación en Caja son mutuamente excluyentes (el canje no se registra dos veces).
+  if (impactoCC && estadoOp !== "NO_LIQUIDADA") return { error: MENSAJE_CAMBIO_CON_CC };
   // L1: [REVERTIDA POR:]/[PARCIAL]/[CC] y demás marcas solo las pone el sistema.
   const textoError = validarTextoUsuario(descripcion);
   if (textoError) return { error: textoError };

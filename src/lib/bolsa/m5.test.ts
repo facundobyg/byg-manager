@@ -24,6 +24,7 @@ vi.mock("@/lib/caja/integridad", async () => await import("../caja/integridad"))
 vi.mock("@/lib/bolsa/integridad", async () => await import("./integridad"));
 vi.mock("@/lib/bolsa/integridad.service", async () => await import("./integridad.service"));
 vi.mock("@/lib/bolsa/ajustes.service", async () => await import("./ajustes.service"));
+vi.mock("@/lib/custodia/beta", async () => await import("../custodia/beta"));
 
 import * as bolsa from "../../app/(dashboard)/bolsa/actions";
 import * as carteras from "../../app/(dashboard)/carteras/actions";

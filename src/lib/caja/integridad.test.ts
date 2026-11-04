@@ -198,13 +198,14 @@ describe("8–14: operación de cambio", () => {
   });
 
   it("13. reversa de cambio liquidado → caja y CC neutralizados; segunda reversa / re-liquidar DENY", async () => {
-    const { tx, db } = fakeTx({
-      ops: [op()],
-      cuentas: [{ id: "ccUSD", saldo: D(-100) }],
-      ccMovs: [{ id: "m1", cuentaCorrienteId: "ccUSD", tipo: "EGRESO", monto: D(100), operacionCambioId: "op", descripcion: "Compra | op:op" }],
-    });
+    // MACRO 6: CC y liquidación en caja son excluyentes → con CC vigente, liquidar se rechaza.
+    // Este caso reproduce el estado LEGACY (pre-Macro 6) "liquidada en caja + CC": la reversa
+    // sigue neutralizando ambas exactamente una vez.
+    const { tx, db } = fakeTx({ ops: [op()], cuentas: [{ id: "ccUSD", saldo: D(0) }] });
     await liquidar(tx, [{ cajaId: TR, div: 40 }]);
     await liquidar(tx, "TOTAL");
+    db.movimientoCC.rows.push({ id: "m1", cuentaCorrienteId: "ccUSD", tipo: "EGRESO", monto: D(100), operacionCambioId: "op", descripcion: "Compra | op:op" });
+    db.cuentaCorriente.rows[0].saldo = D(-100);
     await revertirCambioTx(tx, { opId: "op", revertidoPor: "t", fecha: new Date(), cajasAutorizadas: [OF, TR] });
     for (const c of [OF, TR]) for (const m of ["USD", "ARS"]) expect(saldoCaja(db.movimientoCaja.rows, c, m).toNumber()).toBe(0);
     expect((db.cuentaCorriente.rows[0].saldo as Decimal).toNumber()).toBe(0);

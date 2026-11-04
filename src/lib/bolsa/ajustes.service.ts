@@ -83,3 +83,24 @@ export async function ajustePosicionTx(tx: Tx, p: {
   await auditar(tx, { userId: p.userId, entidadId: p.posicionId, ticker: pos.Activo.ticker, antes, despues });
   return { antes, despues };
 }
+
+/**
+ * MACRO 6 — Baja total de una posición por AJUSTE (no es una venta): cash intacto,
+ * bajo el lock de la cartera, AuditLog AJUSTE_POSICION (antes → 0) en la MISMA tx
+ * (si la auditoría falla, la baja hace rollback).
+ */
+export async function ajusteBajaPosicionTx(tx: Tx, p: {
+  userId: string; confirmarAjuste: boolean; posicionId: string;
+}): Promise<{ antes: Tenencia; ticker: string }> {
+  if (!p.confirmarAjuste) throw new AjusteCarteraError(AVISO_AJUSTE);
+  const pos0 = await tx.posicionCartera.findUnique({ where: { id: p.posicionId }, select: { carteraId: true } });
+  if (!pos0) throw new AjusteCarteraError("Posición no encontrada");
+  await tx.$queryRaw`SELECT id FROM "Cartera" WHERE id = ${pos0.carteraId} FOR UPDATE`;
+  // Releída bajo lock: una operación concurrente pudo haberla modificado o borrado.
+  const pos = await tx.posicionCartera.findUnique({ where: { id: p.posicionId }, include: { Activo: { select: { ticker: true } } } });
+  if (!pos) throw new AjusteCarteraError("Posición no encontrada");
+  const antes = { cantidad: pos.cantidad.toString(), costo: pos.precioCompra.toString() };
+  await tx.posicionCartera.delete({ where: { id: p.posicionId } });
+  await auditar(tx, { userId: p.userId, entidadId: p.posicionId, ticker: pos.Activo.ticker, antes, despues: { cantidad: "0", costo: antes.costo } });
+  return { antes, ticker: pos.Activo.ticker };
+}

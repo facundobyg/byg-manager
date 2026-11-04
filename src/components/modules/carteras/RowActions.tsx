@@ -7,6 +7,7 @@ import { EditarPosicionForm }    from "./EditarPosicionForm";
 import { CambiarCategoriaForm }  from "./CambiarCategoriaForm";
 import { AsignarCustodiaForm }   from "./AsignarCustodiaForm";
 import { EliminarPosicionButton } from "./EliminarPosicionButton";
+import { custodiaMutacionesBloqueadas } from "@/lib/custodia/beta";
 
 type Panel = "editar" | "categoria" | "custodia" | "eliminar" | null;
 
@@ -58,13 +59,16 @@ export function RowActions({
       >
         <ArrowRightLeft size={12} />
       </button>
-      <button
-        title="Asignar a custodia"
-        onClick={() => toggle("custodia")}
-        className={btnCls}
-      >
-        <UserPlus size={12} />
-      </button>
+      {/* MACRO 6: custodia en solo lectura durante la Beta (el servidor también rechaza). */}
+      {!custodiaMutacionesBloqueadas() && (
+        <button
+          title="Asignar a custodia"
+          onClick={() => toggle("custodia")}
+          className={btnCls}
+        >
+          <UserPlus size={12} />
+        </button>
+      )}
       <button
         title="Eliminar posición"
         onClick={() => toggle("eliminar")}
@@ -92,7 +96,7 @@ export function RowActions({
         />
       )}
 
-      {panel === "custodia" && (
+      {panel === "custodia" && !custodiaMutacionesBloqueadas() && (
         <AsignarCustodiaForm
           posicionId={posicionId}
           carteraSlug={carteraSlug}

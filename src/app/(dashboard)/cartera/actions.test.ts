@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("@/lib/custodia/beta", async () => await import("../../../lib/custodia/beta"));
 vi.mock("@/lib/auth/permissions", () => ({
   requireActionPermission: mocks.requireActionPermission,
 }));
@@ -44,70 +45,23 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("transferirActivo — gate de autorización (SEC-17/18/19)", () => {
-  it("sin sesión → rechazo, ninguna escritura Prisma ocurre", async () => {
-    mocks.requireActionPermission.mockResolvedValue({ error: "Sin sesión activa" });
+// MACRO 6 — CUSTODIA FUERA DE LA BETA (decisión D): toda mutación se rechaza en el
+// servidor, para cualquier usuario (incluso ADMIN / con permiso), sin tocar la base.
+describe("transferirActivo — custodia bloqueada durante la Beta (MACRO 6)", () => {
+  const BLOQUEADA = { error: "Las transferencias de activos a Custodia están temporalmente deshabilitadas durante la Beta." };
 
+  it("usuario autorizado / ADMIN → DENY explícito, ninguna lectura ni escritura Prisma", async () => {
+    mocks.requireActionPermission.mockResolvedValue(null);
     const result = await transferirActivo(null, makeFormData());
-
-    expect(result).toEqual({ error: "Sin sesión activa" });
-    expect(mocks.prisma.posicionCartera.findUnique).not.toHaveBeenCalled();
+    expect(result).toEqual(BLOQUEADA);
     expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
+    expect(mocks.prisma.posicionCartera.findUnique).not.toHaveBeenCalled();
   });
 
-  it("usuario sin permiso 'bolsa:transferir_custodia' → rechazo, ninguna escritura Prisma ocurre", async () => {
+  it("sin permiso → igual DENY por bloqueo (no depende del gate de permisos)", async () => {
     mocks.requireActionPermission.mockResolvedValue({ error: "No tenés permisos para realizar esta acción." });
-
     const result = await transferirActivo(null, makeFormData());
-
-    expect(result).toEqual({ error: "No tenés permisos para realizar esta acción." });
-    expect(mocks.requireActionPermission).toHaveBeenCalledWith("bolsa:transferir_custodia");
-    expect(mocks.prisma.posicionCartera.findUnique).not.toHaveBeenCalled();
+    expect(result).toEqual(BLOQUEADA);
     expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
-  });
-
-  it("usuario autorizado → ejecuta la transferencia", async () => {
-    mocks.requireActionPermission.mockResolvedValue(null);
-    mocks.prisma.posicionCartera.findUnique.mockResolvedValue({
-      id: "pos-1",
-      cantidad: "10",
-      activoId: "act-1",
-      precioCompra: "100",
-    });
-    mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        posicionCartera: { delete: vi.fn(), update: vi.fn() },
-        custodiaCliente: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn(), update: vi.fn() },
-        auditLog: { create: vi.fn() },
-      }),
-    );
-
-    const result = await transferirActivo(null, makeFormData());
-
-    expect(result).toEqual({ success: true });
-    expect(mocks.prisma.posicionCartera.findUnique).toHaveBeenCalledTimes(1);
-    expect(mocks.prisma.$transaction).toHaveBeenCalledTimes(1);
-  });
-
-  it("ADMIN autorizado (permiso siempre concedido) → ejecuta la transferencia", async () => {
-    // requireActionPermission ya resuelve null para ADMIN (bypass interno de la matriz)
-    mocks.requireActionPermission.mockResolvedValue(null);
-    mocks.prisma.posicionCartera.findUnique.mockResolvedValue({
-      id: "pos-1",
-      cantidad: "10",
-      activoId: "act-1",
-      precioCompra: "100",
-    });
-    mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        posicionCartera: { delete: vi.fn(), update: vi.fn() },
-        custodiaCliente: { findUnique: vi.fn().mockResolvedValue(null), create: vi.fn(), update: vi.fn() },
-        auditLog: { create: vi.fn() },
-      }),
-    );
-
-    const result = await transferirActivo(null, makeFormData());
-
-    expect(result).toEqual({ success: true });
   });
 });

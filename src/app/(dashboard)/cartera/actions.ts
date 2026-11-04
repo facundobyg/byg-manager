@@ -6,8 +6,12 @@ import { revalidatePath } from "next/cache";
 import { readOnlyPreview } from "@/lib/config";
 import { calcularPrecioPromedio } from "@/lib/services/precioPromedio.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
+import { denegarMutacionCustodia } from "@/lib/custodia/beta";
 
 export async function transferirActivo(_prevState: unknown, formData: FormData) {
+  // MACRO 6: custodia fuera de la Beta — mutación rechazada en el servidor.
+  const bloqueada = denegarMutacionCustodia();
+  if (bloqueada) return { error: bloqueada.error };
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
   const denied = await requireActionPermission("bolsa:transferir_custodia");

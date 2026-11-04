@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("@/lib/custodia/beta", async () => await import("../../../lib/custodia/beta"));
 vi.mock("@/lib/auth/permissions", () => ({
   requireActionPermission: mocks.requireActionPermission,
 }));
@@ -34,83 +35,28 @@ function makeFormData(logId = "log-1"): FormData {
   return fd;
 }
 
-const logDeTransferencia = {
-  id: "log-1",
-  entidadId: "pos-1",
-  datosNuevos: {
-    clienteId: "cliente-1",
-    activoId: "act-1",
-    cantidad: "10",
-    precioCompra: "100",
-    descripcion: "Transferencia de cartera propia a custodia cliente",
-  },
-};
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("revertirTransferencia — gate de autorización (SEC-17/18/19)", () => {
-  it("sin sesión → rechazo, ninguna escritura Prisma ocurre", async () => {
-    mocks.requireActionPermission.mockResolvedValue({ error: "Sin sesión activa" });
+// MACRO 6 — CUSTODIA FUERA DE LA BETA (decisión D): toda mutación se rechaza en el
+// servidor, para cualquier usuario (incluso ADMIN / con permiso), sin tocar la base.
+describe("revertirTransferencia — custodia bloqueada durante la Beta (MACRO 6)", () => {
+  const BLOQUEADA = { error: "Las transferencias de activos a Custodia están temporalmente deshabilitadas durante la Beta." };
 
+  it("usuario autorizado / ADMIN → DENY explícito, ninguna lectura ni escritura Prisma", async () => {
+    mocks.requireActionPermission.mockResolvedValue(null);
     const result = await revertirTransferencia(null, makeFormData());
-
-    expect(result).toEqual({ error: "Sin sesión activa" });
-    expect(mocks.prisma.auditLog.findUnique).not.toHaveBeenCalled();
+    expect(result).toEqual(BLOQUEADA);
     expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
+    expect(mocks.prisma.auditLog.findUnique).not.toHaveBeenCalled();
   });
 
-  it("usuario sin permiso 'bolsa:transferir_custodia' → rechazo, ninguna escritura Prisma ocurre", async () => {
+  it("sin permiso → igual DENY por bloqueo (no depende del gate de permisos)", async () => {
     mocks.requireActionPermission.mockResolvedValue({ error: "No tenés permisos para realizar esta acción." });
-
     const result = await revertirTransferencia(null, makeFormData());
-
-    expect(result).toEqual({ error: "No tenés permisos para realizar esta acción." });
-    expect(mocks.requireActionPermission).toHaveBeenCalledWith("bolsa:transferir_custodia");
-    expect(mocks.prisma.auditLog.findUnique).not.toHaveBeenCalled();
+    expect(result).toEqual(BLOQUEADA);
     expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
-  });
-
-  it("usuario autorizado → ejecuta la reversión (acción de reversión protegida)", async () => {
-    mocks.requireActionPermission.mockResolvedValue(null);
-    mocks.prisma.auditLog.findUnique.mockResolvedValue(logDeTransferencia);
-    mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        posicionCartera: { update: vi.fn() },
-        custodiaCliente: {
-          findUnique: vi.fn().mockResolvedValue({ id: "cust-1", cantidadTotal: "10" }),
-          delete: vi.fn(),
-          update: vi.fn(),
-        },
-        auditLog: { create: vi.fn() },
-      }),
-    );
-
-    const result = await revertirTransferencia(null, makeFormData());
-
-    expect(result).toEqual({ success: true });
-    expect(mocks.prisma.auditLog.findUnique).toHaveBeenCalledTimes(1);
-    expect(mocks.prisma.$transaction).toHaveBeenCalledTimes(1);
-  });
-
-  it("ADMIN autorizado → ejecuta la reversión", async () => {
-    mocks.requireActionPermission.mockResolvedValue(null);
-    mocks.prisma.auditLog.findUnique.mockResolvedValue(logDeTransferencia);
-    mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        posicionCartera: { update: vi.fn() },
-        custodiaCliente: {
-          findUnique: vi.fn().mockResolvedValue(null),
-          delete: vi.fn(),
-          update: vi.fn(),
-        },
-        auditLog: { create: vi.fn() },
-      }),
-    );
-
-    const result = await revertirTransferencia(null, makeFormData());
-
-    expect(result).toEqual({ success: true });
   });
 });

@@ -16,14 +16,18 @@ export function EliminarPosicionButton({ posicionId, carteraSlug, ticker, onClos
   const [state, action, pending]  = useActionState(eliminarPosicion, null);
 
   return (
-    <Modal title="Eliminar posición" accentColor="text-rose-700" onClose={onClose}>
+    <Modal title="Baja de posición (ajuste)" accentColor="text-rose-700" onClose={onClose}>
       <div className="px-5 py-4 flex flex-col gap-4">
         {!confirmed ? (
           <>
             <p className="text-[12px] text-slate-600 leading-snug">
-              ¿Eliminar la posición de{" "}
+              ¿Dar de baja la posición de{" "}
               <span className="font-black text-slate-900 font-mono">{ticker}</span>?
               Esta acción no se puede deshacer.
+            </p>
+            <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5 leading-snug">
+              Es un <strong>AJUSTE / APERTURA</strong>: elimina la tenencia <strong>sin movimiento de cash</strong> y
+              <strong> no es una venta</strong> (no registra resultado). Para vender, usá Bolsa.
             </p>
             <div className="flex gap-2">
               <button type="button" onClick={onClose} className="flex-1 py-2 text-[10px] font-black uppercase rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors">
@@ -39,7 +43,10 @@ export function EliminarPosicionButton({ posicionId, carteraSlug, ticker, onClos
             <input type="hidden" name="posicionId"  value={posicionId} />
             <input type="hidden" name="carteraSlug" value={carteraSlug} />
 
-            <p className="text-[11px] text-slate-500">Confirmando eliminación de <span className="font-black text-slate-800 font-mono">{ticker}</span>…</p>
+            <label className="flex items-start gap-2 text-[11px] text-slate-700">
+              <input type="checkbox" name="confirmarAjuste" value="on" required className="mt-0.5" />
+              <span>Confirmo que la baja de <strong className="font-mono">{ticker}</strong> es un <strong>ajuste sin movimiento de cash</strong>, no una venta.</span>
+            </label>
 
             {state && "error" in state && (
               <p className="text-[10px] font-bold text-rose-600 bg-rose-50 px-2 py-1 rounded">{state.error}</p>

@@ -2,6 +2,7 @@
 
 import { useActionState } from "react";
 import { transferirActivo } from "@/app/(dashboard)/cartera/actions";
+import { custodiaMutacionesBloqueadas, MENSAJE_CUSTODIA_BLOQUEADA } from "@/lib/custodia/beta";
 
 type Cliente = { id: string; nombre: string };
 
@@ -14,6 +15,9 @@ const initialState = null as { error?: string; success?: boolean } | null;
 
 export function TransferirActivoForm({ posicionId, clientes }: Props) {
   const [state, action, pending] = useActionState(transferirActivo, initialState);
+
+  // MACRO 6: custodia en solo lectura durante la Beta (el servidor también rechaza).
+  if (custodiaMutacionesBloqueadas()) return <span title={MENSAJE_CUSTODIA_BLOQUEADA} className="text-[10px] font-semibold text-slate-400 whitespace-nowrap">Deshabilitado (Beta)</span>;
 
   if (state?.success) {
     return <span className="text-[10px] font-semibold text-green-600">Transferido</span>;

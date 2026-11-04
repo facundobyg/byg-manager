@@ -106,6 +106,19 @@ export async function movimientosCCDeCambio(tx: Tx, opId: string) {
   });
 }
 
+/**
+ * MACRO 6 — Cambio con impacto en CC y cambio liquidado en Caja son caminos
+ * MUTUAMENTE EXCLUYENTES: la CC ya registra el canje con el cliente; liquidarlo
+ * además en caja registraría el mismo canje dos veces. Fail-closed.
+ */
+export const MENSAJE_CAMBIO_CON_CC = "Esta operación impacta Cuenta Corriente y no puede liquidarse también en Caja (liquidación por Cuenta Corriente).";
+
+/** ¿La operación tiene patas CC vigentes (neto por cuenta ≠ 0, es decir, no neutralizadas)? */
+export async function tieneCCVigente(tx: Tx, opId: string): Promise<boolean> {
+  const netos = netoPorCuentaCC((await movimientosCCDeCambio(tx, opId)).map((m) => ({ ...m, tipo: m.tipo as string, monto: m.monto.toString() })));
+  return netos.some((n) => !n.neto.isZero());
+}
+
 /** Cajas que tocaría revertir un movimiento (para exigir scope antes de la transacción). */
 export async function cajasDeReversion(db: Tx, movimientoId: string): Promise<string[]> {
   const mov = await db.movimientoCaja.findUnique({ where: { id: movimientoId }, select: { cajaId: true, transferenciaRef: true } });
@@ -257,6 +270,8 @@ export async function liquidarCambioTx(tx: Tx, p: {
   if (!op) throw new IntegridadError("Operación no encontrada");
   if (esOpRevertida(op.descripcion)) throw new IntegridadError("Operación revertida: no se puede volver a liquidar");
   if (!op.tipo.startsWith("COMPRA") && !op.tipo.startsWith("VENTA")) throw new IntegridadError("La operación no es de compra/venta de divisa");
+  // MACRO 6: con patas CC vigentes, la operación se liquida por Cuenta Corriente, nunca también en Caja.
+  if (await tieneCCVigente(tx, op.id)) throw new IntegridadError(MENSAJE_CAMBIO_CON_CC);
 
   const opMin = { tipo: op.tipo, moneda: op.moneda, cantidad: op.cantidad.toString(), tipoCambio: op.tipoCambio.toString() };
   const yaLiquidado = divisaLiquidada(opMin, (await movimientosDeCambio(tx, op.id)).map((m) => ({ ...m, monto: m.monto.toString() })));
@@ -410,9 +425,12 @@ export async function revertirCambioTx(tx: Tx, p: { opId: string; revertidoPor: 
   const op = await tx.operacionCambio.findUnique({ where: { id: p.opId } });
   if (!op) throw new IntegridadError("Operación no encontrada");
   if (esOpRevertida(op.descripcion)) throw new IntegridadError("Esta operación ya fue revertida");
-  if (op.pendiente) throw new IntegridadError("La operación ya es NO_LIQUIDADA, no necesita reversión");
-
   const movs = await movimientosDeCambio(tx, op.id);
+  // MACRO 6: una operación con CC queda "pendiente" en caja (se liquida por CC): su reversa
+  // neutraliza las patas CC (una vez) y la deja REVERTIDA. Sin CC vigente ni caja, nada que revertir.
+  if (op.pendiente && (movs.length > 0 || !(await tieneCCVigente(tx, op.id)))) {
+    throw new IntegridadError("La operación ya es NO_LIQUIDADA, no necesita reversión");
+  }
   const netos = netoPorCajaMoneda(movs.map((m) => ({ ...m, tipo: m.tipo as string, moneda: m.moneda as string, monto: m.monto.toString() })));
   for (const n of netos) {
     if (!p.cajasAutorizadas.includes(n.cajaId)) throw new IntegridadError("La operación cambió durante la reversión");

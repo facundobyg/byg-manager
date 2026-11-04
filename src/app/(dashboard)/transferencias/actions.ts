@@ -6,6 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { readOnlyPreview } from "@/lib/config";
 import { requireActionPermission } from "@/lib/auth/permissions";
+import { denegarMutacionCustodia } from "@/lib/custodia/beta";
 
 type DatosTransferencia = {
   clienteId: string;
@@ -16,6 +17,9 @@ type DatosTransferencia = {
 };
 
 export async function revertirTransferencia(_prevState: unknown, formData: FormData) {
+  // MACRO 6: custodia fuera de la Beta — mutación rechazada en el servidor.
+  const bloqueada = denegarMutacionCustodia();
+  if (bloqueada) return { error: bloqueada.error };
   if (readOnlyPreview) return { error: "Modo lectura activo" };
 
   const denied = await requireActionPermission("bolsa:transferir_custodia");
