@@ -218,8 +218,9 @@ describe("8–14: operación de cambio", () => {
     await liquidar(tx, [{ cajaId: OF, div: 10 }]);
     await expect(cancelarCambioTx(tx, { opId: "op", fecha: new Date() })).rejects.toThrow(/Solo se pueden cancelar operaciones pendientes/);
     // revertida (vuelve a pendiente pero con historia de caja) → tampoco se elimina
+    // (PRE-CUTOVER: una revertida es terminal y se rechaza antes de mirar las patas).
     await revertirCambioTx(tx, { opId: "op", revertidoPor: "t", fecha: new Date(), cajasAutorizadas: [OF] });
-    await expect(cancelarCambioTx(tx, { opId: "op", fecha: new Date() })).rejects.toThrow(/movimientos de caja/);
+    await expect(cancelarCambioTx(tx, { opId: "op", fecha: new Date() })).rejects.toThrow(/ya fue revertida/);
   });
 
   it("reglas puras: liquidado neto de reversas; neto por caja/CC", () => {

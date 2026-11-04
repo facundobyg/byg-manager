@@ -21,7 +21,7 @@ import type { FxOperacion } from "./fx-cost-basis";
 import { resolverOwnerCuentaOperativa, type OwnerEconomico } from "./owner";
 import type { QualityReason } from "./quality";
 import { D, type Moneda } from "./types";
-import { esReversaValida } from "../caja/integridad";
+import { esOpRevertida, esReversaValida } from "../caja/integridad";
 
 export type Categoria =
   | "FX_COMPRA" | "FX_VENTA"
@@ -223,7 +223,8 @@ export function construirLedger(ds: FinanceDataset): Ledger {
 
   // ── 1. Operaciones de cambio (antes que caja: su clave gana el dedupe de honorarios) ──
   for (const op of ds.opsCambio) {
-    const revertida = op.pendiente && (op.descripcion ?? "").includes("[REVERTIDA POR:");
+    // SSOT (formato moderno "[REVERTIDA POR:" y legacy "[REVERTIDA]").
+    const revertida = op.pendiente && esOpRevertida(op.descripcion);
     const estado: EstadoHecho = op.pendiente ? (revertida ? "REVERTIDO" : "PENDIENTE") : "CONFIRMADO";
     const base = {
       origen: "CAMBIO" as const, origenId: op.id, fecha: op.fecha, fechaLiquidacion: null,

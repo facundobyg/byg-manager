@@ -409,6 +409,8 @@ export async function cancelarCambioTx(tx: Tx, p: { opId: string; fecha: Date })
   const op = await tx.operacionCambio.findUnique({ where: { id: p.opId } });
   if (!op) throw new IntegridadError("Operación no encontrada");
   if (!op.pendiente) throw new IntegridadError("Solo se pueden cancelar operaciones pendientes");
+  // Una operación revertida (moderna o legacy) es historia terminal: no se elimina.
+  if (esOpRevertida(op.descripcion)) throw new IntegridadError("Esta operación ya fue revertida: no se puede cancelar");
   if ((await movimientosDeCambio(tx, op.id)).length > 0) {
     throw new IntegridadError("No se puede eliminar una operación con movimientos de caja. Revertir desde historial.");
   }

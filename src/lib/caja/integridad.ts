@@ -291,10 +291,19 @@ export function patasLiquidacion(op: OpCambioMin, div: Decimal, ars: Decimal): {
       ];
 }
 
-export const esOpRevertida = (desc: string | null | undefined) => (desc ?? "").includes("[REVERTIDA POR:");
+/**
+ * SSOT — ¿la OperacionCambio está REVERTIDA? La marca la pone el sistema SIEMPRE al
+ * comienzo de la descripción, en uno de dos formatos:
+ *   - moderno: "[REVERTIDA POR: <usuario>] …" (revertirCambioTx);
+ *   - legacy (código anterior, datos históricos): "[REVERTIDA] …".
+ * Estructural: solo cuenta al inicio (tolera espacios previos). "TEST [REVERTIDA]",
+ * "REVERTIDA MANUALMENTE" u "OPERACION NO REVERTIDA" NO son reversas.
+ */
+const RE_OP_REVERTIDA = /^\s*\[REVERTIDA(?:\]| POR:)/;
+export const esOpRevertida = (desc: string | null | undefined) => RE_OP_REVERTIDA.test(desc ?? "");
 
 /** Marcas de estado del sistema al inicio de la descripción de una OperacionCambio. */
-const RE_TAG_OP = /^\s*(\[REVERTIDA POR:[^\]]*\]|\[PARCIAL\]|\[CC\])\s*/;
+const RE_TAG_OP = /^\s*(\[REVERTIDA POR:[^\]]*\]|\[REVERTIDA\]|\[PARCIAL\]|\[CC\])\s*/;
 
 /**
  * Nueva descripción de una operación de cambio preservando sus marcas de estado
