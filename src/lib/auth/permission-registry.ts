@@ -123,7 +123,14 @@ export const ACTION_KEYS: readonly PermissionKey[] = PERMISSIONS
   .filter((p) => p.kind === "accion")
   .map((p) => p.key);
 
-export const ROLES_2FA_OBLIGATORIO: ReadonlySet<string> = new Set(["ADMIN", "SOCIO", "EMPLEADO"]);
+/**
+ * Roles con 2FA OBLIGATORIO (sin 2FA activo: no operan ni navegan fuera de
+ * /configuracion/2fa y /configuracion/mi-cuenta). Decisión de negocio PRE-CUTOVER
+ * (2026-11-04): solo ADMIN. Para SOCIO / EMPLEADO el 2FA es VOLUNTARIO: pueden
+ * activarlo desde /configuracion/2fa y, si lo activan, el login lo exige igual.
+ * SSOT: lo usan el middleware (auth.config.ts) y los guards (permissions.ts).
+ */
+export const ROLES_2FA_OBLIGATORIO: ReadonlySet<string> = new Set(["ADMIN"]);
 
 /**
  * Resolución pura. Orden:

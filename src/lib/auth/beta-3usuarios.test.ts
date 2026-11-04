@@ -210,3 +210,42 @@ describe("MACRO 6 — Custodia fuera de la Beta: DENY para los 3 (incluido Facu)
     expect(escrituras()).toBe(false);
   });
 });
+
+// ── PRE-CUTOVER: 2FA VOLUNTARIO para SOCIO (Francisco, Augusto) ─────────────────
+// Con twoFactorEnabled=false sus permisos son EXACTAMENTE los mismos (7 y 8); ADMIN
+// sigue con 2FA obligatorio (9).
+describe("2FA voluntario — Francisco y Augusto con 2FA OFF: matriz idéntica", () => {
+  beforeEach(() => {
+    users[FRANCISCO].twoFactorEnabled = false;
+    users[AUGUSTO].twoFactorEnabled = false;
+  });
+
+  it.each(MATRIZ)("7/8. %s · %s → Francisco %s / Augusto %s (sin 2FA)", async (_mod, clave, _facu, fran, aug) => {
+    for (const [who, esperado] of [[FRANCISCO, fran], [AUGUSTO, aug]] as const) {
+      loginAs(who);
+      expect((await requireActionPermission(clave)) === null, `${users[who].name} ${clave}`).toBe(esperado);
+    }
+  });
+
+  it("scope de caja sin 2FA: Augusto Trenque sí / Oficina no; Francisco ninguna", async () => {
+    loginAs(AUGUSTO);
+    expect(await requireCajaPermission(["caja-trenque"])).toBeNull();
+    expect(await requireCajaPermission(["caja-oficina"])).toEqual({ error: DENIED });
+    loginAs(FRANCISCO);
+    expect(await requireCajaPermission(["caja-trenque"])).toEqual({ error: DENIED });
+  });
+
+  it("Server Action directa prohibida sigue DENY sin 2FA (0 escrituras)", async () => {
+    loginAs(FRANCISCO);
+    expect(await crearMovimientoCaja(null, fd({ cajaId: "caja-trenque", tipo: "ENTRADA", monto: "100", moneda: "USD" }))).toEqual({ error: DENIED });
+    loginAs(AUGUSTO);
+    expect(await concertarOperacion(null, fd({ id: "op-1" }))).toEqual({ error: DENIED });
+    expect(escrituras()).toBe(false);
+  });
+
+  it("9. Facu (ADMIN) con 2FA OFF → sigue obligado: acción crítica rechazada", async () => {
+    users[FACU].twoFactorEnabled = false;
+    loginAs(FACU);
+    expect(await requireActionPermission("configuracion:editar")).toEqual({ error: expect.stringMatching(/2FA/) });
+  });
+});

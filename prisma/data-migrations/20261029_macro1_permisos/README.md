@@ -68,7 +68,7 @@ vercel.com/sso-api**. Solo `byg-manager.vercel.app` es público. Estado: **PROTE
 ## RUNBOOK DE PRODUCCIÓN R4 (no ejecutado)
 
 ### 0. Prerequisitos
-1. Francisco activa 2FA en producción.
+1. ~~Francisco activa 2FA en producción.~~ **Reemplazado (2026-11-04):** el 2FA es obligatorio solo para ADMIN; para SOCIO / EMPLEADO (Francisco, Augusto) es voluntario y su estado ON/OFF no bloquea el cutover ni la Beta. El bloque 7 del precheck es informativo: solo un ADMIN sin 2FA queda sin poder operar.
 2. Repetir el chequeo de Deployment Protection.
 3. Neon: branch/snapshot de producción como respaldo.
 4. `01_precheck.sql` en producción. **PRECHECK TRANSITION MONOTONICITY = PASS (bloque 8)

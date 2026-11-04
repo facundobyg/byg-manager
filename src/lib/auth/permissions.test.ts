@@ -149,12 +149,21 @@ describe("A/B/C/G — sesión, permiso, ADMIN", () => {
   });
 });
 
+// PRE-CUTOVER (2026-11-04): 2FA OBLIGATORIO solo para ADMIN; para SOCIO / EMPLEADO es
+// VOLUNTARIO (twoFactorEnabled=false no bloquea; los permisos siguen idénticos).
 describe("D/E — 2FA en backend", () => {
-  it("D. SOCIO con 2FA desactivado → rechazo aunque tenga el permiso", async () => {
+  it("D. SOCIO con 2FA desactivado → opera con sus permisos normales (2FA voluntario)", async () => {
     users[FRANCISCO.id].twoFactorEnabled = false;
     loginAs(FRANCISCO);
-    expect(await requireActionPermission("bolsa:crear")).toEqual({ error: expect.stringMatching(/2FA/) });
-    expect(mocks.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({ accion: "ACCESO_DENEGADO" }));
+    expect(await requireActionPermission("bolsa:crear")).toBeNull();
+    expect(mocks.writeAuditLog).not.toHaveBeenCalledWith(expect.objectContaining({ metadata: { reason: "TWO_FACTOR_REQUIRED" } }));
+  });
+
+  it("D. SOCIO con 2FA desactivado → lo prohibido por política sigue prohibido (sin cambios de permisos)", async () => {
+    users[FRANCISCO.id].twoFactorEnabled = false;
+    overrides[FRANCISCO.id] = { "bolsa:crear": false };
+    loginAs(FRANCISCO);
+    expect(await requireActionPermission("bolsa:crear")).toEqual({ error: expect.stringMatching(/permisos/) });
   });
 
   it("D. ADMIN con 2FA desactivado → también rechazado", async () => {
@@ -163,16 +172,22 @@ describe("D/E — 2FA en backend", () => {
     expect(await requireActionPermission("bolsa:crear")).toEqual({ error: expect.stringMatching(/2FA/) });
   });
 
-  it("D. canDoAction refleja el mismo bloqueo (UI no ofrece la acción)", async () => {
+  it("D. canDoAction: ADMIN sin 2FA → bloqueado; SOCIO sin 2FA → según sus permisos", async () => {
+    users[FACUNDO.id].twoFactorEnabled = false;
+    loginAs(FACUNDO);
+    expect(await canDoAction("bolsa:crear")).toBe(false);
     users[FRANCISCO.id].twoFactorEnabled = false;
     loginAs(FRANCISCO);
-    expect(await canDoAction("bolsa:crear")).toBe(false);
+    expect(await canDoAction("bolsa:crear")).toBe(true);
   });
 
-  it("D. lecturas (mode read) también exigen 2FA", async () => {
+  it("D. lecturas (mode read): ADMIN sin 2FA → rechazo; SOCIO sin 2FA → permitido", async () => {
+    users[FACUNDO.id].twoFactorEnabled = false;
+    loginAs(FACUNDO);
+    expect(await requireActionPermission("holdings:editar", { mode: "read" })).not.toBeNull();
     users[FRANCISCO.id].twoFactorEnabled = false;
     loginAs(FRANCISCO);
-    expect(await requireActionPermission("holdings:editar", { mode: "read" })).not.toBeNull();
+    expect(await requireActionPermission("holdings:editar", { mode: "read" })).toBeNull();
   });
   // E (acciones de configurar 2FA permitidas sin 2FA) se cubre en
   // server-actions-guard.test.ts: 2fa/actions.ts está en la allowlist explícita
@@ -288,10 +303,13 @@ describe("R3 — auditoría, 2FA en lecturas, cookie inerte, puente legacy", () 
     expect(mocks.writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({ userId: "u-borrado", metadata: { reason: "USER_NOT_FOUND" } }));
   });
 
-  it("R2-03: hasPermission (páginas) exige 2FA del usuario real", async () => {
+  it("R2-03: hasPermission (páginas) exige 2FA del ADMIN real; SOCIO sin 2FA accede a lo permitido", async () => {
+    users[FACUNDO.id].twoFactorEnabled = false;
+    loginAs(FACUNDO);
+    expect(await hasPermission("posicion:leer")).toBe(false);
     users[FRANCISCO.id].twoFactorEnabled = false;
     loginAs(FRANCISCO);
-    expect(await hasPermission("posicion:leer")).toBe(false);
+    expect(await hasPermission("posicion:leer")).toBe(true);
   });
 
   it("R2-07: cookie de 'ver como' en un no-ADMIN es inerte (cuenta propia permitida)", async () => {
@@ -329,7 +347,7 @@ describe("S06 — clave desconocida = DENY incluso ADMIN en TODOS los caminos", 
 describe("S10 — rechazos auditados con reason code y actor real", () => {
   it.each([
     ["permiso",   () => { overrides[FRANCISCO.id] = { "bolsa:crear": false }; }, FRANCISCO, "PERMISSION_DENIED"],
-    ["2FA",       () => { users[FRANCISCO.id].twoFactorEnabled = false; },       FRANCISCO, "TWO_FACTOR_REQUIRED"],
+    ["2FA",       () => { users[FACUNDO.id].twoFactorEnabled = false; },         FACUNDO,   "TWO_FACTOR_REQUIRED"],
     ["inactivo",  () => { users[FRANCISCO.id].activo = false; },                 FRANCISCO, "USER_INACTIVE"],
     ["preview",   () => { mocks.cookieValue = FRANCISCO.id; },                   FACUNDO,   "PREVIEW_READ_ONLY"],
     ["readOnly",  () => { mocks.readOnly = true; },                              FACUNDO,   "GLOBAL_READ_ONLY"],
@@ -343,8 +361,8 @@ describe("S10 — rechazos auditados con reason code y actor real", () => {
   });
 
   it("el audit no incluye secretos", async () => {
-    users[FRANCISCO.id].twoFactorEnabled = false;
-    loginAs(FRANCISCO);
+    users[FACUNDO.id].twoFactorEnabled = false;
+    loginAs(FACUNDO);
     await requireActionPermission("bolsa:crear");
     const payload = JSON.stringify(mocks.writeAuditLog.mock.calls);
     expect(payload).not.toMatch(/password|secret|totp|token|ownerClientId/i);
@@ -358,10 +376,16 @@ describe("S05 — guard de cuenta propia", () => {
     expect(await requireOwnAccountGuard({ allowWithout2FA: true })).toEqual({ userId: FRANCISCO.id });
   });
 
-  it("sin 2FA y allowWithout2FA=false → DENY", async () => {
+  it("ADMIN sin 2FA y allowWithout2FA=false → DENY", async () => {
+    users[FACUNDO.id].twoFactorEnabled = false;
+    loginAs(FACUNDO);
+    expect(await requireOwnAccountGuard({ allowWithout2FA: false })).toEqual({ error: expect.stringMatching(/2FA/) });
+  });
+
+  it("SOCIO sin 2FA y allowWithout2FA=false → permitido (2FA voluntario)", async () => {
     users[FRANCISCO.id].twoFactorEnabled = false;
     loginAs(FRANCISCO);
-    expect(await requireOwnAccountGuard({ allowWithout2FA: false })).toEqual({ error: expect.stringMatching(/2FA/) });
+    expect(await requireOwnAccountGuard({ allowWithout2FA: false })).toEqual({ userId: FRANCISCO.id });
   });
 
   it("usuario inactivo → DENY", async () => {

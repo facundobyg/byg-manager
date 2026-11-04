@@ -1,8 +1,9 @@
 import type { NextAuthConfig } from 'next-auth';
+import { ROLES_2FA_OBLIGATORIO } from './lib/auth/permission-registry';
 
-// 2FA obligatorio para estos roles — si no está activado, solo pueden
-// navegar a las rutas de abajo (activar 2FA, su cuenta, o logout).
-const ROLES_2FA_OBLIGATORIO = new Set(['ADMIN', 'SOCIO', 'EMPLEADO']);
+// 2FA obligatorio SOLO para los roles de ROLES_2FA_OBLIGATORIO (hoy: ADMIN) — si
+// no está activado, solo pueden navegar a las rutas de abajo (activar 2FA, su
+// cuenta, o logout). Para SOCIO / EMPLEADO el 2FA es voluntario: sin redirect.
 const RUTAS_2FA_PERMITIDAS = ['/configuracion/2fa', '/configuracion/mi-cuenta'];
 
 export const authConfig = {
