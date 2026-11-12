@@ -1,11 +1,15 @@
-// MACRO 2 — Resolución de tipo de cambio por FECHA (hecho) o CORTE (patrimonio).
+// MACRO 2 / P1-03A — Resolución de tipo de cambio por FECHA (hecho) o CORTE (patrimonio).
 //
-// Fuentes (semántica reconstruida del código):
-//   - TipoCambio(ARS→USD): escrito por setTCBlue el día que se fija el TC Blue;
-//     `valor` = ARS por 1 USD.
-//   - Config.tc_blue: valor vigente del TC Blue. Se usa SOLO como un punto más
-//     de la serie, fechado en su `updatedAt` (el día en que se fijó). Nunca se
-//     aplica a fechas anteriores a ese día.
+// REGLA DE NEGOCIO (Facundo, 2026-11-11): el último TC cargado permanece VIGENTE
+// hasta que un usuario autorizado lo cambie. NO vence por antigüedad. Cambiar el
+// TC actual NUNCA reescribe períodos anteriores: solo agrega una vigencia desde hoy.
+//
+// Fuentes:
+//   - TipoCambio(ARS→USD): SSOT HISTÓRICO. Cada fila = "desde esta fecha rige este
+//     TC". `valor` = ARS por 1 USD. Lo escribe setTCBlue (fecha efectiva = hoy).
+//   - Config.tc_blue: valor vigente para UI/configuración. NO es fuente histórica:
+//     su `updatedAt` no prueba vigencia (legacy: el import de backup y setTCBlue
+//     previo lo dejaban desalineado). El motor NO lo lee.
 //   - TipoCambio(EUR→USD) / (BRL→USD): filas legacy (sin writer en el código
 //     actual). Convención INFERIDA de los valores y validada por rango:
 //     EUR: `valor` = USD por 1 EUR (≈1.08); BRL: `valor` = BRL por 1 USD (≈5.2).
@@ -14,12 +18,14 @@
 //     del sistema es al Blue); lo usan comisiones/honorarios.
 //   - Config.tc_mep / tc_eur / tc_brl: legacy, NO se usan.
 //
-// Regla de resolución para una fecha F (ventana SIMÉTRICA de ±31 días):
-//   1. TC del mismo día → EXACTO;
-//   2. último TC anterior con desfase ≤ 31 días → ANTERIOR (APPROXIMATE);
-//   3. si no, primer TC posterior con desfase ≤ 31 días → POSTERIOR (APPROXIMATE);
-//   4. si no: SIN TC (INCOMPLETE) → el consolidado USD queda null y se informa.
-// Un TC de 32+ días (p. ej. 96 o 175) NUNCA se usa como consolidado.
+// Regla de resolución para una fecha D (sin ventana de días):
+//   A. existe TC con fecha ≤ D → el más reciente: VIGENTE (EXACTO si es del mismo
+//      día). Calidad EXACT sin importar su antigüedad.
+//   B. no existe ninguno ≤ D pero sí posterior → BOOTSTRAP: el PRIMER TC posterior,
+//      calidad APPROXIMATE. Solo cubre el tramo anterior al inicio del historial;
+//      no significa que ese TC rigiera antes. Con al menos un TC ≤ D nunca se mira
+//      hacia adelante.
+//   C. no hay ninguno → SIN TC (INCOMPLETE): el consolidado USD queda null y se informa.
 
 import { Decimal } from "@prisma/client/runtime/library";
 import type { QualityReason } from "./quality";
@@ -33,7 +39,15 @@ export interface TcPunto {
   fuente: string;
 }
 
-export type TcModo = "EXACTO" | "ANTERIOR" | "POSTERIOR";
+/**
+ * EXACTO   = TC del mismo día.
+ * VIGENTE  = último TC anterior, todavía vigente (no vence): calidad EXACT.
+ * POSTERIOR = bootstrap previo al primer TC del historial: calidad APPROXIMATE.
+ */
+export type TcModo = "EXACTO" | "VIGENTE" | "POSTERIOR";
+
+/** Modos que NO degradan la calidad. */
+export const MODOS_TC_EXACTOS: readonly TcModo[] = ["EXACTO", "VIGENTE"];
 
 export interface TcResuelto {
   moneda: Moneda;
@@ -44,9 +58,6 @@ export interface TcResuelto {
   modo: TcModo;
   desfaseDias: number;
 }
-
-/** Desfase máximo (en días, hacia atrás o adelante) para usar un TC de otra fecha. */
-export const DIAS_VENTANA_TC = 31;
 
 function dias(a: string, b: string): number {
   return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
@@ -75,15 +86,17 @@ export class TcResolver {
       if (p.fecha <= fecha) anterior = p;
       else break;
     }
-    if (anterior && dias(anterior.fecha, fecha) <= DIAS_VENTANA_TC) {
+    // A. Vigencia: el último TC ≤ D rige hasta el próximo cambio (sin vencimiento).
+    if (anterior) {
       const desfase = dias(anterior.fecha, fecha);
       return {
         moneda, fecha, fechaTc: anterior.fecha, usdPorUnidad: anterior.usdPorUnidad, fuente: anterior.fuente,
-        modo: desfase === 0 ? "EXACTO" : "ANTERIOR", desfaseDias: desfase,
+        modo: desfase === 0 ? "EXACTO" : "VIGENTE", desfaseDias: desfase,
       };
     }
-    const posterior = arr.find((p) => p.fecha > fecha);
-    if (posterior && dias(fecha, posterior.fecha) <= DIAS_VENTANA_TC) {
+    // B. Bootstrap: D es anterior al primer TC del historial → primer posterior, aproximado.
+    const posterior = arr[0];
+    if (posterior) {
       return {
         moneda, fecha, fechaTc: posterior.fecha, usdPorUnidad: posterior.usdPorUnidad, fuente: posterior.fuente,
         modo: "POSTERIOR", desfaseDias: -dias(fecha, posterior.fecha),
@@ -116,13 +129,13 @@ export const CONVENCIONES_TC: readonly Convencion[] = [
   { moneda: "BRL", origen: "BRL", destino: "USD", usdPorUnidad: (v) => new Decimal(1).div(v), rango: [1.5, 20], descripcion: "valor = BRL por 1 USD (inferido, legacy)" },
 ];
 
-export function construirResolver(input: {
-  tipoCambio: readonly TipoCambioRow[];
-  tcBlueConfig?: { valor: string; updatedAt: Date | string } | null;
-}): TcResolver {
+/**
+ * Serie histórica SOLO desde TipoCambio (SSOT). Config.tc_blue NO participa:
+ * su updatedAt no es una fecha de vigencia confiable (P1-03A).
+ */
+export function construirResolver(input: { tipoCambio: readonly TipoCambioRow[] }): TcResolver {
   const puntos: TcPunto[] = [];
   const advertencias: string[] = [];
-  const fechasARS = new Set<string>();
 
   for (const r of input.tipoCambio) {
     const conv = CONVENCIONES_TC.find((c) => c.origen === r.monedaOrigen && c.destino === r.monedaDestino);
@@ -134,16 +147,6 @@ export function construirResolver(input: {
       continue;
     }
     puntos.push({ moneda: conv.moneda, fecha, usdPorUnidad: conv.usdPorUnidad(valor), fuente: `TipoCambio ${conv.origen}>${conv.destino}` });
-    if (conv.moneda === "ARS") fechasARS.add(fecha);
-  }
-
-  if (input.tcBlueConfig) {
-    const valor = D(input.tcBlueConfig.valor);
-    const ud = input.tcBlueConfig.updatedAt;
-    const fecha = typeof ud === "string" ? ud.slice(0, 10) : ud.toISOString().slice(0, 10);
-    if (valor.gt(50) && !fechasARS.has(fecha)) {
-      puntos.push({ moneda: "ARS", fecha, usdPorUnidad: new Decimal(1).div(valor), fuente: "Config.tc_blue (vigente desde su updatedAt)" });
-    }
   }
 
   return new TcResolver(puntos, advertencias);
@@ -171,7 +174,7 @@ export class TcBitacora {
     const usados = Array.from(this.usados.values());
     return {
       faltantes: Array.from(this.faltantes).sort(),
-      aproximados: usados.filter((t) => t.modo !== "EXACTO").map((t) => ({
+      aproximados: usados.filter((t) => !MODOS_TC_EXACTOS.includes(t.modo)).map((t) => ({
         moneda: t.moneda, fecha: t.fecha, fechaTc: t.fechaTc, modo: t.modo, desfaseDias: t.desfaseDias, fuente: t.fuente,
         usdPorUnidad: t.usdPorUnidad.toNumber(),
       })),
@@ -180,17 +183,21 @@ export class TcBitacora {
     };
   }
 
-  /** Motivos de calidad: TC aproximado (APPROXIMATE) o faltante (INCOMPLETE). */
+  /**
+   * Motivos de calidad: TC faltante (INCOMPLETE) o bootstrap previo al primer TC
+   * del historial (APPROXIMATE). Un TC VIGENTE (anterior, sin importar su
+   * antigüedad) NO degrada la calidad.
+   */
   motivos(): QualityReason[] {
     const out: QualityReason[] = [];
     for (const f of Array.from(this.faltantes).sort()) {
-      out.push({ code: "TC_MISSING", severity: "INCOMPLETE", detail: `sin TC dentro de ±${DIAS_VENTANA_TC} días para ${f}` });
+      out.push({ code: "TC_MISSING", severity: "INCOMPLETE", detail: `sin TC registrado (ni vigente ni posterior) para ${f}` });
     }
     for (const t of Array.from(this.usados.values())) {
-      if (t.modo === "EXACTO") continue;
+      if (MODOS_TC_EXACTOS.includes(t.modo)) continue;
       out.push({
         code: "TC_APPROXIMATE", severity: "APPROXIMATE",
-        detail: `${t.moneda} pedido ${t.fecha}, usado ${t.fechaTc} (${t.desfaseDias > 0 ? "+" : ""}${t.desfaseDias} días, ${t.fuente})`,
+        detail: `${t.moneda} pedido ${t.fecha}, anterior al primer TC del historial: usado ${t.fechaTc} (${t.desfaseDias} días, bootstrap, ${t.fuente})`,
       });
     }
     return out;

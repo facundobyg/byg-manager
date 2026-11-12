@@ -28,7 +28,7 @@ export async function importarEtapa1Legacy(payload: {
   const errors:   string[] = [];
   const log:      string[] = [];
 
-  // ── A. Config (tc_blue + mes) ──────────────────────────────────────────────
+  // ── A. Config (mes; tc_blue se IGNORA desde P1-03A.1) ──────────────────────
   try {
     const cfg     = payload.config;
     const cfgObj  = (typeof cfg === "object" && cfg !== null && !Array.isArray(cfg))
@@ -46,17 +46,15 @@ export async function importarEtapa1Legacy(payload: {
       return item ? (item.valor ?? item.value) : undefined;
     };
 
-    // TC Blue
+    // TC Blue — P1-03A.1: este import legacy NO modifica el TC (fail-closed, 0 writes).
+    // El TC del backup es un valor histórico de fecha desconocida: no puede fecharse como
+    // vigencia ni auditarse con semántica correcta. El ÚNICO write path del TC es
+    // Configuración → updateTCBlue → actualizarTcBlueTx (TipoCambio con fecha ART + AuditLog).
     const tcRaw = pickVal(["tc", "tc_blue", "tipo_cambio", "tipoCambio"]);
     const tcVal = tcRaw !== undefined ? parseFloat(String(tcRaw)) : NaN;
     if (!isNaN(tcVal) && tcVal > 0) {
-      await prisma.config.upsert({
-        where:  { clave: "tc_blue" },
-        update: { valor: tcVal.toFixed(4), updatedAt: new Date() },
-        create: { id: crypto.randomUUID(), clave: "tc_blue", valor: tcVal.toFixed(4), updatedAt: new Date() },
-      });
-      imported.config++;
-      log.push(`✓ TC Blue: ${tcVal.toFixed(4)} → Config (clave: tc_blue)`);
+      skipped.config++;
+      log.push(`⚠ TC Blue del backup (${tcVal.toFixed(4)}): IGNORADO. El tipo de cambio solo se modifica desde Configuración (queda fechado y auditado).`);
     } else {
       skipped.config++;
       log.push(`— TC Blue: omitido (valor no detectado o inválido)`);

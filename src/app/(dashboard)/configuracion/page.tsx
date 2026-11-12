@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { requirePermission } from "@/lib/auth/permissions";
-import { getTCBlue, getMesActivo, getSocios, getTCHistorial, getProductoresConfig, getAlycConfig, getLastTcMep } from "@/lib/services/config.service";
+import { getTcVigenteInfo, getMesActivo, getSocios, getTCHistorial, getProductoresConfig, getAlycConfig, getLastTcMep } from "@/lib/services/config.service";
 import { TcBlueForm } from "@/components/modules/configuracion/TcBlueForm";
 import { MesActivoForm } from "@/components/modules/configuracion/MesActivoForm";
 import { SociosForm } from "@/components/modules/configuracion/SociosForm";
@@ -10,6 +10,7 @@ import { ProductoresForm } from "@/components/modules/configuracion/ProductoresF
 import { AlycForm } from "@/components/modules/configuracion/AlycForm";
 import { Decimal } from "@prisma/client/runtime/library";
 import { prisma } from "@/lib/prisma";
+import { ZONA_NEGOCIO } from "@/lib/fecha-negocio";
 
 import { EditCajaForm } from "@/components/modules/configuracion/EditCajaForm";
 import { CreateCajaForm } from "@/components/modules/configuracion/CreateCajaForm";
@@ -21,6 +22,16 @@ function fmt(n: string | null) {
   return Number(new Decimal(n)).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
+function fmtFecha(iso: string | null) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function fmtFechaHora(iso: string) {
+  return new Date(iso).toLocaleString("es-AR", { timeZone: ZONA_NEGOCIO, day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 function fmtMes(mes: string) {
   const [y, m] = mes.split("-");
   const nombre = new Date(Number(y), Number(m) - 1, 1).toLocaleDateString("es-AR", { month: "long", year: "numeric" });
@@ -29,8 +40,8 @@ function fmtMes(mes: string) {
 
 export default async function ConfiguracionPage() {
   await requirePermission("configuracion:leer");
-  const [tcBlueConfig, mesActivo, socios, tcHistorial, carteras, productores, cajas, alycs, lastTcMep] = await Promise.all([
-    getTCBlue(),
+  const [tcVigente, mesActivo, socios, tcHistorial, carteras, productores, cajas, alycs, lastTcMep] = await Promise.all([
+    getTcVigenteInfo(),
     getMesActivo(),
     getSocios(),
     getTCHistorial(),
@@ -63,14 +74,29 @@ export default async function ConfiguracionPage() {
         {/* TC Blue */}
         <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 flex flex-col gap-5">
           <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tipo de cambio blue</p>
+            <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Tipo de cambio blue vigente</p>
             <p className="text-3xl font-black text-slate-900 tabular-nums mt-1">
-              {fmt(tcBlueConfig?.valor ?? null)}
+              {fmt(tcVigente.valor)}
               <span className="text-sm font-medium text-slate-400 ml-2">ARS/USD</span>
             </p>
+            {/* P1-03A: el TC rige desde su fecha hasta el próximo cambio (no vence). */}
+            <div className="mt-2 flex flex-col gap-0.5 text-xs text-slate-500">
+              <span>Vigente desde: <span className="font-semibold text-slate-700">{fmtFecha(tcVigente.vigenteDesde)}</span></span>
+              {tcVigente.ultimaModificacion && (
+                <span>
+                  Última modificación: <span className="font-semibold text-slate-700">{fmtFechaHora(tcVigente.ultimaModificacion)}</span>
+                  {tcVigente.modificadoPor && <> · por <span className="font-semibold text-slate-700">{tcVigente.modificadoPor}</span></>}
+                </span>
+              )}
+              {tcVigente.configDifiere && (
+                <span className="text-amber-600 font-semibold">
+                  ⚠ Config.tc_blue ({fmt(tcVigente.configTcBlue)}) no coincide con el TC vigente del historial. Rige el del historial.
+                </span>
+              )}
+            </div>
           </div>
 
-          <TcBlueForm valorActual={tcBlueConfig?.valor ?? null} />
+          <TcBlueForm valorActual={tcVigente.valor} />
 
           {tcHistorial.length > 0 && (
             <div>

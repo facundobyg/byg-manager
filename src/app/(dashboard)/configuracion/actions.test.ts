@@ -245,7 +245,8 @@ describe("SEC-CONFIG — autorizado, comportamiento existente intacto", () => {
     const result = await updateTCBlue({}, fd);
 
     expect(result).toEqual({ ok: true });
-    expect(mocks.config.setTCBlue).toHaveBeenCalledWith(1234.56, FAKE_TX);
+    // P1-03A: el usuario de sesión llega al servicio para el AuditLog en la misma tx.
+    expect(mocks.config.setTCBlue).toHaveBeenCalledWith(1234.56, FAKE_TX, { userId: "user-1" });
   });
 
   it("PRECIOS (individual) — updatePrecioActivo autorizado llama al servicio con activoId/precio/userId", async () => {

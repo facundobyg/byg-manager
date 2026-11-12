@@ -205,7 +205,8 @@ export async function updateTCBlue(
 
   try {
     await withOperationalLocks(["CONFIG"], session.user.id, ownerClientId, async (tx) => {
-      await setTCBlue(valor, tx);
+      // P1-03A: Config + nueva vigencia en TipoCambio + AuditLog, atómico en esta tx.
+      await setTCBlue(valor, tx, { userId: session.user.id });
     });
   } catch (error) {
     if (error instanceof LockOwnershipError) {

@@ -72,6 +72,8 @@ async function main() {
   const { LockOwnershipError } = await import("../src/lib/locks/errors");
   const { withOperationalLocks } = await import("../src/lib/locks/withOperationalLocks");
   const { setTCBlue } = await import("../src/lib/services/config.service");
+  // P1-03A.1: la fecha efectiva del TC es el día ARGENTINO (no el local/UTC del proceso).
+  const { fechaNegocioDate } = await import("../src/lib/fecha-negocio");
   const { LOCK_TTL_MS } = await import("../src/lib/locks/constants");
 
   const [{ current_database }] = await prisma.$queryRaw<{ current_database: string }[]>`SELECT current_database()`;
@@ -113,16 +115,17 @@ async function main() {
     return prisma.config.findUnique({ where: { clave: "tc_blue" } });
   }
   async function getTipoCambioHoy() {
-    const hoy = new Date();
-    const fecha = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
+    const fecha = fechaNegocioDate();
     return prisma.tipoCambio.findUnique({
       where: { monedaOrigen_monedaDestino_fecha: { monedaOrigen: "ARS", monedaDestino: "USD", fecha } },
     });
   }
   async function resetTcBlueFixtures() {
     await prisma.config.deleteMany({ where: { clave: "tc_blue" } });
-    const hoy = new Date();
-    const fecha = new Date(Date.UTC(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()));
+    // P1-03A: setTCBlue deja AuditLog ACTUALIZAR_TIPO_CAMBIO; en esta base QA dedicada se limpian
+    // los de los usuarios fixture (antes de borrarlos: FK AuditLog.userId).
+    await prisma.auditLog.deleteMany({ where: { accion: "ACTUALIZAR_TIPO_CAMBIO", User: { email: { startsWith: "a3122-qa-" } } } });
+    const fecha = fechaNegocioDate();
     await prisma.tipoCambio.deleteMany({ where: { monedaOrigen: "ARS", monedaDestino: "USD", fecha } });
   }
 
@@ -148,7 +151,7 @@ async function main() {
     let wasOwnershipError = false;
     try {
       await withOperationalLocks(["CONFIG"], userA, clientX, async (tx) => {
-        await setTCBlue(1111.11, tx);
+        await setTCBlue(1111.11, tx, { userId: userA });
       });
     } catch (e) {
       threw = true;
@@ -175,7 +178,7 @@ async function main() {
     try {
       await withOperationalLocks(["CONFIG"], userA, clientY, async (tx) => {
         // clientY, no clientX — misma persona, tab distinta.
-        await setTCBlue(2222.22, tx);
+        await setTCBlue(2222.22, tx, { userId: userA });
       });
     } catch (e) {
       threw = true;
@@ -201,7 +204,7 @@ async function main() {
     let wasOwnershipError = false;
     try {
       await withOperationalLocks(["CONFIG"], userB, clientB, async (tx) => {
-        await setTCBlue(3333.33, tx);
+        await setTCBlue(3333.33, tx, { userId: userA });
       });
     } catch (e) {
       threw = true;
@@ -227,7 +230,7 @@ async function main() {
     let wasOwnershipError = false;
     try {
       await withOperationalLocks(["CONFIG"], userA, clientX, async (tx) => {
-        await setTCBlue(4444.44, tx);
+        await setTCBlue(4444.44, tx, { userId: userA });
       });
     } catch (e) {
       threw = true;
@@ -251,7 +254,7 @@ async function main() {
 
     const VALOR = 987.65;
     await withOperationalLocks(["CONFIG"], userA, clientX, async (tx) => {
-      await setTCBlue(VALOR, tx);
+      await setTCBlue(VALOR, tx, { userId: userA });
     });
 
     const cfg = await getTcBlueConfig();

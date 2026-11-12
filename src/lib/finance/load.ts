@@ -6,14 +6,19 @@ import type { DsRegistroCuenta, FinanceDataset } from "./dataset";
 import type { FxBaseApertura, MonedaFx } from "./fx-cost-basis";
 import { construirResolver } from "./tc";
 import { esMoneda, fechaISO, type Moneda } from "./types";
+import { fechaNegocio } from "../fecha-negocio";
 
 type Db = Pick<PrismaClient,
   | "caja" | "movimientoCaja" | "operacionCambio" | "operacionBolsa" | "operacionBolsaLog" | "movimientoCC"
   | "plazoFijoMovimiento" | "inversionInmobiliaria" | "propiedad" | "cartera" | "cliente" | "custodiaCliente"
   | "operacionRulo" | "operacionDivInt" | "operacionLargoPlazo" | "config" | "tipoCambio">;
 
+/**
+ * "Hoy" del motor = FECHA DE NEGOCIO (día calendario en America/Argentina/Buenos_Aires),
+ * no el día del servidor (Vercel = UTC: después de las 21:00 ART ya sería mañana). P1-03A.2.
+ */
 export function hoyLocal(now = new Date()): string {
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return fechaNegocio(now);
 }
 
 function moneda(v: string): Moneda {
@@ -102,12 +107,12 @@ export async function cargarFinanceDataset(db: Db, now = new Date()): Promise<Fi
     db.operacionRulo.findMany({ select: { id: true, fecha: true, detalles: true } }),
     db.operacionDivInt.findMany({ select: { id: true, fecha: true, detalles: true } }),
     db.operacionLargoPlazo.findMany({ select: { id: true, fecha: true, detalles: true } }),
-    db.config.findMany({ where: { clave: { in: ["tc_blue", "fx_opening_basis"] } }, select: { clave: true, valor: true, updatedAt: true } }),
+    // P1-03A: Config.tc_blue ya NO entra al motor (SSOT histórico = TipoCambio).
+    db.config.findMany({ where: { clave: { in: ["fx_opening_basis"] } }, select: { clave: true, valor: true, updatedAt: true } }),
     db.tipoCambio.findMany({ select: { monedaOrigen: true, monedaDestino: true, valor: true, fecha: true } }),
   ]);
 
   const cfg = new Map(configs.map((c) => [c.clave, c]));
-  const tcBlue = cfg.get("tc_blue");
 
   return {
     hoy: hoyLocal(now),
@@ -153,6 +158,6 @@ export async function cargarFinanceDataset(db: Db, now = new Date()): Promise<Fi
       ...lp.map((r) => registroDesdeDetalles("LP", r)),
     ],
     fxApertura: parseApertura(cfg.get("fx_opening_basis")?.valor),
-    tc: construirResolver({ tipoCambio, tcBlueConfig: tcBlue ? { valor: tcBlue.valor, updatedAt: tcBlue.updatedAt } : null }),
+    tc: construirResolver({ tipoCambio }),
   };
 }

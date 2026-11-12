@@ -213,17 +213,18 @@ describe("TC histórico", () => {
     expect(r.porMoneda.ARS).toBe(1000);
   });
 
-  it("sin TC anterior: TC posterior ≤31 días, informado como aproximado", () => {
+  it("sin TC anterior (antes del inicio del historial): bootstrap con el primer TC posterior, aproximado", () => {
     const r = resultado(dataset({ movsCaja: [ro("COMISION", { tipo: "ENTRADA", moneda: "ARS", monto: 1000, fecha: "2026-04-10" })], tc: tcSerie({ "2026-04-20": 1000 }) }));
     expect(r.quality).toBe("APPROXIMATE");
     expect(r.totalUSD).toBe(1);
     expect(r.tc.aproximados[0]).toMatchObject({ modo: "POSTERIOR", fechaTc: "2026-04-20" });
   });
 
-  it("Config.tc_blue solo rige desde su updatedAt (nunca para fechas mucho anteriores)", () => {
-    const res = construirResolver({ tipoCambio: [], tcBlueConfig: { valor: "1400", updatedAt: "2026-05-08T10:00:00Z" } });
-    expect(res.resolver("ARS", "2026-06-01")?.fuente).toMatch(/Config\.tc_blue/);
-    expect(res.resolver("ARS", "2026-03-01")).toBeNull();
+  it("P1-03A: la serie histórica sale SOLO de TipoCambio (Config.tc_blue no es fuente histórica)", () => {
+    const res = construirResolver({ tipoCambio: [{ monedaOrigen: "ARS", monedaDestino: "USD", valor: 1250, fecha: "2026-05-06" }] });
+    expect(res.resolver("ARS", "2026-06-01")?.fuente).toBe("TipoCambio ARS>USD");
+    expect(res.resolver("ARS", "2026-06-01")?.modo).toBe("VIGENTE");
+    expect(construirResolver({ tipoCambio: [] }).resolver("ARS", "2026-06-01")).toBeNull();
   });
 
   it("convención EUR/BRL (inferida, validada por rango): nunca 1:1", () => {

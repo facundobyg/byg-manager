@@ -207,20 +207,18 @@ describe("M2-F04 — venta sin base: INCOMPLETE, nunca total parcial como comple
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-describe("M2-F05 — calidad del TC (ventana simétrica ±31 días)", () => {
+describe("M2-F05 / P1-03A — calidad del TC (vigente hasta el próximo cambio; sin ventana)", () => {
   const res = new TcResolver([{ moneda: "ARS", fecha: "2026-04-10", usdPorUnidad: D(1).div(1000), fuente: "t" }]);
   const modo = (f: string) => res.resolver("ARS", f)?.modo ?? null;
 
-  it("mismo día EXACT; ±1 APPROXIMATE; ±31 APPROXIMATE; 32 / 96 / 175 días o ausente → sin TC", () => {
+  it("mismo día EXACTO; posterior VIGENTE sin importar la antigüedad; antes del primer TC → bootstrap POSTERIOR", () => {
     expect(modo("2026-04-10")).toBe("EXACTO");
-    expect(modo("2026-04-11")).toBe("ANTERIOR");
-    expect(modo("2026-04-09")).toBe("POSTERIOR");
-    expect(modo("2026-05-11")).toBe("ANTERIOR");   // +31
-    expect(modo("2026-03-10")).toBe("POSTERIOR");  // −31
-    expect(modo("2026-05-12")).toBeNull();         // +32
-    expect(modo("2026-03-09")).toBeNull();         // −32
-    expect(modo("2026-07-15")).toBeNull();         // 96
-    expect(modo("2026-10-02")).toBeNull();         // 175
+    expect(modo("2026-04-11")).toBe("VIGENTE");
+    expect(modo("2026-05-12")).toBe("VIGENTE");   // 32 días: ya NO vence
+    expect(modo("2026-07-15")).toBe("VIGENTE");   // 96
+    expect(modo("2026-10-02")).toBe("VIGENTE");   // 175
+    expect(modo("2026-04-09")).toBe("POSTERIOR"); // antes del inicio del historial
+    expect(modo("2025-01-01")).toBe("POSTERIOR"); // bootstrap sin límite de días
     expect(new TcResolver([]).resolver("ARS", "2026-04-10")).toBeNull();
   });
 
@@ -229,28 +227,32 @@ describe("M2-F05 — calidad del TC (ventana simétrica ±31 días)", () => {
     descripcion: "[RESULTADO_OPERATIVO:COMISION] x", confirmado: true, anulado: false, pagoDeId: null, operacionCambioId: null,
   }] }), fecha.slice(0, 7));
 
-  it("resultado: TC aproximado → APPROXIMATE con fecha pedida/usada/desfase; 96 días → INCOMPLETE", () => {
-    const aprox = conIngreso(res, "2026-04-12");
-    expect(aprox.quality).toBe("APPROXIMATE");
-    expect(aprox.totalUSD).toBe(100);
-    expect(aprox.qualityReasons[0].detail).toMatch(/pedido 2026-04-12, usado 2026-04-10 \(\+2 días/);
-    const viejo = conIngreso(res, "2026-07-15");
-    expect(viejo.quality).toBe("INCOMPLETE");
-    expect(viejo.totalUSD).toBeNull();
-    expect(codigos(viejo)).toContain("TC_MISSING");
+  it("resultado: TC vigente (aunque tenga meses) → EXACT; bootstrap → APPROXIMATE con detalle; sin TC → INCOMPLETE", () => {
+    const vigente = conIngreso(res, "2026-07-15");
+    expect(vigente.quality).toBe("EXACT");
+    expect(vigente.totalUSD).toBe(100);
+    const boot = conIngreso(res, "2026-04-02");
+    expect(boot.quality).toBe("APPROXIMATE");
+    expect(boot.totalUSD).toBe(100);
+    expect(boot.qualityReasons[0].detail).toMatch(/pedido 2026-04-02, anterior al primer TC del historial: usado 2026-04-10/);
+    const sinTc = conIngreso(new TcResolver([]), "2026-07-15");
+    expect(sinTc.quality).toBe("INCOMPLETE");
+    expect(sinTc.totalUSD).toBeNull();
+    expect(codigos(sinTc)).toContain("TC_MISSING");
   });
 
-  it("PN con TC de 175 días → INCOMPLETE; conserva subtotal nativo y USD conocido", () => {
-    const pn = calcularPatrimonioNeto(dataset({
-      tc: res, hoy: "2026-10-02",
-      cajas: [{ id: "oficina", label: "O", activa: true, saldoInicialUSD: 100, saldoInicialARS: 1_000_000 }],
-    }), "2026-10-02");
-    expect(pn.quality).toBe("INCOMPLETE");
-    expect(pn.pnUSD).toBeNull();
-    expect(pn.componentes.cajas.usd).toBeNull();
-    expect(pn.componentes.cajas.nativo.ARS).toBe(1_000_000);
-    expect(pn.knownSubtotalUSD).toBe(100); // solo lo que está en USD
-    const bal = mapBalanceGeneral(pn);
+  it("PN con TC vigente de 175 días → EXACT; sin ningún TC → INCOMPLETE conservando subtotal nativo y USD conocido", () => {
+    const base = { hoy: "2026-10-02", cajas: [{ id: "oficina", label: "O", activa: true, saldoInicialUSD: 100, saldoInicialARS: 1_000_000 }] };
+    const pn = calcularPatrimonioNeto(dataset({ ...base, tc: res }), "2026-10-02");
+    expect(pn.quality).toBe("EXACT");
+    expect(pn.pnUSD).toBe(1100);
+    const sin = calcularPatrimonioNeto(dataset({ ...base, tc: new TcResolver([]) }), "2026-10-02");
+    expect(sin.quality).toBe("INCOMPLETE");
+    expect(sin.pnUSD).toBeNull();
+    expect(sin.componentes.cajas.usd).toBeNull();
+    expect(sin.componentes.cajas.nativo.ARS).toBe(1_000_000);
+    expect(sin.knownSubtotalUSD).toBe(100); // solo lo que está en USD
+    const bal = mapBalanceGeneral(sin);
     expect(bal.patrimonioNeto).toBeNull();
     expect(bal.quality).toBe("INCOMPLETE");
   });
