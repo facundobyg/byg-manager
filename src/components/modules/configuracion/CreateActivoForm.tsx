@@ -85,9 +85,10 @@ export function CreateActivoForm() {
             <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Precio Inicial (opcional)</label>
             <input
               name="precioActual"
-              type="number"
-              step="0.000001"
-              placeholder="0.00"
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder="1.234,56"
               className="px-3 py-2 border border-slate-200 rounded-lg text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-blue-100"
             />
           </div>

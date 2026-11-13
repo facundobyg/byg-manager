@@ -50,7 +50,7 @@ export function PreciosBatchTextareaForm() {
         <textarea
           name="csv"
           rows={8}
-          placeholder={"ticker;descripcion;categoria;monedaPrecio;precioActual;nuevoPrecio\nAL30;Bonos;BONO_USD;USD;65.20;66.00"}
+          placeholder={"ticker;descripcion;categoria;monedaPrecio;precioActual;nuevoPrecio\nAL30;Bonos;BONO_USD;USD;65,2;66,00\n(solo se aplica nuevoPrecio · formato argentino · separador ; o tab)"}
           className="font-mono text-[12px] px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-200 resize-y bg-slate-50/50 placeholder:text-slate-300"
         />
         <button

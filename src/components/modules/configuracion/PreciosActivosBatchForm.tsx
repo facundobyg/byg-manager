@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { updatePreciosActivosBatch } from "@/app/(dashboard)/configuracion/actions";
+import { formatearNumeroAR } from "@/lib/numero-ar";
 import { ChevronDown, ChevronUp, Save, Loader2, AlertCircle } from "lucide-react";
 
 type Activo = {
@@ -63,10 +64,9 @@ export function PreciosActivosBatchForm({ activos }: Props) {
                         </span>
                         <input
                           name="precioActual"
-                          type="number"
-                          step="0.000001"
-                          min="0"
-                          defaultValue={a.precioActual?.toString() ?? ""}
+                          type="text"
+                          inputMode="decimal"
+                          defaultValue={a.precioActual != null ? formatearNumeroAR(String(a.precioActual)) : ""}
                           className="w-32 text-[12px] font-black tabular-nums border border-slate-200 rounded-md pl-8 pr-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-200 bg-white"
                         />
                       </div>

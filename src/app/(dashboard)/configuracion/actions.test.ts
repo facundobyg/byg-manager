@@ -12,7 +12,11 @@ const mocks = vi.hoisted(() => ({
   writeAuditLog: vi.fn(),
   withOperationalLocks: vi.fn(),
   revalidatePath: vi.fn(),
+  // P1-03B: write path canónico de precios manuales.
+  registrar: vi.fn(),
+  helperTx: vi.fn(),
   prisma: {
+    $transaction: vi.fn(),
     cartera: { findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     activo: { findUnique: vi.fn(), create: vi.fn() },
     socioPorcentaje: { update: vi.fn() },
@@ -20,8 +24,6 @@ const mocks = vi.hoisted(() => ({
   config: {
     setTCBlue: vi.fn(),
     setTCMep: vi.fn(),
-    updatePrecioActivo: vi.fn(),
-    updatePreciosActivosBatch: vi.fn(),
     getProductoresConfig: vi.fn(),
     getAlycConfig: vi.fn(),
     updateAlycConfig: vi.fn(),
@@ -47,12 +49,21 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/services/config.service", () => ({
   setTCBlue: mocks.config.setTCBlue,
   setTCMep: mocks.config.setTCMep,
-  updatePrecioActivo: mocks.config.updatePrecioActivo,
-  updatePreciosActivosBatch: mocks.config.updatePreciosActivosBatch,
   getProductoresConfig: mocks.config.getProductoresConfig,
   getAlycConfig: mocks.config.getAlycConfig,
   updateAlycConfig: mocks.config.updateAlycConfig,
 }));
+
+// P1-03B — parsers y errores REALES; solo se dobla la escritura (registrar / helper tx).
+vi.mock("@/lib/fecha-negocio", async () => await import("../../../lib/fecha-negocio"));
+vi.mock("@/lib/numero-ar", async () => await import("../../../lib/numero-ar"));
+vi.mock("@/lib/services/price-ticker-resolver.service", () => ({
+  getManualOnlyReason: (c: string) => (c === "FCI" || c === "CRIPTO" ? "manual" : null),
+}));
+vi.mock("@/lib/services/precio-manual.service", async () => {
+  const real = await vi.importActual<Record<string, unknown>>("../../../lib/services/precio-manual.service");
+  return { ...real, registrarPreciosManuales: mocks.registrar, actualizarPrecioManualTx: mocks.helperTx };
+});
 
 vi.mock("@/lib/locks/withOperationalLocks", () => ({
   withOperationalLocks: mocks.withOperationalLocks,
@@ -93,6 +104,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.requireActionPermission.mockResolvedValue(null); // autorizado por defecto
   mocks.auth.mockResolvedValue({ user: { id: "user-1", name: "Tester" } });
+  mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(mocks.prisma));
+  mocks.registrar.mockResolvedValue([]);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -134,7 +147,7 @@ describe("SEC-CONFIG — gate agregado, denegado → 0 escrituras (las 10 funcio
 
     expect(result).toEqual(DENEGADO);
     expect(mocks.auth).not.toHaveBeenCalled();
-    expect(mocks.config.updatePrecioActivo).not.toHaveBeenCalled();
+    expect(mocks.registrar).not.toHaveBeenCalled();
   });
 
   it("updatePreciosActivosBatch: denegado → error, ni auth() ni el servicio se llaman", async () => {
@@ -147,7 +160,7 @@ describe("SEC-CONFIG — gate agregado, denegado → 0 escrituras (las 10 funcio
 
     expect(result).toEqual(DENEGADO);
     expect(mocks.auth).not.toHaveBeenCalled();
-    expect(mocks.config.updatePreciosActivosBatch).not.toHaveBeenCalled();
+    expect(mocks.registrar).not.toHaveBeenCalled();
   });
 
   it("updateSociosPorcentaje: denegado → error, prisma.socioPorcentaje.update no se llama", async () => {
@@ -185,7 +198,7 @@ describe("SEC-CONFIG — gate agregado, denegado → 0 escrituras (las 10 funcio
 
     expect(result).toEqual(DENEGADO);
     expect(mocks.prisma.activo.findUnique).not.toHaveBeenCalled();
-    expect(mocks.config.updatePrecioActivo).not.toHaveBeenCalled();
+    expect(mocks.registrar).not.toHaveBeenCalled();
   });
 
   it("updateCartera: denegado → error, prisma.cartera.update no se llama", async () => {
@@ -225,7 +238,7 @@ describe("SEC-CONFIG — gate agregado, denegado → 0 escrituras (las 10 funcio
     expect(result).toEqual(DENEGADO);
     expect(mocks.prisma.activo.findUnique).not.toHaveBeenCalled();
     expect(mocks.prisma.activo.create).not.toHaveBeenCalled();
-    expect(mocks.config.updatePrecioActivo).not.toHaveBeenCalled();
+    expect(mocks.registrar).not.toHaveBeenCalled();
   });
 });
 
@@ -249,20 +262,23 @@ describe("SEC-CONFIG — autorizado, comportamiento existente intacto", () => {
     expect(mocks.config.setTCBlue).toHaveBeenCalledWith(1234.56, FAKE_TX, { userId: "user-1" });
   });
 
-  it("PRECIOS (individual) — updatePrecioActivo autorizado llama al servicio con activoId/precio/userId", async () => {
-    mocks.config.updatePrecioActivo.mockResolvedValue(undefined);
+  it("PRECIOS (individual) — updatePrecioActivo autorizado llama al write path canónico con activoId/precio/userId", async () => {
     const fd = new FormData();
     fd.set("activoId", "act-1");
-    fd.set("precioActual", "1500.5");
+    fd.set("precioActual", "1.500,5"); // P1-03B: formato argentino
 
     const result = await updatePrecioActivo({}, fd);
 
     expect(result).toEqual({ ok: true });
-    expect(mocks.config.updatePrecioActivo).toHaveBeenCalledWith("act-1", 1500.5, "user-1");
+    const [items, ctx] = mocks.registrar.mock.calls[0];
+    expect(ctx).toEqual({ userId: "user-1", origen: "FORM_UNITARIO" });
+    expect(items).toHaveLength(1);
+    expect(items[0].activoId).toBe("act-1");
+    expect(items[0].entrada.modo).toBe("UNITARIO");
+    expect(items[0].entrada.precio.toString()).toBe("1500.5");
   });
 
-  it("PRECIOS (batch) — updatePreciosActivosBatch autorizado llama al servicio con la lista completa", async () => {
-    mocks.config.updatePreciosActivosBatch.mockResolvedValue(undefined);
+  it("PRECIOS (batch) — updatePreciosActivosBatch autorizado llama al write path canónico con la lista completa", async () => {
     const fd = new FormData();
     fd.append("activoId", "act-1");
     fd.append("precioActual", "100");
@@ -272,10 +288,10 @@ describe("SEC-CONFIG — autorizado, comportamiento existente intacto", () => {
     const result = await updatePreciosActivosBatch({}, fd);
 
     expect(result).toEqual({ ok: true, count: 2 });
-    expect(mocks.config.updatePreciosActivosBatch).toHaveBeenCalledWith(
-      [{ id: "act-1", precio: 100 }, { id: "act-2", precio: 200 }],
-      "user-1",
-    );
+    const [items, ctx] = mocks.registrar.mock.calls[0];
+    expect(ctx).toEqual({ userId: "user-1", origen: "BATCH" });
+    expect(items.map((i: { activoId: string; entrada: { precio: { toString(): string } } }) => [i.activoId, i.entrada.precio.toString()]))
+      .toEqual([["act-1", "100"], ["act-2", "200"]]);
   });
 
   it("SOCIOS — updateSociosPorcentaje autorizado actualiza cuando la suma da 100%", async () => {
@@ -452,8 +468,6 @@ describe("SEC-CONFIG — el gate corta antes que auth() de atribución", () => {
       order.push("auth");
       return { user: { id: "user-1" } };
     });
-    mocks.config.updatePrecioActivo.mockResolvedValue(undefined);
-
     const fd = new FormData();
     fd.set("activoId", "act-1");
     fd.set("precioActual", "100");

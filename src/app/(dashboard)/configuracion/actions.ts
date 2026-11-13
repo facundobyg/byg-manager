@@ -2,7 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
-import { setTCBlue, setMesActivo, setTCMep, updatePrecioActivo as updatePrecioActivoService, updatePreciosActivosBatch as updatePreciosActivosBatchService, getProductoresConfig, getAlycConfig, updateAlycConfig } from "@/lib/services/config.service";
+import { setTCBlue, setMesActivo, setTCMep, getProductoresConfig, getAlycConfig, updateAlycConfig } from "@/lib/services/config.service";
+import {
+  actualizarPrecioManualTx, registrarPreciosManuales, PrecioManualError,
+  parsePrecioUnitarioAR, parseVnAR, parseValuacionAR,
+} from "@/lib/services/precio-manual.service";
+import type { Decimal } from "@prisma/client/runtime/library";
 import type { ProductorOption, AlycOption } from "@/lib/services/config.service";
 import { writeAuditLog } from "@/lib/services/audit.service";
 import { requireActionPermission } from "@/lib/auth/permissions";
@@ -253,6 +258,35 @@ export async function updateMesActivo(
   return { ok: true };
 }
 
+// ─── Precios manuales (P1-03B) ────────────────────────────────────────────────
+// Todas las cargas manuales de precio pasan por registrarPreciosManuales →
+// actualizarPrecioManualTx (parser es-AR estricto, fecha valor argentina, PrecioHistorico,
+// AuditLog, usuario obligatorio, atómico). Ninguna escribe Activo.precioActual directo.
+
+function revalidarPrecios() {
+  revalidatePath("/configuracion");
+  revalidatePath("/precios");
+  revalidatePath("/carteras", "layout");
+  revalidatePath("/clientes");
+}
+
+async function usuarioDeSesion(): Promise<string | null> {
+  const session = await auth();
+  return session?.user?.id ?? null;
+}
+
+function errorPrecio(e: unknown, fallback: string): { error: string } {
+  if (e instanceof PrecioManualError) return { error: e.message };
+  console.error(fallback, e);
+  return { error: fallback };
+}
+
+/** Fecha valor del form: vacía ⇒ hoy argentino (lo resuelve el helper). */
+function fechaValorDe(formData: FormData): string | undefined {
+  const f = formData.get("fechaValor")?.toString().trim();
+  return f ? f : undefined;
+}
+
 export async function updatePrecioActivo(
   _prev: { error?: string; ok?: boolean },
   formData: FormData,
@@ -261,23 +295,64 @@ export async function updatePrecioActivo(
   if (denied) return denied;
 
   const activoId = formData.get("activoId")?.toString().trim();
-  const rawPrecio = formData.get("precioActual")?.toString().trim().replace(",", ".");
-
-  if (!activoId || !rawPrecio) return { error: "Datos faltantes" };
-
-  const precio = parseFloat(rawPrecio);
-  if (isNaN(precio) || precio < 0) return { error: "Precio inválido" };
+  if (!activoId) return { error: "Datos faltantes" };
 
   try {
-    const session = await auth();
-    await updatePrecioActivoService(activoId, precio, session?.user?.id);
-    revalidatePath("/configuracion");
-    revalidatePath("/precios");
-    revalidatePath("/carteras", "layout");
-    revalidatePath("/clientes");
+    const precio = parsePrecioUnitarioAR(formData.get("precioActual")?.toString());
+    const userId = await usuarioDeSesion();
+    if (!userId) return { error: "Sesión sin usuario: no se puede registrar el precio" };
+    await registrarPreciosManuales(
+      [{ activoId, entrada: { modo: "UNITARIO", precio }, fechaValor: fechaValorDe(formData) }],
+      { userId, origen: "FORM_UNITARIO" },
+    );
+    revalidarPrecios();
     return { ok: true };
-  } catch (error: any) {
-    return { error: error.message || "Error al actualizar precio" };
+  } catch (e) {
+    return errorPrecio(e, "Error al actualizar precio");
+  }
+}
+
+export type ValuacionManualState = {
+  error?: string;
+  ok?: boolean;
+  resultado?: { ticker: string; moneda: string; fechaValor: string; precioNuevo: string; valuacionResultante: string | null; diferencia: string | null };
+};
+
+/**
+ * Instrumentos MANUALES (FCI/CRIPTO): el banco informa VN + valuación total; el sistema
+ * calcula precio = valuación ÷ VN (Decimal). El VN debe coincidir con la tenencia y no se toca.
+ */
+export async function registrarValuacionManual(
+  _prev: ValuacionManualState,
+  formData: FormData,
+): Promise<ValuacionManualState> {
+  const denied = await requireActionPermission("configuracion:editar");
+  if (denied) return denied;
+
+  const activoId = formData.get("activoId")?.toString().trim();
+  if (!activoId) return { error: "Datos faltantes" };
+
+  try {
+    const vn = parseVnAR(formData.get("vn")?.toString());
+    const valuacionTotal = parseValuacionAR(formData.get("valuacionTotal")?.toString());
+    const fechaValor = fechaValorDe(formData);
+    if (!fechaValor) return { error: "Fecha valor obligatoria" };
+    const userId = await usuarioDeSesion();
+    if (!userId) return { error: "Sesión sin usuario: no se puede registrar el precio" };
+    const [r] = await registrarPreciosManuales(
+      [{ activoId, entrada: { modo: "VALUACION", vn, valuacionTotal }, fechaValor }],
+      { userId, origen: "FORM_VALUACION" },
+    );
+    revalidarPrecios();
+    return {
+      ok: true,
+      resultado: {
+        ticker: r.ticker, moneda: r.moneda, fechaValor: r.fechaValor, precioNuevo: r.precioNuevo,
+        valuacionResultante: r.valuacionResultante, diferencia: r.diferencia,
+      },
+    };
+  } catch (e) {
+    return errorPrecio(e, "Error al registrar la valuación");
   }
 }
 
@@ -293,32 +368,30 @@ export async function updatePreciosActivosBatch(
 
   if (!assetIds.length) return { error: "No hay activos para actualizar" };
 
-  const updates: { id: string; precio: number }[] = [];
-
+  // Todo o nada: un valor malformado rechaza el lote entero (antes se salteaba en silencio).
+  const items: { activoId: string; entrada: { modo: "UNITARIO"; precio: Decimal } }[] = [];
+  const invalidos: string[] = [];
   for (let i = 0; i < assetIds.length; i++) {
     const id = assetIds[i];
-    const rawPrecio = prices[i]?.toString().trim().replace(",", ".");
-
-    if (!id || !rawPrecio) continue;
-
-    const precio = parseFloat(rawPrecio);
-    if (isNaN(precio) || precio < 0) continue;
-
-    updates.push({ id, precio });
+    const raw = prices[i]?.toString().trim();
+    if (!id || !raw) continue; // fila sin cambio
+    try {
+      items.push({ activoId: id, entrada: { modo: "UNITARIO", precio: parsePrecioUnitarioAR(raw) } });
+    } catch (e) {
+      invalidos.push(e instanceof Error ? e.message : raw);
+    }
   }
-
-  if (updates.length === 0) return { error: "No se ingresaron cambios válidos" };
+  if (invalidos.length > 0) return { error: `Valores inválidos, no se guardó nada: ${invalidos.join(" | ")}` };
+  if (items.length === 0) return { error: "No se ingresaron cambios válidos" };
 
   try {
-    const session = await auth();
-    await updatePreciosActivosBatchService(updates, session?.user?.id);
-    revalidatePath("/configuracion");
-    revalidatePath("/precios");
-    revalidatePath("/carteras", "layout");
-    revalidatePath("/clientes");
-    return { ok: true, count: updates.length };
-  } catch (error: any) {
-    return { error: error.message || "Error en la actualización masiva" };
+    const userId = await usuarioDeSesion();
+    if (!userId) return { error: "Sesión sin usuario: no se puede registrar el precio" };
+    await registrarPreciosManuales(items, { userId, origen: "BATCH" });
+    revalidarPrecios();
+    return { ok: true, count: items.length };
+  } catch (e) {
+    return errorPrecio(e, "Error en la actualización masiva");
   }
 }
 
@@ -428,61 +501,50 @@ export async function updatePreciosTickerBatch(
   const text  = formData.get("batch")?.toString() ?? "";
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
-  const updated: string[] = [];
   const notFound: string[] = [];
   const invalid: string[]  = [];
+  const items: { activoId: string; ticker: string; entrada: { modo: "UNITARIO"; precio: Decimal } }[] = [];
 
   for (const line of lines) {
     // Skip header if present
     if (line.toLowerCase().startsWith("ticker")) continue;
 
-    // Support multiple separators: =, tab, ;, comma
-    let ticker = "";
-    let raw = "";
-
-    if (line.includes("\t")) {
-      const parts = line.split("\t");
-      ticker = parts[0].trim();
-      raw = parts[1]?.trim();
-    } else if (line.includes("=")) {
-      const parts = line.split("=");
-      ticker = parts[0].trim();
-      raw = parts[1]?.trim();
-    } else if (line.includes(";")) {
-      const parts = line.split(";");
-      ticker = parts[0].trim();
-      raw = parts[1]?.trim();
-    } else if (line.includes(",")) {
-      const parts = line.split(",");
-      ticker = parts[0].trim();
-      raw = parts[1]?.trim();
-    } else {
-      invalid.push(line);
-      continue;
-    }
+    // Separador = PRIMERA aparición de tab, "=", ";" (en ese orden). La coma NO separa:
+    // es el decimal es-AR ("AL30,1,5" antes se leía como precio 1).
+    const sep = ["\t", "=", ";"].find((s) => line.includes(s));
+    if (!sep) { invalid.push(line); continue; }
+    const ticker = line.slice(0, line.indexOf(sep)).trim();
+    const raw = line.slice(line.indexOf(sep) + sep.length).trim();
 
     if (!ticker) { invalid.push(line); continue; }
     if (!raw) continue; // Ignore empty values
 
-    const precio = parseFloat(raw.replace(",", "."));
-    if (isNaN(precio) || precio < 0) { invalid.push(line); continue; }
+    let precio: Decimal;
+    try { precio = parsePrecioUnitarioAR(raw); } catch { invalid.push(line); continue; }
 
     const tickerUpper = ticker.toUpperCase();
     const activo = await prisma.activo.findUnique({ where: { ticker: tickerUpper } });
     if (!activo) { notFound.push(tickerUpper); continue; }
-
-    await updatePrecioActivoService(activo.id, precio);
-    updated.push(tickerUpper);
+    items.push({ activoId: activo.id, ticker: tickerUpper, entrada: { modo: "UNITARIO", precio } });
   }
 
-  if (updated.length > 0) {
-    revalidatePath("/configuracion");
-    revalidatePath("/carteras", "layout");
-    revalidatePath("/posicion");
-    revalidatePath("/precios");
+  // Todo o nada: con una línea inválida o un ticker inexistente no se escribe ninguna.
+  if (invalid.length > 0 || notFound.length > 0) {
+    return { error: "Hay líneas inválidas o tickers inexistentes: no se guardó nada", ok: false, updated: [], notFound, invalid };
+  }
+  if (items.length === 0) return { ok: false, updated: [], notFound, invalid };
+
+  try {
+    const userId = await usuarioDeSesion();
+    if (!userId) return { error: "Sesión sin usuario: no se puede registrar el precio" };
+    await registrarPreciosManuales(items.map(({ activoId, entrada }) => ({ activoId, entrada })), { userId, origen: "TICKER_BATCH" });
+  } catch (e) {
+    return errorPrecio(e, "Error en la actualización por ticker");
   }
 
-  return { ok: updated.length > 0, updated, notFound, invalid };
+  revalidarPrecios();
+  revalidatePath("/posicion");
+  return { ok: true, updated: items.map((i) => i.ticker), notFound, invalid };
 }
 
 export async function updateCartera(
@@ -664,35 +726,32 @@ export async function createActivo(
   const descripcion  = formData.get("descripcion")?.toString().trim();
   const categoria    = formData.get("categoria")?.toString() as CategoriaActivo;
   const monedaPrecio = (formData.get("monedaPrecio")?.toString() || "USD") as Moneda;
-  const rawPrecio    = formData.get("precioActual")?.toString().trim().replace(",", ".");
+  const rawPrecio    = formData.get("precioActual")?.toString().trim();
 
   if (!ticker || !categoria) return { error: "Ticker y Categoría son obligatorios" };
 
   const exists = await prisma.activo.findUnique({ where: { ticker } });
   if (exists) return { error: "Ya existe un activo con ese ticker" };
 
-  const precioActual = rawPrecio ? parseFloat(rawPrecio) : null;
-
   try {
-    await prisma.activo.create({
-      data: {
-        id: crypto.randomUUID(),
-        ticker,
-        descripcion,
-        categoria,
-        monedaPrecio,
-        precioActual: precioActual != null ? precioActual : null,
-        updatedAt: new Date(),
-        ...(precioActual != null
-          ? { priceSource: "MANUAL" as const, priceStatus: "OK" as const, priceSyncedAt: new Date(), providerUpdatedAt: null, priceErrorMessage: null }
-          : {}),
-      },
+    // P1-03B: el precio inicial (opcional) también entra por el write path canónico.
+    const precio = rawPrecio ? parsePrecioUnitarioAR(rawPrecio) : null;
+    const userId = precio ? await usuarioDeSesion() : null;
+    if (precio && !userId) return { error: "Sesión sin usuario: no se puede registrar el precio" };
+    const ahora = new Date();
+    await prisma.$transaction(async (tx) => {
+      const activo = await tx.activo.create({
+        data: { id: crypto.randomUUID(), ticker, descripcion, categoria, monedaPrecio, precioActual: null, updatedAt: ahora },
+      });
+      if (precio && userId) {
+        await actualizarPrecioManualTx(tx, { activoId: activo.id, entrada: { modo: "UNITARIO", precio }, userId, origen: "ALTA_ACTIVO", ahora });
+      }
     });
     revalidatePath("/precios");
     revalidatePath("/configuracion");
     return { ok: true };
   } catch (error) {
-    return { error: "Error al crear el activo" };
+    return errorPrecio(error, "Error al crear el activo");
   }
 }
 
@@ -709,12 +768,12 @@ export async function importPreciosExcel(
   const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
   const report = { updated: [] as string[], created: [] as string[], skipped: 0, errors: [] as string[] };
 
-  // Detect separator from first line
+  // Separador: ";" o tab. La coma NO se admite como separador: es el decimal es-AR.
   const firstLine = lines[0];
-  let sep = ";";
+  let sep: string;
   if (firstLine.includes("\t")) sep = "\t";
   else if (firstLine.includes(";")) sep = ";";
-  else if (firstLine.includes(",")) sep = ",";
+  else return { error: "Separador no admitido: usá \";\" o tabulación (la coma es el separador decimal)" };
 
   // Parse headers to find indexes
   const headers = firstLine.split(sep).map(h => h.trim().toLowerCase().replace(/"/g, ''));
@@ -723,63 +782,77 @@ export async function importPreciosExcel(
     descripcion: headers.indexOf("descripcion"),
     categoria: headers.indexOf("categoria"),
     monedaPrecio: headers.indexOf("monedaprecio"),
-    precioActual: headers.indexOf("precioactual"),
     nuevoPrecio: headers.indexOf("nuevoprecio"),
   };
 
   if (idx.ticker === -1) return { error: "No se encontró la columna 'ticker'" };
 
+  // P1-03B — Solo la columna "nuevoPrecio" es una instrucción de cambio. La columna
+  // "precioActual" del export es informativa y se IGNORA (antes, una fila sin nuevoPrecio
+  // re-grababa el precio exportado: historial falso con fecha de hoy y fuente MANUAL).
+  // Fase 1: validar todo (es-AR estricto). Con un error, no se escribe nada.
+  type Fila = { ticker: string; precio: Decimal | null; crear: null | { descripcion: string | null; categoria: CategoriaActivo; moneda: Moneda } };
+  const filas: Fila[] = [];
   for (let i = 1; i < lines.length; i++) {
     const cells = lines[i].split(sep).map(c => c.trim().replace(/"/g, ''));
     const ticker = cells[idx.ticker]?.toUpperCase();
     if (!ticker) { report.skipped++; continue; }
 
-    const nuevoPrecioRaw = idx.nuevoPrecio !== -1 ? cells[idx.nuevoPrecio] : "";
-    const precioActualRaw = idx.precioActual !== -1 ? cells[idx.precioActual] : "";
-    
-    const valorParaUsar = nuevoPrecioRaw || precioActualRaw;
-    const precio = valorParaUsar ? parseFloat(valorParaUsar.replace(",", ".")) : null;
+    const raw = idx.nuevoPrecio !== -1 ? (cells[idx.nuevoPrecio] ?? "") : "";
+    let precio: Decimal | null = null;
+    if (raw) {
+      try { precio = parsePrecioUnitarioAR(raw); } catch (e) { report.errors.push(`${ticker}: ${e instanceof Error ? e.message : raw}`); continue; }
+    }
 
-    try {
-      const existing = await prisma.activo.findUnique({ where: { ticker } });
+    const existing = await prisma.activo.findUnique({ where: { ticker }, select: { id: true } });
+    if (existing) {
+      if (precio) filas.push({ ticker, precio, crear: null });
+      else report.skipped++;
+      continue;
+    }
+    const cat = idx.categoria !== -1 ? cells[idx.categoria] : "";
+    const mon = idx.monedaPrecio !== -1 ? (cells[idx.monedaPrecio] || "USD") : "USD";
+    if (!cat) { report.skipped++; continue; }
+    if (!CATEGORIAS_VALIDAS.includes(cat as CategoriaActivo)) { report.errors.push(`${ticker}: categoría inválida "${cat}"`); continue; }
+    if (!MONEDAS_VALIDAS.includes(mon as Moneda)) { report.errors.push(`${ticker}: moneda inválida "${mon}"`); continue; }
+    const desc = idx.descripcion !== -1 ? cells[idx.descripcion] : "";
+    filas.push({ ticker, precio, crear: { descripcion: desc || null, categoria: cat as CategoriaActivo, moneda: mon as Moneda } });
+  }
 
-      if (existing) {
-        if (precio != null) {
-          await updatePrecioActivoService(existing.id, precio);
-          report.updated.push(ticker);
-        } else {
-          report.skipped++;
-        }
-      } else {
-        // Create new
-        const desc = idx.descripcion !== -1 ? cells[idx.descripcion] : "";
-        const cat  = idx.categoria !== -1 ? cells[idx.categoria] : "";
-        const mon  = idx.monedaPrecio !== -1 ? (cells[idx.monedaPrecio] || "USD") : "USD";
+  if (report.errors.length > 0) {
+    return { error: `Hay ${report.errors.length} fila(s) inválida(s): no se guardó nada`, report: { ...report, updated: [], created: [] } };
+  }
+  if (filas.length === 0) return { ok: true, report };
 
-        if (ticker && cat) {
-          await prisma.activo.create({
-            data: {
-              id: crypto.randomUUID(),
-              ticker,
-              descripcion: desc || null,
-              categoria: cat as CategoriaActivo,
-              monedaPrecio: mon as Moneda,
-              precioActual: precio,
-              updatedAt: new Date(),
-              ...(precio != null
-                ? { priceSource: "MANUAL" as const, priceStatus: "OK" as const, priceSyncedAt: new Date(), providerUpdatedAt: null, priceErrorMessage: null }
-                : {}),
-            }
+  const conPrecio = filas.some((f) => f.precio);
+  const userId = conPrecio ? await usuarioDeSesion() : null;
+  if (conPrecio && !userId) return { error: "Sesión sin usuario: no se puede registrar el precio" };
+
+  // Fase 2: todo en UNA transacción (todo o nada).
+  try {
+    const ahora = new Date();
+    await prisma.$transaction(async (tx) => {
+      for (const f of filas) {
+        let activoId: string;
+        if (f.crear) {
+          const a = await tx.activo.create({
+            data: { id: crypto.randomUUID(), ticker: f.ticker, descripcion: f.crear.descripcion, categoria: f.crear.categoria, monedaPrecio: f.crear.moneda, precioActual: null, updatedAt: ahora },
           });
-          report.created.push(ticker);
+          activoId = a.id;
         } else {
-          report.skipped++;
+          const a = await tx.activo.findUnique({ where: { ticker: f.ticker }, select: { id: true } });
+          if (!a) throw new PrecioManualError(`${f.ticker}: activo inexistente`);
+          activoId = a.id;
+        }
+        if (f.precio && userId) {
+          await actualizarPrecioManualTx(tx, { activoId, entrada: { modo: "UNITARIO", precio: f.precio }, userId, origen: "IMPORT_EXCEL", ahora });
         }
       }
-    } catch (e: any) {
-      report.errors.push(`${ticker}: ${e.message}`);
-    }
+    }, { timeout: 60_000 });
+  } catch (e) {
+    return errorPrecio(e, "Error al importar precios");
   }
+  for (const f of filas) (f.crear ? report.created : report.updated).push(f.ticker);
 
   revalidatePath("/precios");
   revalidatePath("/configuracion");

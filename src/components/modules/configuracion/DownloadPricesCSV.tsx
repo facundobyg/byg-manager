@@ -1,6 +1,7 @@
 "use client";
 
 import { Download } from "lucide-react";
+import { formatearNumeroAR } from "@/lib/numero-ar";
 
 type Props = {
   data: {
@@ -8,7 +9,8 @@ type Props = {
     descripcion: string | null;
     categoria: string;
     monedaPrecio: string;
-    precioActual: number | null;
+    /** Precio canónico ("1.707824") o null. Se exporta en formato argentino. */
+    precioActual: string | null;
   }[];
 };
 
@@ -20,8 +22,8 @@ export function DownloadPricesCSV({ data }: Props) {
       r.descripcion || "",
       r.categoria,
       r.monedaPrecio,
-      r.precioActual?.toString() || "",
-      "", // nuevoPrecio
+      r.precioActual ? formatearNumeroAR(r.precioActual) : "", // informativo: el import lo IGNORA
+      "", // nuevoPrecio: única columna que el import aplica (formato argentino)
     ]);
 
     const csvContent = [

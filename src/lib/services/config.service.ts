@@ -204,31 +204,9 @@ export async function getActivosPrecios() {
   });
 }
 
-export async function updatePrecioActivo(activoId: string, precio: number, userId?: string) {
-  const dec = new Decimal(precio).toDecimalPlaces(6);
-  const now = new Date();
-  const fecha = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-
-  await prisma.$transaction([
-    prisma.activo.update({
-      where: { id: activoId },
-      data: {
-        precioActual: dec,
-        updatedAt: now,
-        priceSource: "MANUAL",
-        priceStatus: "OK",
-        priceSyncedAt: now,
-        providerUpdatedAt: null,
-        priceErrorMessage: null,
-      },
-    }),
-    prisma.precioHistorico.upsert({
-      where: { activoId_fecha: { activoId, fecha } },
-      update: { precio: dec, ...(userId ? { userId } : {}) },
-      create: { id: crypto.randomUUID(), activoId, fecha, precio: dec, userId: userId ?? null },
-    }),
-  ]);
-}
+// P1-03B: la actualización manual de precios vive en precio-manual.service.ts
+// (actualizarPrecioManualTx — único write path: validación es-AR, fecha valor argentina,
+// PrecioHistorico, AuditLog y usuario obligatorio, atómico).
 
 // ── TC MEP histórico ──────────────────────────────────────────────────────────
 
@@ -327,36 +305,6 @@ export async function updateAlycConfig(alycs: AlycOption[]): Promise<void> {
     update: { valor: JSON.stringify(alycs), updatedAt: new Date() },
     create: { id: crypto.randomUUID(), clave: "alycs_config", valor: JSON.stringify(alycs), updatedAt: new Date() },
   });
-}
-
-export async function updatePreciosActivosBatch(items: { id: string; precio: number }[], userId?: string) {
-  const now = new Date();
-  const fecha = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-
-  const operations = items.flatMap((item) => {
-    const dec = new Decimal(item.precio).toDecimalPlaces(6);
-    return [
-      prisma.activo.update({
-        where: { id: item.id },
-        data: {
-          precioActual: dec,
-          updatedAt: now,
-          priceSource: "MANUAL",
-          priceStatus: "OK",
-          priceSyncedAt: now,
-          providerUpdatedAt: null,
-          priceErrorMessage: null,
-        },
-      }),
-      prisma.precioHistorico.upsert({
-        where: { activoId_fecha: { activoId: item.id, fecha } },
-        update: { precio: dec, ...(userId ? { userId } : {}) },
-        create: { id: crypto.randomUUID(), activoId: item.id, fecha, precio: dec, userId: userId ?? null },
-      }),
-    ];
-  });
-
-  await prisma.$transaction(operations);
 }
 
 // ─── Data912 — flag de sync automático (cron) ──────────────────────────────────

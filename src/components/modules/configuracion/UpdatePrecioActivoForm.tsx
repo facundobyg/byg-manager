@@ -2,16 +2,20 @@
 
 import { useActionState } from "react";
 import { updatePrecioActivo } from "@/app/(dashboard)/configuracion/actions";
+import { formatearNumeroAR } from "@/lib/numero-ar";
 import { Check, Loader2 } from "lucide-react";
 
 type Props = {
   activoId: string;
+  /** Precio actual CANÓNICO ("1.707824") o "" si no tiene. */
   precioActual: string;
   moneda: string;
 };
 
 const init: { error?: string; ok?: boolean } = {};
 
+// P1-03B: input de TEXTO en formato argentino (el server lo valida estricto). Un
+// type="number" mandaría el valor con punto decimal según el navegador.
 export function UpdatePrecioActivoForm({ activoId, precioActual, moneda }: Props) {
   const [state, action, pending] = useActionState(updatePrecioActivo, init);
 
@@ -25,12 +29,13 @@ export function UpdatePrecioActivoForm({ activoId, precioActual, moneda }: Props
           </span>
           <input
             name="precioActual"
-            type="number"
-            step="0.000001"
-            min="0"
-            defaultValue={precioActual}
-            placeholder="0.00"
-            className="w-28 text-[12px] font-black tabular-nums font-mono border border-byg-border rounded-lg pl-9 pr-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-byg-accent/40 bg-byg-surface-2 text-byg-text [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            defaultValue={precioActual ? formatearNumeroAR(precioActual) : ""}
+            placeholder="1.234,56"
+            title="Formato argentino: miles con punto, decimales con coma"
+            className="w-28 text-[12px] font-black tabular-nums font-mono border border-byg-border rounded-lg pl-9 pr-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-byg-accent/40 bg-byg-surface-2 text-byg-text"
           />
         </div>
         <button
@@ -42,7 +47,7 @@ export function UpdatePrecioActivoForm({ activoId, precioActual, moneda }: Props
           {pending ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
         </button>
       </div>
-      {state.error && <p className="text-[9px] text-red-500 font-bold uppercase">{state.error}</p>}
+      {state.error && <p className="text-[9px] text-red-500 font-bold max-w-[260px] text-right">{state.error}</p>}
       {state.ok && <p className="text-[9px] text-emerald-400 font-bold uppercase">✓ Guardado</p>}
     </form>
   );

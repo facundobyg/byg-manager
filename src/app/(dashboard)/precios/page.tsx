@@ -7,6 +7,10 @@ import { PreciosBatchTextareaForm } from "@/components/modules/configuracion/Pre
 import { DownloadPricesCSV } from "@/components/modules/configuracion/DownloadPricesCSV";
 import { CreateActivoForm } from "@/components/modules/configuracion/CreateActivoForm";
 import { EditActivoModal } from "@/components/modules/configuracion/EditActivoModal";
+import { ValuacionManualForm } from "@/components/modules/configuracion/ValuacionManualForm";
+import { getManualOnlyReason } from "@/lib/services/price-ticker-resolver.service";
+import { fechaNegocio } from "@/lib/fecha-negocio";
+import { Decimal } from "@prisma/client/runtime/library";
 import Link from "next/link";
 
 // ─── Section config ───────────────────────────────────────────────────────────
@@ -32,6 +36,12 @@ type Row = {
   categoria:     CategoriaActivo;
   monedaPrecio:  string;
   precioActual:  number | null;
+  /** P1-03B: precio canónico exacto ("1.707824"), sin pasar por Number. */
+  precioCanonico: string | null;
+  /** P1-03B: tenencia en carteras propias (canónica) — VN que valida la carga manual. */
+  vnRegistrado:  string | null;
+  /** P1-03B: FCI/CRIPTO — nunca Data912; se carga por VN + valuación. */
+  manualOnly:    boolean;
   cantidadTotal: number;
   origins:       string[];
   priceSource:   PriceSource;
@@ -65,12 +75,14 @@ function PreciosSection({
   rows,
   selectedHistorialId,
   isAdmin,
+  hoy,
 }: {
   label: string;
   accent: string;
   rows: Row[];
   selectedHistorialId: string | null;
   isAdmin: boolean;
+  hoy: string;
 }) {
   const sinPrecio = rows.filter((r) => r.precioActual === null).length;
 
@@ -173,11 +185,20 @@ function PreciosSection({
                   </div>
                 </td>
                 <td className="px-4 py-2.5 text-right">
-                  <UpdatePrecioActivoForm
-                    activoId={row.id}
-                    precioActual={row.precioActual !== null ? String(row.precioActual) : ""}
-                    moneda={row.monedaPrecio}
-                  />
+                  {row.manualOnly ? (
+                    <ValuacionManualForm
+                      activoId={row.id}
+                      moneda={row.monedaPrecio}
+                      vnRegistrado={row.vnRegistrado}
+                      hoy={hoy}
+                    />
+                  ) : (
+                    <UpdatePrecioActivoForm
+                      activoId={row.id}
+                      precioActual={row.precioCanonico ?? ""}
+                      moneda={row.monedaPrecio}
+                    />
+                  )}
                 </td>
                 <td className="px-4 py-2.5 text-right">
                   {selectedHistorialId === row.id ? (
@@ -254,7 +275,7 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
     auth(),
     prisma.activo.findMany({
       include: {
-        PosicionCartera: { select: { id: true } },
+        PosicionCartera: { select: { id: true, cantidad: true } },
         CustodiaCliente: { select: { id: true } },
       },
       orderBy: [{ categoria: "asc" }, { ticker: "asc" }],
@@ -262,6 +283,7 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
     historialActivoId ? buildHistorial(historialActivoId) : Promise.resolve(null),
   ]);
   const isAdmin = await hasPermission("sistema:admin");
+  const hoy = fechaNegocio();
 
   // Build plain rows — no Decimal
   const rows: Row[] = activosRaw.map((a) => {
@@ -276,6 +298,11 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
       categoria:     a.categoria,
       monedaPrecio:  a.monedaPrecio,
       precioActual:  a.precioActual !== null ? Number(a.precioActual) : null,
+      precioCanonico: a.precioActual !== null ? new Decimal(a.precioActual.toString()).toString() : null,
+      vnRegistrado:  a.PosicionCartera.length > 0
+        ? a.PosicionCartera.reduce((acc, p) => acc.plus(new Decimal(p.cantidad.toString())), new Decimal(0)).toString()
+        : null,
+      manualOnly:    getManualOnlyReason(a.categoria) !== null,
       cantidadTotal: 0,
       origins,
       priceSource:   a.priceSource,
@@ -311,7 +338,7 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
                 descripcion: r.descripcion,
                 categoria: r.categoria,
                 monedaPrecio: r.monedaPrecio,
-                precioActual: r.precioActual
+                precioActual: r.precioCanonico
               }))} />
               <CreateActivoForm />
             </div>
@@ -404,7 +431,7 @@ export default async function PreciosPage({ searchParams }: { searchParams: Prom
         const sectionRows = bycat.get(cat);
         if (!sectionRows || sectionRows.length === 0) return null;
         return (
-          <PreciosSection key={cat} label={label} accent={accent} rows={sectionRows} selectedHistorialId={historialActivoId} isAdmin={isAdmin} />
+          <PreciosSection key={cat} label={label} accent={accent} rows={sectionRows} selectedHistorialId={historialActivoId} isAdmin={isAdmin} hoy={hoy} />
         );
       })}
     </div>

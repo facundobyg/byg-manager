@@ -59,6 +59,11 @@ vi.mock("@/lib/bolsa/integridad.service", async () => await import("../bolsa/int
 vi.mock("@/lib/bolsa/ajustes.service", async () => await import("../bolsa/ajustes.service"));
 vi.mock("@/lib/custodia/beta", async () => await import("../custodia/beta"));
 vi.mock("@/lib/services/precioPromedio.service", () => ({ calcularPrecioPromedio: vi.fn() }));
+// P1-03B — write path canónico de precios manuales (real).
+vi.mock("@/lib/fecha-negocio", async () => await import("../fecha-negocio"));
+vi.mock("@/lib/numero-ar", async () => await import("../numero-ar"));
+vi.mock("@/lib/services/price-ticker-resolver.service", async () => await import("../services/price-ticker-resolver.service"));
+vi.mock("@/lib/services/precio-manual.service", async () => await import("../services/precio-manual.service"));
 
 import { FRANCISCO_POLICY, AUGUSTO_POLICY } from "./user-policy";
 import { requireActionPermission, requireCajaPermission } from "./permissions";
@@ -66,7 +71,7 @@ import { crearMovimientoCaja, transferirEntreCajas } from "../../app/(dashboard)
 import { crearOperacionCambio } from "../../app/(dashboard)/operativa/mov-diarios/actions";
 import { crearMovimientoCC, crearPlazoFijoSimple } from "../../app/(dashboard)/clientes/actions";
 import { concertarOperacion, anularOperacion } from "../../app/(dashboard)/bolsa/actions";
-import { updateTCBlue } from "../../app/(dashboard)/configuracion/actions";
+import { updateTCBlue, registrarValuacionManual, updatePrecioActivo } from "../../app/(dashboard)/configuracion/actions";
 import { asignarACustodia, eliminarPosicion } from "../../app/(dashboard)/carteras/actions";
 import { transferirActivo } from "../../app/(dashboard)/cartera/actions";
 import { revertirTransferencia } from "../../app/(dashboard)/transferencias/actions";
@@ -163,6 +168,11 @@ describe("MACRO 6 — Server Actions directas prohibidas → DENY con 0 escritur
     ["Bolsa: Augusto baja una posición (bolsa:anular)", AUGUSTO, () => eliminarPosicion(null, fd({ posicionId: "pos-1", confirmarAjuste: "on" }))],
     ["Configuración: Francisco cambia TC blue", FRANCISCO, () => updateTCBlue({}, fd({ valor: "1200" }))],
     ["Configuración: Augusto cambia TC blue", AUGUSTO, () => updateTCBlue({}, fd({ valor: "1200" }))],
+    // P1-03B — precio manual / valuación de FCI: Facu ALLOW, Francisco y Augusto DENY.
+    ["Precios: Francisco registra valuación manual (IAM)", FRANCISCO, () => registrarValuacionManual({}, fd({ activoId: "iam", vn: "30.088", valuacionTotal: "51.385", fechaValor: "2026-11-12" }))],
+    ["Precios: Augusto registra valuación manual (IPA)", AUGUSTO, () => registrarValuacionManual({}, fd({ activoId: "ipa", vn: "11.701", valuacionTotal: "15.109", fechaValor: "2026-11-12" }))],
+    ["Precios: Francisco cambia precio unitario", FRANCISCO, () => updatePrecioActivo({}, fd({ activoId: "iam", precioActual: "1,7" }))],
+    ["Precios: Augusto cambia precio unitario", AUGUSTO, () => updatePrecioActivo({}, fd({ activoId: "iam", precioActual: "1,7" }))],
   ];
   it.each(casos)("%s", async (_n, who, call) => {
     loginAs(who);
@@ -187,6 +197,13 @@ describe("MACRO 6 — permitidos llegan a la transacción (Server Action real)",
     const r = (await crearMovimientoCaja(null, fd({ cajaId: "caja-oficina", tipo: "ENTRADA", monto: "100", moneda: "USD", slug: "oficina" }))) as { error?: string };
     expect(r?.error).not.toBe(DENIED);
     expect(m.prisma.movimientoCaja.create.mock.calls.length + m.prisma.$transaction.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("P1-03B — Facu registra valuación manual → pasa el guard y llega a la transacción", async () => {
+    loginAs(FACU);
+    const r = (await registrarValuacionManual({}, fd({ activoId: "iam", vn: "30.088", valuacionTotal: "51.385", fechaValor: "2026-11-12" }))) as { error?: string };
+    expect(r?.error).not.toBe(DENIED);
+    expect(m.prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 
   it("Francisco concerta en Bolsa → pasa el guard y llega a la transacción", async () => {
